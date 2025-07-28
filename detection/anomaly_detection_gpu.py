@@ -7,6 +7,7 @@ import numpy as np
 import cupy as cp
 from typing import Dict, List, Tuple, Optional
 from numba import cuda
+import math
 import warnings
 
 from ..core.gpu_utils import GPUBackend
@@ -345,5 +346,5 @@ class AnomalyDetectorGPU(GPUBackend):
             for i in range(max(0, loc - window), 
                           min(n_frames, loc + window)):
                 dist = abs(i - loc)
-                weight = cuda.exp(-0.5 * (dist / sigma) ** 2)
+                weight = math.exp(-0.5 * (dist / sigma) ** 2)
                 cuda.atomic.add(local_score, i, weight)
