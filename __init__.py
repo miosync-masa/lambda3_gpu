@@ -35,11 +35,33 @@ try:
     GPU_AVAILABLE = cp.cuda.is_available()
     
     if GPU_AVAILABLE:
-        # GPU情報を取得
-        GPU_DEVICE = cp.cuda.Device()
-        GPU_NAME = GPU_DEVICE.name.decode('utf-8') if hasattr(GPU_DEVICE.name, 'decode') else str(GPU_DEVICE.name)
-        GPU_MEMORY = GPU_DEVICE.mem_info[1] / 1024**3  # Total memory in GB
-        GPU_COMPUTE_CAPABILITY = GPU_DEVICE.compute_capability
+        # GPU情報を正しく取得（修正版）
+        device_id = 0  # デフォルトデバイス
+        cp.cuda.Device(device_id).use()
+        
+        # getDevicePropertiesを使って情報取得
+        props = cp.cuda.runtime.getDeviceProperties(device_id)
+        
+        # GPU名の取得
+        if isinstance(props, dict):
+            # 辞書形式の場合
+            GPU_NAME = props.get('name', b'Unknown').decode('utf-8') if isinstance(props.get('name', b''), bytes) else str(props.get('name', 'Unknown'))
+        else:
+            # 構造体の場合
+            GPU_NAME = props.name.decode('utf-8') if hasattr(props.name, 'decode') else str(props.name)
+        
+        # メモリ情報の取得
+        mem_info = cp.cuda.runtime.memGetInfo()
+        GPU_MEMORY = mem_info[1] / 1024**3  # Total memory in GB
+        
+        # Compute Capability
+        if isinstance(props, dict):
+            major = props.get('major', 0)
+            minor = props.get('minor', 0)
+        else:
+            major = props.major if hasattr(props, 'major') else 0
+            minor = props.minor if hasattr(props, 'minor') else 0
+        GPU_COMPUTE_CAPABILITY = f"{major}.{minor}"
         
         # CUDA version
         CUDA_VERSION = cp.cuda.runtime.runtimeGetVersion()
@@ -61,6 +83,18 @@ except ImportError:
         "CuPy not installed! GPU acceleration disabled. "
         "Install with: pip install cupy-cuda11x (replace 11x with your CUDA version)",
         ImportWarning
+    )
+except Exception as e:
+    # CuPyはあるがGPU初期化でエラーが発生した場合
+    HAS_CUPY = True
+    GPU_AVAILABLE = False
+    GPU_NAME = None
+    GPU_MEMORY = 0
+    GPU_COMPUTE_CAPABILITY = None
+    CUDA_VERSION_STR = None
+    warnings.warn(
+        f"GPU initialization error: {e}. Running in CPU mode.",
+        RuntimeWarning
     )
 
 # ===============================
