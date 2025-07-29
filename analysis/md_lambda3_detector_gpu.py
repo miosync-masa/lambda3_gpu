@@ -4,11 +4,22 @@ Lambda³ GPU版メイン検出器
 """
 
 import numpy as np
-import cupy as cp
 import time
 import warnings
-from typing import Dict, List, Optional, Tuple, Any
-from dataclasses import dataclass, asdict
+from typing import Dict, List, Tuple, Optional, Any, TYPE_CHECKING
+from dataclasses import dataclass
+
+# CuPyの条件付きインポート（ここが重要！）
+if TYPE_CHECKING:
+    import cupy as cp
+    NDArray = cp.ndarray
+else:
+    try:
+        import cupy as cp
+        NDArray = cp.ndarray
+    except ImportError:
+        cp = None
+        NDArray = np.ndarray 
 
 from ..core.gpu_utils import GPUBackend
 from ..structures.lambda_structures_gpu import LambdaStructuresGPU
