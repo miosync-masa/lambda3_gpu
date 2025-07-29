@@ -207,7 +207,7 @@ class MDLambda3DetectorGPU(GPUBackend):
         # 1. MD特徴抽出
         print("\n1. Extracting MD features on GPU...")
         md_features = self.feature_extractor.extract_md_features(
-            trajectory, self.config, backbone_indices
+            trajectory, backbone_indices
         )
         
         # 2. 初期ウィンドウサイズ
@@ -372,7 +372,7 @@ class MDLambda3DetectorGPU(GPUBackend):
         """単一バッチの解析"""
         # 簡略化された解析（メモリ効率重視）
         md_features = self.feature_extractor.extract_md_features(
-            batch_trajectory, self.config, backbone_indices
+            batch_trajectory, backbone_indices
         )
         
         window = self._compute_initial_window(len(batch_trajectory))
