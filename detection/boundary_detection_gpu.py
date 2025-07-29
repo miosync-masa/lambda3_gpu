@@ -9,6 +9,7 @@ try:
     import cupy as cp
     from numba import cuda
     import math
+    import logging
     from cupyx.scipy.signal import find_peaks as find_peaks_gpu
     from cupyx.scipy.ndimage import gaussian_filter1d as gaussian_filter1d_gpu
     HAS_CUDA = True
@@ -26,6 +27,7 @@ from ..core.gpu_kernels import (
     compute_gradient_kernel
 )
 
+logger = logging.getLogger(__name__)
 # ===============================
 # CUDAカーネル定義（クラス外）
 # ===============================
