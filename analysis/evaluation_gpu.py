@@ -4,13 +4,25 @@ Lambda³ GPU版性能評価モジュール
 """
 
 import numpy as np
-import cupy as cp
 import time
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Tuple, Optional, Any, TYPE_CHECKING
 from dataclasses import dataclass
+
+# CuPyの条件付きインポート（ここが重要！）
+if TYPE_CHECKING:
+    import cupy as cp
+    NDArray = cp.ndarray
+else:
+    try:
+        import cupy as cp
+        NDArray = cp.ndarray
+    except ImportError:
+        cp = None
+        NDArray = np.ndarray 
+
+# 他のインポート
 from sklearn.metrics import roc_auc_score, precision_recall_curve, auc
 import matplotlib.pyplot as plt
-
 from ..core.gpu_utils import GPUBackend
 from .md_lambda3_detector_gpu import MDLambda3Result
 from .two_stage_analyzer_gpu import TwoStageLambda3Result
