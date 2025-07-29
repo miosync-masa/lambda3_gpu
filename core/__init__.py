@@ -16,8 +16,8 @@ Components:
 from .gpu_utils import (
     GPUBackend,
     auto_select_device,
-    profile_gpu,        # gpu_utils.pyに追加
-    handle_gpu_errors   # gpu_utils.pyに追加
+    profile_gpu,
+    handle_gpu_errors
 )
 
 # gpu_memory.py から
