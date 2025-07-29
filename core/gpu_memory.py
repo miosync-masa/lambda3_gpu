@@ -7,7 +7,6 @@ GPUメモリを効率的に管理するシステムだよ〜！💕
 
 by 環ちゃん
 """
-
 import numpy as np
 import logging
 import gc
@@ -17,7 +16,6 @@ from dataclasses import dataclass
 from contextlib import contextmanager
 import psutil
 import os
-from ..types import ArrayType, NDArray
 
 # GPU imports
 try:
@@ -27,8 +25,16 @@ except ImportError:
     HAS_GPU = False
     cp = None
 
+# NDArrayの型定義を適切に設定
+if TYPE_CHECKING:
+    # 型チェック時の定義
+    if HAS_GPU:
+        NDArray = Union[np.ndarray, cp.ndarray]
+    else:
+        NDArray = np.ndarray
 else:
-    NDArray = Union[np.ndarray, Any]
+    # 実行時の定義
+    from ..types import ArrayType, NDArray
     
 # ===============================
 # Memory Info Classes
