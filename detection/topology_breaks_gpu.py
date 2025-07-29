@@ -11,7 +11,8 @@ from cupyx.scipy.ndimage import gaussian_filter1d as gaussian_filter1d_gpu
 
 from ..types import ArrayType, NDArray
 from ..core.gpu_utils import GPUBackend
-from ..core.gpu_kernels import detect_local_anomalies_kernel
+# 存在しないカーネルのインポートを削除
+# from ..core.gpu_kernels import detect_local_anomalies_kernel
 
 class TopologyBreaksDetectorGPU(GPUBackend):
     """トポロジカル破れ検出のGPU実装"""
@@ -42,46 +43,53 @@ class TopologyBreaksDetectorGPU(GPUBackend):
         
         n_frames = len(structures['rho_T'])
         
-        with self.memory_manager.batch_context(n_frames):
-            # 1. ΛF異常（構造フロー破れ）
-            lambda_f_anomaly = self._detect_flow_anomalies_gpu(
-                structures['lambda_F_mag'], window_steps
-            )
-            
-            # 2. ΛFF異常（加速度破れ）
-            lambda_ff_anomaly = self._detect_acceleration_anomalies_gpu(
-                structures['lambda_FF_mag'], window_steps // 2
-            )
-            
-            # 3. テンション場ジャンプ
-            rho_t_breaks = self._detect_tension_field_jumps_gpu(
-                structures['rho_T'], window_steps
-            )
-            
-            # 4. トポロジカルチャージ異常
-            q_breaks = self._detect_topological_charge_breaks_gpu(
-                structures['Q_lambda']
-            )
-            
-            # 5. 位相コヒーレンス破れ（新規追加）
-            phase_coherence_breaks = self._detect_phase_coherence_breaks_gpu(
-                structures
-            )
-            
-            # 6. 構造的特異点検出（新規追加）
-            singularities = self._detect_structural_singularities_gpu(
-                structures, window_steps
-            )
-            
-            # 7. 統合異常スコア
-            combined_anomaly = self._combine_topological_anomalies_gpu(
-                lambda_f_anomaly,
-                lambda_ff_anomaly,
-                rho_t_breaks,
-                q_breaks,
-                phase_coherence_breaks,
-                singularities
-            )
+        if hasattr(self, 'memory_manager'):
+            with self.memory_manager.batch_context(n_frames):
+                return self._detect_breaks_impl(structures, window_steps)
+        else:
+            return self._detect_breaks_impl(structures, window_steps)
+    
+    def _detect_breaks_impl(self, structures, window_steps):
+        """破れ検出の実装部分"""
+        # 1. ΛF異常（構造フロー破れ）
+        lambda_f_anomaly = self._detect_flow_anomalies_gpu(
+            structures['lambda_F_mag'], window_steps
+        )
+        
+        # 2. ΛFF異常（加速度破れ）
+        lambda_ff_anomaly = self._detect_acceleration_anomalies_gpu(
+            structures['lambda_FF_mag'], window_steps // 2
+        )
+        
+        # 3. テンション場ジャンプ
+        rho_t_breaks = self._detect_tension_field_jumps_gpu(
+            structures['rho_T'], window_steps
+        )
+        
+        # 4. トポロジカルチャージ異常
+        q_breaks = self._detect_topological_charge_breaks_gpu(
+            structures['Q_lambda']
+        )
+        
+        # 5. 位相コヒーレンス破れ（新規追加）
+        phase_coherence_breaks = self._detect_phase_coherence_breaks_gpu(
+            structures
+        )
+        
+        # 6. 構造的特異点検出（新規追加）
+        singularities = self._detect_structural_singularities_gpu(
+            structures, window_steps
+        )
+        
+        # 7. 統合異常スコア
+        combined_anomaly = self._combine_topological_anomalies_gpu(
+            lambda_f_anomaly,
+            lambda_ff_anomaly,
+            rho_t_breaks,
+            q_breaks,
+            phase_coherence_breaks,
+            singularities
+        )
         
         return {
             'lambda_F_anomaly': self.to_cpu(lambda_f_anomaly),
@@ -100,13 +108,18 @@ class TopologyBreaksDetectorGPU(GPUBackend):
         lf_mag_gpu = self.to_gpu(lambda_f_mag)
         anomaly_gpu = cp.zeros_like(lf_mag_gpu)
         
-        # 適応的z-scoreによる異常検出
-        threads = 256
-        blocks = (len(lf_mag_gpu) + threads - 1) // threads
-        
-        detect_local_anomalies_kernel[blocks, threads](
-            lf_mag_gpu, anomaly_gpu, window, len(lf_mag_gpu)
-        )
+        # 適応的z-scoreによる異常検出（簡易実装）
+        n = len(lf_mag_gpu)
+        for i in range(n):
+            start = max(0, i - window)
+            end = min(n, i + window + 1)
+            local_data = lf_mag_gpu[start:end]
+            
+            if len(local_data) > 1:
+                mean = cp.mean(local_data)
+                std = cp.std(local_data)
+                if std > 1e-10:
+                    anomaly_gpu[i] = cp.abs(lf_mag_gpu[i] - mean) / std
         
         # 追加: 急激な変化の検出
         gradient = cp.abs(cp.gradient(lf_mag_gpu))
@@ -122,13 +135,18 @@ class TopologyBreaksDetectorGPU(GPUBackend):
         lff_mag_gpu = self.to_gpu(lambda_ff_mag)
         anomaly_gpu = cp.zeros_like(lff_mag_gpu)
         
-        # 基本的な異常検出
-        threads = 256
-        blocks = (len(lff_mag_gpu) + threads - 1) // threads
-        
-        detect_local_anomalies_kernel[blocks, threads](
-            lff_mag_gpu, anomaly_gpu, window, len(lff_mag_gpu)
-        )
+        # 基本的な異常検出（簡易実装）
+        n = len(lff_mag_gpu)
+        for i in range(n):
+            start = max(0, i - window)
+            end = min(n, i + window + 1)
+            local_data = lff_mag_gpu[start:end]
+            
+            if len(local_data) > 1:
+                mean = cp.mean(local_data)
+                std = cp.std(local_data)
+                if std > 1e-10:
+                    anomaly_gpu[i] = cp.abs(lff_mag_gpu[i] - mean) / std
         
         # 加速度特有の処理：符号変化の検出
         if 'lambda_FF' in self.breaks_cache:
@@ -288,13 +306,12 @@ class TopologyBreaksDetectorGPU(GPUBackend):
         """局所極値の検出"""
         extrema = cp.zeros_like(data)
         
-        # GPU並列処理で局所最大/最小を検出
-        threads = 256
-        blocks = (len(data) + threads - 1) // threads
-        
-        self._local_extrema_kernel[blocks, threads](
-            data, extrema, window, len(data)
-        )
+        # 簡易実装
+        n = len(data)
+        for i in range(window, n - window):
+            local_data = data[i-window:i+window+1]
+            if data[i] == cp.max(local_data) or data[i] == cp.min(local_data):
+                extrema[i] = 1.0
         
         return extrema
     
@@ -367,25 +384,3 @@ class TopologyBreaksDetectorGPU(GPUBackend):
         combined /= sum(weights[:len(anomalies)])
         
         return combined
-    
-    # カスタムCUDAカーネル
-    @cuda.jit
-    def _local_extrema_kernel(data, extrema, window, n):
-        """局所極値検出カーネル"""
-        idx = cuda.grid(1)
-        
-        if idx >= window and idx < n - window:
-            center = data[idx]
-            is_max = True
-            is_min = True
-            
-            # 局所範囲で比較
-            for i in range(idx - window, idx + window + 1):
-                if i != idx:
-                    if data[i] >= center:
-                        is_max = False
-                    if data[i] <= center:
-                        is_min = False
-            
-            if is_max or is_min:
-                extrema[idx] = 1.0
