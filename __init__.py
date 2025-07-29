@@ -466,18 +466,45 @@ def __getattr__(name):
 # ===============================
 # Import Hook for Monkey Patching
 # ===============================
-
 def _apply_patches():
     """必要なパッチを適用"""
     try:
-        # find_peaks パッチ
+        # find_peaks パッチ（改良版）
         from cupyx.scipy import signal
-        if not hasattr(signal, 'find_peaks'):
+        
+        # find_peaksが存在してもパッチを適用（引数互換性のため）
+        if hasattr(signal, 'find_peaks'):
+            # オリジナルを保存
+            signal._find_peaks_original = signal.find_peaks
+            
+            # パッチ関数
+            def find_peaks_patched(array, height=None, distance=None, prominence=None, **kwargs):
+                """引数を自動調整するラッパー"""
+                try:
+                    return signal._find_peaks_original(array, height=height, distance=distance, 
+                                                     prominence=prominence, **kwargs)
+                except ValueError as e:
+                    if "array size" in str(e) and height is not None:
+                        # heightがスカラーの場合、配列に変換
+                        import cupy as cp
+                        if not hasattr(height, '__len__'):
+                            height = cp.full(len(array), height)
+                        return signal._find_peaks_original(array, height=height, distance=distance,
+                                                         prominence=prominence, **kwargs)
+                    else:
+                        raise
+            
+            # 置き換え
+            signal.find_peaks = find_peaks_patched
+            logger.debug("Applied find_peaks compatibility patch")
+        else:
+            # find_peaksが存在しない場合（古いCuPy）
             from .core.gpu_patches import find_peaks_gpu_fallback
             signal.find_peaks = find_peaks_gpu_fallback
-            logger.debug("Applied find_peaks patch")
-    except:
-        pass
+            logger.debug("Applied find_peaks fallback patch")
+            
+    except Exception as e:
+        logger.debug(f"Failed to apply patches: {e}")
 
 # Apply patches on import
 _apply_patches()
