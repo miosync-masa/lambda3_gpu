@@ -98,7 +98,7 @@ class GPUMemoryManager:
             self._setup_gpu_memory()
         else:
             self._setup_cpu_memory()
-    
+            
     def _setup_gpu_memory(self):
         """GPU メモリ設定"""
         self.device_type = 'gpu'
