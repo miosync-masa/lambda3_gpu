@@ -9,15 +9,18 @@ Components:
     - GPUBackend: GPU/CPU自動切り替えの基底クラス
     - GPUMemoryManager: メモリ管理システム
     - CUDAKernels: 高速カスタムカーネル集
+    - Decorators: プロファイリングとエラーハンドリング
 """
 
-# gpu_utils.py から（実際に存在するもののみ）
+# gpu_utils.py から
 from .gpu_utils import (
     GPUBackend,
-    auto_select_device
+    auto_select_device,
+    profile_gpu,        # gpu_utils.pyに追加
+    handle_gpu_errors   # gpu_utils.pyに追加
 )
 
-# gpu_memory.py から（実際に存在するもののみ）
+# gpu_memory.py から
 from .gpu_memory import (
     MemoryInfo,
     GPUMemoryManager,
@@ -29,7 +32,7 @@ from .gpu_memory import (
     MemoryError
 )
 
-# gpu_kernels.py から（__all__に定義されているもの）
+# gpu_kernels.py から
 from .gpu_kernels import (
     CUDAKernels,
     residue_com_kernel,
@@ -37,10 +40,10 @@ from .gpu_kernels import (
     anomaly_detection_kernel,
     distance_matrix_kernel,
     topological_charge_kernel,
-    compute_local_fractal_dimension_kernel,  # 新規追加
-    compute_gradient_kernel,                 # 新規追加
+    compute_local_fractal_dimension_kernel,
+    compute_gradient_kernel,
     create_elementwise_kernel,
-    benchmark_kernels,  # ← ここを修正！クォートを直したよ〜！
+    benchmark_kernels,  # クォート修正済み！
     get_kernel_manager
 )
 
@@ -48,6 +51,8 @@ __all__ = [
     # Utils
     'GPUBackend',
     'auto_select_device',
+    'profile_gpu',
+    'handle_gpu_errors',
     
     # Memory
     'MemoryInfo',
@@ -66,8 +71,8 @@ __all__ = [
     'anomaly_detection_kernel',
     'distance_matrix_kernel',
     'topological_charge_kernel',
-    'compute_local_fractal_dimension_kernel',  # 新規追加
-    'compute_gradient_kernel',                 # 新規追加
+    'compute_local_fractal_dimension_kernel',
+    'compute_gradient_kernel',
     'create_elementwise_kernel',
     'benchmark_kernels',
     'get_kernel_manager'
