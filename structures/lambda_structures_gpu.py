@@ -143,7 +143,7 @@ class LambdaStructuresGPU(GPUBackend):
             
             return results
     
-    def _compute_lambda_F(self, positions: cp.ndarray) -> Tuple[cp.ndarray, cp.ndarray]:
+    def _compute_lambda_F(self, positions: NDArray) -> Tuple[NDArray, NDArray]:
         """ΛF計算（GPU版）"""
         # フレーム間の差分
         lambda_F = self.xp.diff(positions, axis=0)
@@ -153,7 +153,7 @@ class LambdaStructuresGPU(GPUBackend):
         
         return lambda_F, lambda_F_mag
     
-    def _compute_lambda_FF(self, lambda_F: cp.ndarray) -> Tuple[cp.ndarray, cp.ndarray]:
+    def _compute_lambda_FF(self, lambda_F: NDArray) -> Tuple[NDArray, NDArray]:
         """ΛFF計算（GPU版）"""
         # 二次差分
         lambda_FF = self.xp.diff(lambda_F, axis=0)
@@ -163,7 +163,7 @@ class LambdaStructuresGPU(GPUBackend):
         
         return lambda_FF, lambda_FF_mag
     
-    def _compute_rho_T(self, positions: cp.ndarray, window_steps: int) -> cp.ndarray:
+    def _compute_rho_T(self, positions: NDArray, window_steps: int) -> NDArray:
         """ρT計算（カスタムカーネル使用）"""
         if self.is_gpu and HAS_GPU:
             # カスタムカーネル使用
@@ -190,8 +190,8 @@ class LambdaStructuresGPU(GPUBackend):
         return rho_T
     
     def _compute_Q_lambda(self, 
-                         lambda_F: cp.ndarray, 
-                         lambda_F_mag: cp.ndarray) -> Tuple[cp.ndarray, cp.ndarray]:
+                     lambda_F: NDArray, 
+                     lambda_F_mag: NDArray) -> Tuple[NDArray, NDArray]:
         """Q_Λ計算（カスタムカーネル使用）"""
         if self.is_gpu and HAS_GPU:
             # カスタムカーネル使用
@@ -229,8 +229,8 @@ class LambdaStructuresGPU(GPUBackend):
         return Q_lambda[:-1]
     
     def _compute_sigma_s(self, 
-                        md_features: Dict[str, np.ndarray],
-                        window_steps: int) -> cp.ndarray:
+                    md_features: Dict[str, np.ndarray],
+                    window_steps: int) -> NDArray:
         """σₛ計算（GPU版）"""
         n_frames = len(md_features.get('rmsd', []))
         
@@ -265,8 +265,8 @@ class LambdaStructuresGPU(GPUBackend):
         return sigma_s
     
     def _compute_coherence(self, 
-                          lambda_F: cp.ndarray,
-                          window: int) -> cp.ndarray:
+                      lambda_F: NDArray,
+                      window: int) -> NDArray:
         """構造的コヒーレンス計算（GPU版）"""
         n_frames = len(lambda_F)
         coherence = self.zeros(n_frames + 1)
