@@ -60,10 +60,12 @@ __all__ = [
     # Kernels
     'CUDAKernels',
     'residue_com_kernel',
-    'tension_field_kernel',
+    'tension_field_kernel', 
     'anomaly_detection_kernel',
     'distance_matrix_kernel',
     'topological_charge_kernel',
+    'compute_local_fractal_dimension_kernel',  # 新規追加
+    'compute_gradient_kernel',                 # 新規追加
     'create_elementwise_kernel',
     'benchmark_kernels',
     'get_kernel_manager'
