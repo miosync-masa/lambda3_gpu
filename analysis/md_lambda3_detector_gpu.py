@@ -159,7 +159,8 @@ class MDLambda3DetectorGPU(GPUBackend):
         print(f"{'='*60}")
         print(f"Trajectory: {n_frames} frames, {n_atoms} atoms")
         print(f"GPU Device: {self.device}")
-        print(f"Available GPU Memory: {self.memory_manager.get_free_memory() / 1e9:.2f} GB")
+        mem_info = self.memory_manager.get_memory_info()
+        print(f"Available GPU Memory: {mem_info.free / 1e9:.2f} GB")
         
         # バッチ処理の設定
         batch_size = min(self.config.gpu_batch_size, n_frames)
