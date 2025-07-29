@@ -11,7 +11,9 @@ from cupyx.scipy.ndimage import gaussian_filter1d as gaussian_filter1d_gpu
 
 from ..types import ArrayType, NDArray
 from ..core.gpu_utils import GPUBackend
-# from ..core.gpu_kernels import detect_local_anomalies_kernel
+from ..core.gpu_kernels import (
+    anomaly_detection_kernel  # 正しい名前でインポート
+)
 
 class TopologyBreaksDetectorGPU(GPUBackend):
     """トポロジカル破れ検出のGPU実装"""
@@ -98,15 +100,9 @@ class TopologyBreaksDetectorGPU(GPUBackend):
                                  window: int) -> NDArray:
         """構造フローの異常検出（GPU最適化）"""
         lf_mag_gpu = self.to_gpu(lambda_f_mag)
-        anomaly_gpu = cp.zeros_like(lf_mag_gpu)
         
-        # 適応的z-scoreによる異常検出
-        threads = 256
-        blocks = (len(lf_mag_gpu) + threads - 1) // threads
-        
-        # detect_local_anomalies_kernel[blocks, threads](
-        #     lf_mag_gpu, anomaly_gpu, window, len(lf_mag_gpu)
-        # )
+        # 適応的z-scoreによる異常検出（カーネル使用）
+        anomaly_gpu = anomaly_detection_kernel(lf_mag_gpu, window)
         
         # 追加: 急激な変化の検出
         gradient = cp.abs(cp.gradient(lf_mag_gpu))
@@ -120,15 +116,9 @@ class TopologyBreaksDetectorGPU(GPUBackend):
                                          window: int) -> NDArray:
         """加速度異常の検出"""
         lff_mag_gpu = self.to_gpu(lambda_ff_mag)
-        anomaly_gpu = cp.zeros_like(lff_mag_gpu)
         
-        # 基本的な異常検出
-        threads = 256
-        blocks = (len(lff_mag_gpu) + threads - 1) // threads
-        
-        # detect_local_anomalies_kernel[blocks, threads](
-        #     lff_mag_gpu, anomaly_gpu, window, len(lff_mag_gpu)
-        # )
+        # 基本的な異常検出（カーネル使用）
+        anomaly_gpu = anomaly_detection_kernel(lff_mag_gpu, window)
         
         # 加速度特有の処理：符号変化の検出
         if 'lambda_FF' in self.breaks_cache:
@@ -368,7 +358,7 @@ class TopologyBreaksDetectorGPU(GPUBackend):
         
         return combined
     
-    # カスタムCUDAカーネル
+    # カスタムCUDAカーネル（@cuda.jitは残す）
     @cuda.jit
     def _local_extrema_kernel(data, extrema, window, n):
         """局所極値検出カーネル"""
