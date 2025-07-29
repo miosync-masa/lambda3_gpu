@@ -7,7 +7,6 @@ NO TIME, NO PHYSICS, ONLY STRUCTURE... but FASTER! 🚀
 
 by 環ちゃん
 """
-
 import numpy as np
 import logging
 from typing import Dict, Optional, Tuple, Union
@@ -21,11 +20,12 @@ try:
 except ImportError:
     HAS_GPU = False
     cp = None
+    cp_savgol_filter = None
 
 # Local imports
+from ..types import ArrayType, NDArray
 from ..core import GPUBackend, GPUMemoryManager, GPUTimer
 from ..core import tension_field_kernel, topological_charge_kernel
-from ..types import ArrayType, NDArray
 
 logger = logging.getLogger('lambda3_gpu.structures.lambda_structures')
 
