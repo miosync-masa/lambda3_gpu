@@ -450,7 +450,7 @@ class Lambda3BenchmarkSuite:
         config = MDConfig()
         
         start = time.time()
-        _ = extractor.extract_md_features(trajectory, config)
+        _ = extractor.extract_md_features(trajectory, MDConfig())
         return time.time() - start
     
     def _benchmark_lambda_structures(self, trajectory: np.ndarray, use_gpu: bool) -> float:
