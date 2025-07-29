@@ -139,6 +139,13 @@ class MDLambda3DetectorGPU(GPUBackend):
             if hasattr(component, 'device'):
                 component.device = self.device
         
+        # MD特徴抽出の設定を同期
+        if hasattr(self.feature_extractor, 'config'):
+            self.feature_extractor.config.use_rmsd = self.config.use_rmsd
+            self.feature_extractor.config.use_rg = self.config.use_rg
+            self.feature_extractor.config.use_dihedrals = self.config.use_dihedrals
+            self.feature_extractor.config.use_contacts = self.config.use_contacts
+        
         self._print_initialization_info()
     
     def analyze(self, 
