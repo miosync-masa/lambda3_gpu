@@ -20,9 +20,7 @@ except ImportError:
 from ..types import ArrayType, NDArray
 from ..core.gpu_utils import GPUBackend
 from ..core.gpu_kernels import (
-    detect_local_anomalies_kernel,
-    compute_mad_kernel,
-    gaussian_filter_1d_kernel
+    anomaly_detection_kernel
 )
 
 warnings.filterwarnings('ignore')
