@@ -15,8 +15,8 @@ xarray>=2023.0.0  # 最新版で多次元配列処理の安定性向上
 # For CUDA 12.x (12.0-12.4):
 # cupy-cuda12x>=11.0.0,<13.0.0
 
-# For CUDA 12.5 (最新版対応):
-cupy-cuda12x==12.3.0  # CUDA 12.4まで対応の安定版
+# For CUDA 12.x (12.0-12.4対応):
+cupy-cuda12x==13.2.0  # CUDA 12.4まで対応の最新安定版
 
 # JIT compilation and CUDA kernels
 # CUDA 12.5対応のため、numbaも特定バージョンに固定
