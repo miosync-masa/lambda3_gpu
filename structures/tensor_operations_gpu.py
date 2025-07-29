@@ -28,7 +28,7 @@ except ImportError:
 
 # Local imports
 from ..types import ArrayType, NDArray
-from ..core import GPUBackend, GPUMemoryManager
+from ..core import GPUBackend, GPUMemoryManager, profile_gpu
 
 logger = logging.getLogger('lambda3_gpu.structures.tensor_operations')
 
@@ -56,9 +56,9 @@ class TensorOperationsGPU(GPUBackend):
         
     @profile_gpu
     def compute_gradient(self,
-                        array: Union[np.ndarray, cp.ndarray],
+                        array: NDArray,
                         axis: Optional[Union[int, Tuple[int, ...]]] = None,
-                        edge_order: int = 1) -> Union[np.ndarray, cp.ndarray]:
+                        edge_order: int = 1) -> NDArray:
         """
         勾配計算（GPU版）
         
@@ -91,11 +91,11 @@ class TensorOperationsGPU(GPUBackend):
     
     @profile_gpu
     def compute_covariance(self,
-                         x: Union[np.ndarray, cp.ndarray],
-                         y: Optional[Union[np.ndarray, cp.ndarray]] = None,
+                         x: NDArray,
+                         y: Optional[NDArray] = None,
                          rowvar: bool = True,
                          bias: bool = False,
-                         ddof: Optional[int] = None) -> Union[np.ndarray, cp.ndarray]:
+                         ddof: Optional[int] = None) -> NDArray:
         """
         共分散行列計算（GPU版）
         
@@ -134,9 +134,9 @@ class TensorOperationsGPU(GPUBackend):
     
     @profile_gpu
     def compute_correlation(self,
-                          x: Union[np.ndarray, cp.ndarray],
-                          y: Optional[Union[np.ndarray, cp.ndarray]] = None,
-                          rowvar: bool = True) -> Union[np.ndarray, cp.ndarray]:
+                          x: NDArray,
+                          y: Optional[NDArray] = None,
+                          rowvar: bool = True) -> NDArray:
         """
         相関係数行列計算（GPU版）
         
@@ -169,12 +169,12 @@ class TensorOperationsGPU(GPUBackend):
         return corr if self.is_gpu else self.to_cpu(corr)
     
     def sliding_window_operation(self,
-                               array: Union[np.ndarray, cp.ndarray],
+                               array: NDArray,
                                window_size: int,
                                operation: Union[str, Callable],
                                axis: int = 0,
                                step: int = 1,
-                               mode: str = 'valid') -> Union[np.ndarray, cp.ndarray]:
+                               mode: str = 'valid') -> NDArray:
         """
         スライディングウィンドウ演算（GPU版）
         
@@ -215,7 +215,7 @@ class TensorOperationsGPU(GPUBackend):
         # 出力配列
         out_shape = list(array_gpu.shape)
         out_shape[axis] = out_size
-        result = self.empty(tuple(out_shape))
+        result = self.xp.empty(tuple(out_shape))
         
         # スライディングウィンドウ処理
         with self.timer('sliding_window'):
@@ -256,11 +256,11 @@ class TensorOperationsGPU(GPUBackend):
         return ops[operation]
     
     def batch_tensor_operation(self,
-                             tensors: List[Union[np.ndarray, cp.ndarray]],
+                             tensors: List[NDArray],
                              operation: Callable,
                              batch_size: Optional[int] = None,
                              concat_axis: Optional[int] = 0,
-                             **kwargs) -> Union[np.ndarray, cp.ndarray, List]:
+                             **kwargs) -> Union[NDArray, List]:
         """
         複数テンソルのバッチ演算
         
@@ -320,7 +320,7 @@ class TensorOperationsGPU(GPUBackend):
             
             # メモリクリア
             if i % (batch_size * 5) == 0:
-                self.clear_cache()
+                self.clear_memory()
         
         # 結果の結合
         if concat_axis is not None and len(results) > 0:
@@ -331,10 +331,10 @@ class TensorOperationsGPU(GPUBackend):
     
     @profile_gpu
     def convolution(self,
-                   array: Union[np.ndarray, cp.ndarray],
-                   kernel: Union[np.ndarray, cp.ndarray],
+                   array: NDArray,
+                   kernel: NDArray,
                    mode: str = 'same',
-                   method: str = 'auto') -> Union[np.ndarray, cp.ndarray]:
+                   method: str = 'auto') -> NDArray:
         """
         畳み込み演算（GPU版）
         
@@ -375,11 +375,11 @@ class TensorOperationsGPU(GPUBackend):
     
     @profile_gpu
     def gaussian_filter(self,
-                       array: Union[np.ndarray, cp.ndarray],
+                       array: NDArray,
                        sigma: Union[float, Tuple[float, ...]],
                        order: Union[int, Tuple[int, ...]] = 0,
                        mode: str = 'reflect',
-                       truncate: float = 4.0) -> Union[np.ndarray, cp.ndarray]:
+                       truncate: float = 4.0) -> NDArray:
         """
         ガウシアンフィルタ（GPU版）
         
@@ -431,30 +431,30 @@ class TensorOperationsGPU(GPUBackend):
 # Standalone Functions
 # ===============================
 
-def compute_gradient_gpu(array: Union[np.ndarray, cp.ndarray],
+def compute_gradient_gpu(array: NDArray,
                        axis: Optional[Union[int, Tuple[int, ...]]] = None,
                        backend: Optional[GPUBackend] = None) -> Union[np.ndarray, List[np.ndarray]]:
     """勾配計算のスタンドアロン関数"""
     ops = TensorOperationsGPU() if backend is None else TensorOperationsGPU(device=backend.device)
     return ops.compute_gradient(array, axis)
 
-def compute_covariance_gpu(x: Union[np.ndarray, cp.ndarray],
-                         y: Optional[Union[np.ndarray, cp.ndarray]] = None,
+def compute_covariance_gpu(x: NDArray,
+                         y: Optional[NDArray] = None,
                          backend: Optional[GPUBackend] = None) -> np.ndarray:
     """共分散計算のスタンドアロン関数"""
     ops = TensorOperationsGPU() if backend is None else TensorOperationsGPU(device=backend.device)
     result = ops.compute_covariance(x, y)
     return ops.to_cpu(result) if ops.is_gpu else result
 
-def compute_correlation_gpu(x: Union[np.ndarray, cp.ndarray],
-                          y: Optional[Union[np.ndarray, cp.ndarray]] = None,
+def compute_correlation_gpu(x: NDArray,
+                          y: Optional[NDArray] = None,
                           backend: Optional[GPUBackend] = None) -> np.ndarray:
     """相関計算のスタンドアロン関数"""
     ops = TensorOperationsGPU() if backend is None else TensorOperationsGPU(device=backend.device)
     result = ops.compute_correlation(x, y)
     return ops.to_cpu(result) if ops.is_gpu else result
 
-def sliding_window_operation_gpu(array: Union[np.ndarray, cp.ndarray],
+def sliding_window_operation_gpu(array: NDArray,
                                window_size: int,
                                operation: Union[str, Callable],
                                axis: int = 0,
@@ -464,7 +464,7 @@ def sliding_window_operation_gpu(array: Union[np.ndarray, cp.ndarray],
     result = ops.sliding_window_operation(array, window_size, operation, axis)
     return ops.to_cpu(result) if ops.is_gpu else result
 
-def batch_tensor_operation(tensors: List[Union[np.ndarray, cp.ndarray]],
+def batch_tensor_operation(tensors: List[NDArray],
                          operation: Callable,
                          batch_size: Optional[int] = None,
                          concat_axis: Optional[int] = 0,
@@ -503,10 +503,10 @@ def tensorize(func: Callable) -> Callable:
         # 結果をCPUに戻す
         if isinstance(result, (list, tuple)):
             return type(result)(
-                backend.to_cpu(r) if isinstance(r, cp.ndarray) else r 
+                backend.to_cpu(r) if HAS_GPU and isinstance(r, cp.ndarray) else r 
                 for r in result
             )
-        elif isinstance(result, cp.ndarray):
+        elif HAS_GPU and isinstance(result, cp.ndarray):
             return backend.to_cpu(result)
         else:
             return result
