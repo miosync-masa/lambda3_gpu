@@ -22,8 +22,8 @@ except ImportError:
     cp = None
 
 # Local imports
-from ..core import GPUBackend, GPUMemoryManager, handle_gpu_errors, profile_gpu
 from ..types import ArrayType, NDArray
+from ..core import GPUBackend, GPUMemoryManager, handle_gpu_errors, profile_gpu
 
 logger = logging.getLogger('lambda3_gpu.residue.confidence')
 
