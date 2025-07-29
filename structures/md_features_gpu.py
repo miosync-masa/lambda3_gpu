@@ -280,8 +280,8 @@ class MDFeaturesGPU(GPUBackend):
         return rmsd_values
     
     def _calculate_rmsd_gpu(self,
-                          coords_batch: cp.ndarray,
-                          ref_coords: cp.ndarray) -> cp.ndarray:
+                          coords_batch: 'cp.ndarray',
+                          ref_coords: 'cp.ndarray') -> 'cp.ndarray':
         """GPU版RMSD計算"""
         n_frames = coords_batch.shape[0]
         rmsd_values = cp.zeros(n_frames, dtype=cp.float32)
@@ -327,7 +327,7 @@ class MDFeaturesGPU(GPUBackend):
         
         return rg_values
     
-    def _calculate_rg_gpu(self, coords_batch: cp.ndarray) -> cp.ndarray:
+    def _calculate_rg_gpu(self, coords_batch: 'cp.ndarray') -> 'cp.ndarray':
         """GPU版Rg計算"""
         n_frames, n_atoms, _ = coords_batch.shape
         rg_values = cp.zeros(n_frames, dtype=cp.float32)
@@ -403,7 +403,7 @@ class MDFeaturesGPU(GPUBackend):
         
         return contact_counts
     
-    def _count_contacts_gpu(self, coords_batch: cp.ndarray) -> cp.ndarray:
+    def _count_contacts_gpu(self, coords_batch: 'cp.ndarray') -> 'cp.ndarray':
         """GPU版接触数カウント"""
         n_frames, n_atoms, _ = coords_batch.shape
         contact_counts = cp.zeros(n_frames, dtype=cp.int32)
@@ -465,7 +465,7 @@ class MDFeaturesGPU(GPUBackend):
         
         return dihedral_values
     
-    def _calculate_dihedrals_gpu(self, coords_batch: cp.ndarray) -> cp.ndarray:
+    def _calculate_dihedrals_gpu(self, coords_batch: 'cp.ndarray') -> 'cp.ndarray':
         """GPU版二面角計算"""
         n_frames, n_atoms, _ = coords_batch.shape
         n_dihedrals = n_atoms - 3
@@ -547,8 +547,8 @@ def extract_md_features_gpu(trajectory: np.ndarray,
     extractor = MDFeaturesGPU(config)
     return extractor.extract_md_features(trajectory, backbone_indices)
 
-def calculate_rmsd_gpu(coords1: Union[np.ndarray, cp.ndarray],
-                     coords2: Union[np.ndarray, cp.ndarray],
+def calculate_rmsd_gpu(coords1: NDArray,
+                     coords2: NDArray,
                      backend: Optional[GPUBackend] = None) -> float:
     """RMSD計算のスタンドアロン関数"""
     if backend is None:
@@ -562,7 +562,7 @@ def calculate_rmsd_gpu(coords1: Union[np.ndarray, cp.ndarray],
     
     return float(backend.to_cpu(rmsd))
 
-def calculate_radius_of_gyration_gpu(coords: Union[np.ndarray, cp.ndarray],
+def calculate_radius_of_gyration_gpu(coords: NDArray,
                                    backend: Optional[GPUBackend] = None) -> float:
     """Rg計算のスタンドアロン関数"""
     if backend is None:
@@ -575,7 +575,7 @@ def calculate_radius_of_gyration_gpu(coords: Union[np.ndarray, cp.ndarray],
     
     return float(backend.xp.sqrt(rg_squared))
 
-def calculate_contacts_gpu(coords: Union[np.ndarray, cp.ndarray],
+def calculate_contacts_gpu(coords: NDArray,
                          cutoff: float = 8.0,
                          backend: Optional[GPUBackend] = None) -> int:
     """接触数計算のスタンドアロン関数"""
@@ -600,7 +600,7 @@ def calculate_contacts_gpu(coords: Union[np.ndarray, cp.ndarray],
     
     return int(contacts)
 
-def calculate_dihedrals_gpu(coords: Union[np.ndarray, cp.ndarray],
+def calculate_dihedrals_gpu(coords: NDArray,
                           indices: List[Tuple[int, int, int, int]],
                           backend: Optional[GPUBackend] = None) -> np.ndarray:
     """二面角計算のスタンドアロン関数"""
