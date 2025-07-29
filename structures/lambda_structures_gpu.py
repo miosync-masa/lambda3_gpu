@@ -386,7 +386,7 @@ class LambdaStructuresGPU(GPUBackend):
 # Helper Functions (GPU版)
 # ===============================
 
-def compute_structural_coherence_gpu(lambda_F: Union[np.ndarray, cp.ndarray],
+def compute_structural_coherence_gpu(lambda_F: NDArray,
                                    window: int,
                                    backend: Optional[GPUBackend] = None) -> np.ndarray:
     """構造的コヒーレンス計算（スタンドアロン版）"""
@@ -414,9 +414,10 @@ def compute_structural_coherence_gpu(lambda_F: Union[np.ndarray, cp.ndarray],
     
     return backend.to_cpu(coherence)
 
-def compute_local_fractal_dimension_gpu(series: Union[np.ndarray, cp.ndarray],
+def compute_local_fractal_dimension_gpu(series: NDArray,
                                       window: int,
                                       backend: Optional[GPUBackend] = None) -> np.ndarray:
+                                          
     """局所フラクタル次元計算（GPU版）"""
     if backend is None:
         backend = GPUBackend()
@@ -450,7 +451,7 @@ def compute_local_fractal_dimension_gpu(series: Union[np.ndarray, cp.ndarray],
     
     return backend.to_cpu(dims)
 
-def compute_coupling_strength_gpu(Q_cumulative: Union[np.ndarray, cp.ndarray],
+def compute_coupling_strength_gpu(Q_cumulative: NDArray,
                                 window: int,
                                 backend: Optional[GPUBackend] = None) -> np.ndarray:
     """結合強度計算（GPU版）"""
@@ -468,7 +469,7 @@ def compute_coupling_strength_gpu(Q_cumulative: Union[np.ndarray, cp.ndarray],
     
     return backend.to_cpu(coupling)
 
-def compute_structural_entropy_gpu(rho_T: Union[np.ndarray, cp.ndarray],
+def compute_structural_entropy_gpu(rho_T: NDArray,  # 同様に置換
                                  window: int,
                                  backend: Optional[GPUBackend] = None) -> np.ndarray:
     """構造エントロピー計算（GPU版）"""
