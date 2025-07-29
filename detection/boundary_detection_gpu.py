@@ -11,10 +11,11 @@ from cupyx.scipy.ndimage import gaussian_filter1d as gaussian_filter1d_gpu
 
 from ..types import ArrayType, NDArray
 from ..core.gpu_utils import GPUBackend
-from ..core.gpu_kernels import (
-    compute_local_fractal_dimension_kernel,
-    compute_gradient_kernel
-)
+# 存在しないカーネルのインポートを削除
+# from ..core.gpu_kernels import (
+#     compute_local_fractal_dimension_kernel,
+#     compute_gradient_kernel
+# )
 
 class BoundaryDetectorGPU(GPUBackend):
     """構造境界検出のGPU実装"""
@@ -45,32 +46,39 @@ class BoundaryDetectorGPU(GPUBackend):
         
         n_steps = len(structures['rho_T'])
         
-        # GPUメモリコンテキスト
-        with self.memory_manager.batch_context(n_steps):
-            # 各指標をGPUで計算
-            fractal_dims = self._compute_fractal_dimensions_gpu(
-                structures['Q_cumulative'], window_steps
-            )
-            
-            coherence = self._get_coherence_gpu(structures)
-            
-            coupling = self._compute_coupling_strength_gpu(
-                structures['Q_cumulative'], window_steps
-            )
-            
-            entropy = self._compute_structural_entropy_gpu(
-                structures['rho_T'], window_steps
-            )
-            
-            # 境界スコア計算
-            boundary_score = self._compute_boundary_score_gpu(
-                fractal_dims, coherence, coupling, entropy
-            )
-            
-            # ピーク検出
-            peaks, properties = self._detect_peaks_gpu(
-                boundary_score, n_steps
-            )
+        # GPUメモリコンテキスト（memory_managerがない場合はスキップ）
+        if hasattr(self, 'memory_manager'):
+            with self.memory_manager.batch_context(n_steps):
+                return self._detect_boundaries_impl(structures, window_steps, n_steps)
+        else:
+            return self._detect_boundaries_impl(structures, window_steps, n_steps)
+    
+    def _detect_boundaries_impl(self, structures, window_steps, n_steps):
+        """境界検出の実装部分"""
+        # 各指標をGPUで計算
+        fractal_dims = self._compute_fractal_dimensions_gpu(
+            structures['Q_cumulative'], window_steps
+        )
+        
+        coherence = self._get_coherence_gpu(structures)
+        
+        coupling = self._compute_coupling_strength_gpu(
+            structures['Q_cumulative'], window_steps
+        )
+        
+        entropy = self._compute_structural_entropy_gpu(
+            structures['rho_T'], window_steps
+        )
+        
+        # 境界スコア計算
+        boundary_score = self._compute_boundary_score_gpu(
+            fractal_dims, coherence, coupling, entropy
+        )
+        
+        # ピーク検出
+        peaks, properties = self._detect_peaks_gpu(
+            boundary_score, n_steps
+        )
         
         # CPU形式で返す
         return {
@@ -91,15 +99,40 @@ class BoundaryDetectorGPU(GPUBackend):
         n = len(q_cum_gpu)
         dims = cp.ones(n)
         
-        # CUDAカーネルでフラクタル次元計算
+        # CUDAカーネルの代わりに簡易実装
         threads = 256
         blocks = (n + threads - 1) // threads
         
-        compute_local_fractal_dimension_kernel[blocks, threads](
-            q_cum_gpu, dims, window, n
-        )
+        # カスタムカーネルの代わりにCuPyで実装
+        for i in range(window, n - window):
+            local_data = q_cum_gpu[i-window:i+window]
+            # 簡易的なフラクタル次元計算
+            if len(local_data) > 2:
+                dims[i] = self._compute_local_fractal_dim(local_data)
         
         return dims
+    
+    def _compute_local_fractal_dim(self, data):
+        """簡易的なフラクタル次元計算"""
+        if len(data) < 3:
+            return 1.0
+        
+        # ボックスカウント法の簡易版
+        eps_values = cp.logspace(-2, 0, 10)
+        counts = []
+        
+        for eps in eps_values:
+            count = len(cp.unique(cp.floor(data / eps)))
+            counts.append(count)
+        
+        if len(counts) > 2:
+            log_eps = cp.log(eps_values)
+            log_counts = cp.log(cp.array(counts))
+            # 線形回帰で傾きを計算
+            slope = -cp.polyfit(log_eps, log_counts, 1)[0]
+            return float(slope)
+        
+        return 1.0
     
     def _get_coherence_gpu(self, structures: Dict) -> cp.ndarray:
         """構造的コヒーレンスを取得"""
@@ -133,13 +166,24 @@ class BoundaryDetectorGPU(GPUBackend):
         n = len(rho_t_gpu)
         entropy = cp.zeros(n)
         
-        # GPU並列処理でシャノンエントロピー計算
-        threads = 256
-        blocks = (n + threads - 1) // threads
+        # シャノンエントロピー計算（簡易版）
+        for i in range(window, n - window):
+            local_data = rho_t_gpu[i-window:i+window]
+            entropy[i] = self._compute_shannon_entropy(local_data)
         
-        self._shannon_entropy_kernel[blocks, threads](
-            rho_t_gpu, entropy, window, n
-        )
+        return entropy
+    
+    def _compute_shannon_entropy(self, data):
+        """シャノンエントロピー計算"""
+        # ヒストグラムを作成
+        hist, _ = cp.histogram(data, bins=10)
+        hist = hist / cp.sum(hist)  # 正規化
+        
+        # エントロピー計算
+        entropy = 0.0
+        for p in hist:
+            if p > 0:
+                entropy -= p * cp.log(p)
         
         return entropy
     
@@ -192,32 +236,6 @@ class BoundaryDetectorGPU(GPUBackend):
         
         return peaks, properties
     
-    # カスタムCUDAカーネル
-    @cuda.jit
-    def _shannon_entropy_kernel(rho_t, entropy, window, n):
-        """シャノンエントロピー計算カーネル"""
-        idx = cuda.grid(1)
-        
-        if idx >= window and idx < n - window:
-            # ローカル範囲
-            start = idx - window
-            end = idx + window
-            
-            # 正規化して確率分布を作成
-            local_sum = 0.0
-            for i in range(start, end):
-                local_sum += rho_t[i]
-            
-            if local_sum > 0:
-                # シャノンエントロピー計算
-                h = 0.0
-                for i in range(start, end):
-                    if rho_t[i] > 0:
-                        p = rho_t[i] / local_sum
-                        h -= p * cuda.log(p + 1e-10)
-                
-                entropy[idx] = h
-    
     def detect_topological_breaks(self,
                                 structures: Dict[str, np.ndarray],
                                 window_steps: int) -> Dict[str, np.ndarray]:
@@ -231,32 +249,39 @@ class BoundaryDetectorGPU(GPUBackend):
         """
         print("\n💥 Detecting topological breaks on GPU...")
         
-        with self.memory_manager.batch_context(len(structures['rho_T'])):
-            # 1. ΛF異常
-            lambda_f_anomaly = self._detect_lambda_anomalies_gpu(
-                structures['lambda_F_mag'], window_steps
-            )
-            
-            # 2. ΛFF異常
-            lambda_ff_anomaly = self._detect_lambda_anomalies_gpu(
-                structures['lambda_FF_mag'], window_steps // 2
-            )
-            
-            # 3. テンション場ジャンプ
-            rho_t_breaks = self._detect_tension_jumps_gpu(
-                structures['rho_T'], window_steps
-            )
-            
-            # 4. トポロジカルチャージ異常
-            q_breaks = self._detect_phase_breaks_gpu(structures['Q_lambda'])
-            
-            # 5. 統合異常スコア
-            combined_anomaly = self._combine_anomalies_gpu(
-                lambda_f_anomaly,
-                lambda_ff_anomaly,
-                rho_t_breaks,
-                q_breaks
-            )
+        if hasattr(self, 'memory_manager'):
+            with self.memory_manager.batch_context(len(structures['rho_T'])):
+                return self._detect_breaks_impl(structures, window_steps)
+        else:
+            return self._detect_breaks_impl(structures, window_steps)
+    
+    def _detect_breaks_impl(self, structures, window_steps):
+        """破れ検出の実装部分"""
+        # 1. ΛF異常
+        lambda_f_anomaly = self._detect_lambda_anomalies_gpu(
+            structures['lambda_F_mag'], window_steps
+        )
+        
+        # 2. ΛFF異常
+        lambda_ff_anomaly = self._detect_lambda_anomalies_gpu(
+            structures['lambda_FF_mag'], window_steps // 2
+        )
+        
+        # 3. テンション場ジャンプ
+        rho_t_breaks = self._detect_tension_jumps_gpu(
+            structures['rho_T'], window_steps
+        )
+        
+        # 4. トポロジカルチャージ異常
+        q_breaks = self._detect_phase_breaks_gpu(structures['Q_lambda'])
+        
+        # 5. 統合異常スコア
+        combined_anomaly = self._combine_anomalies_gpu(
+            lambda_f_anomaly,
+            lambda_ff_anomaly,
+            rho_t_breaks,
+            q_breaks
+        )
         
         return {
             'lambda_F_anomaly': self.to_cpu(lambda_f_anomaly),
@@ -349,14 +374,14 @@ def compute_structural_boundaries_batch_gpu(
     else:
         detector = BoundaryDetectorGPU()
         detector.device = gpu_backend.device
-        detector.memory_manager = gpu_backend.memory_manager
+        if hasattr(gpu_backend, 'memory_manager'):
+            detector.memory_manager = gpu_backend.memory_manager
     
     results = []
     
     # バッチ処理で効率化
-    with detector.memory_manager.batch_context(sum(len(s['rho_T']) for s in structures_list)):
-        for structures, window_steps in zip(structures_list, window_steps_list):
-            result = detector.detect_structural_boundaries(structures, window_steps)
-            results.append(result)
+    for structures, window_steps in zip(structures_list, window_steps_list):
+        result = detector.detect_structural_boundaries(structures, window_steps)
+        results.append(result)
     
     return results
