@@ -24,7 +24,7 @@ except ImportError:
 
 # Local imports
 from ..types import ArrayType, NDArray
-from ..core import GPUBackend
+from ..core import GPUBackend, GPUMemoryManager
 from ..core import tension_field_kernel, topological_charge_kernel
 
 logger = logging.getLogger('lambda3_gpu.structures.lambda_structures')
