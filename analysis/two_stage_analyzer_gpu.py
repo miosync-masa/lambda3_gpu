@@ -4,10 +4,22 @@ Lambda³ GPU版2段階解析モジュール
 """
 
 import numpy as np
-import cupy as cp
 import time
-from typing import Dict, List, Tuple, Optional, Any
-from dataclasses import dataclass, field
+from typing import Dict, List, Tuple, Optional, Any, TYPE_CHECKING
+from dataclasses import dataclass
+
+# CuPyの条件付きインポート（ここが重要！）
+if TYPE_CHECKING:
+    import cupy as cp
+    NDArray = cp.ndarray
+else:
+    try:
+        import cupy as cp
+        NDArray = cp.ndarray
+    except ImportError:
+        cp = None
+        NDArray = np.ndarray 
+
 from concurrent.futures import ThreadPoolExecutor
 import warnings
 
