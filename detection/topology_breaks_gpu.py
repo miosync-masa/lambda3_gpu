@@ -271,8 +271,8 @@ class TopologyBreaksDetectorGPU(GPUBackend):
         return breaks
     
     def _detect_structural_singularities_gpu(self,
-                                           structures: Dict,
-                                           window: int) -> NDArray:
+                                       structures: Dict,
+                                       window: int) -> NDArray:
         """構造的特異点の検出（新機能）"""
         n_frames = len(structures['rho_T'])
         
@@ -293,6 +293,18 @@ class TopologyBreaksDetectorGPU(GPUBackend):
             lambda_f_gpu = self.to_gpu(structures['lambda_F'])
             divergence = self._compute_divergence_gpu(lambda_f_gpu)
             
+            # ここが重要！divergenceの長さを確認して調整
+            if len(divergence) != n_frames:
+                # divergenceが短い場合はパディング
+                if len(divergence) < n_frames:
+                    if self.is_gpu:
+                        divergence = cp.pad(divergence, (0, n_frames - len(divergence)), mode='edge')
+                    else:
+                        divergence = np.pad(divergence, (0, n_frames - len(divergence)), mode='edge')
+                else:
+                    # divergenceが長い場合は切り詰め
+                    divergence = divergence[:n_frames]
+            
             if self.is_gpu:
                 div_anomaly = cp.abs(divergence) > cp.std(divergence) * 3
                 singularities += div_anomaly.astype(cp.float32)
@@ -304,6 +316,26 @@ class TopologyBreaksDetectorGPU(GPUBackend):
         phase_anomaly = self._detect_phase_space_singularities_gpu(
             lf_mag_gpu, rho_t_gpu, window
         )
+        
+        # phase_anomalyの長さも確認
+        if len(phase_anomaly) != n_frames:
+            if len(phase_anomaly) < n_frames:
+                if self.is_gpu:
+                    phase_anomaly = cp.pad(phase_anomaly, (0, n_frames - len(phase_anomaly)), mode='edge')
+                else:
+                    phase_anomaly = np.pad(phase_anomaly, (0, n_frames - len(phase_anomaly)), mode='edge')
+            else:
+                phase_anomaly = phase_anomaly[:n_frames]
+        
+        # tension_extremaの長さも確認
+        if len(tension_extrema) != n_frames:
+            if len(tension_extrema) < n_frames:
+                if self.is_gpu:
+                    tension_extrema = cp.pad(tension_extrema, (0, n_frames - len(tension_extrema)), mode='edge')
+                else:
+                    tension_extrema = np.pad(tension_extrema, (0, n_frames - len(tension_extrema)), mode='edge')
+            else:
+                tension_extrema = tension_extrema[:n_frames]
         
         singularities += tension_extrema + phase_anomaly
         
@@ -417,27 +449,30 @@ class TopologyBreaksDetectorGPU(GPUBackend):
             return extrema
     
     def _compute_divergence_gpu(self, vector_field: NDArray) -> NDArray:
-        """ベクトル場の発散を計算"""
+        """ベクトル場の発散を計算（修正版）"""
         if len(vector_field.shape) != 2:
             if self.is_gpu:
                 return cp.zeros(len(vector_field))
             else:
                 return np.zeros(len(vector_field))
         
+        n_frames = len(vector_field)
+        
         # 各成分の偏微分
         if self.is_gpu:
-            div = cp.zeros(len(vector_field) - 1)
+            div = cp.zeros(n_frames)  # 元のサイズで初期化
             for i in range(vector_field.shape[1]):
+                # gradientは同じ長さを返すはず
                 component_grad = cp.gradient(vector_field[:, i])
-                div += component_grad[:-1]
-            return cp.pad(div, (0, 1), mode='edge')
+                div += component_grad
         else:
-            div = np.zeros(len(vector_field) - 1)
+            div = np.zeros(n_frames)  # 元のサイズで初期化
             for i in range(vector_field.shape[1]):
                 component_grad = np.gradient(vector_field[:, i])
-                div += component_grad[:-1]
-            return np.pad(div, (0, 1), mode='edge')
-    
+                div += component_grad
+        
+        return div
+        
     def _detect_phase_space_singularities_gpu(self,
                                             lf_mag: NDArray,
                                             rho_t: NDArray,
