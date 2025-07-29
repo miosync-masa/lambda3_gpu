@@ -22,9 +22,10 @@ except ImportError:
     cp = None
 
 # Local imports
+from ..types import ArrayType, NDArray
 from ..core import GPUBackend, GPUMemoryManager, GPUTimer, handle_gpu_errors
 from ..core import residue_com_kernel, get_optimal_block_size
-from ..types import ArrayType, NDArray
+
 
 logger = logging.getLogger('lambda3_gpu.residue.structures')
 
