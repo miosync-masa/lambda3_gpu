@@ -19,11 +19,31 @@ except ImportError:
 
 from ..types import ArrayType, NDArray
 from ..core.gpu_utils import GPUBackend
-from ..core.gpu_kernels import (
-    anomaly_detection_kernel
-)
+from ..core.gpu_kernels import anomaly_detection_kernel
 
 warnings.filterwarnings('ignore')
+
+# ===============================
+# CUDAカーネル定義（クラス外）
+# ===============================
+
+@cuda.jit
+def apply_boundary_emphasis_kernel(local_score, boundary_locs, n_frames, window, sigma):
+    """境界周辺を強調するカーネル"""
+    idx = cuda.grid(1)
+    if idx < boundary_locs.shape[0]:
+        loc = boundary_locs[idx]
+        
+        # ガウシアンウィンドウを適用
+        for i in range(max(0, loc - window), 
+                      min(n_frames, loc + window)):
+            dist = abs(i - loc)
+            weight = math.exp(-0.5 * (dist / sigma) ** 2)
+            cuda.atomic.add(local_score, i, weight)
+
+# ===============================
+# 異常検出GPUクラス
+# ===============================
 
 class AnomalyDetectorGPU(GPUBackend):
     """異常検出のGPU実装"""
@@ -156,14 +176,29 @@ class AnomalyDetectorGPU(GPUBackend):
             # 境界位置をGPUに転送
             boundary_locs = self.to_gpu(boundaries['boundary_locations'])
             
-            # 各境界周辺にガウシアンウィンドウを適用（GPU並列）
-            threads = 256
-            blocks = (len(boundary_locs) + threads - 1) // threads
-            
-            # カスタムカーネルで境界周辺を強調
-            self._apply_boundary_emphasis_kernel[blocks, threads](
-                local_score, boundary_locs, n_frames, 50, 20  # window=50, sigma=20
-            )
+            if self.is_gpu and len(boundary_locs) > 0:
+                # 各境界周辺にガウシアンウィンドウを適用（GPU並列）
+                threads = 256
+                blocks = (len(boundary_locs) + threads - 1) // threads
+                
+                # グローバル関数として定義したカーネルを呼び出す
+                apply_boundary_emphasis_kernel[blocks, threads](
+                    local_score, boundary_locs, n_frames, 50, 20  # window=50, sigma=20
+                )
+                
+                # 同期を忘れずに！
+                cp.cuda.Stream.null.synchronize()
+            else:
+                # CPU版フォールバック
+                for loc in boundary_locs:
+                    loc = int(loc)
+                    window = 50
+                    sigma = 20
+                    for i in range(max(0, loc - window), 
+                                 min(n_frames, loc + window)):
+                        dist = abs(i - loc)
+                        weight = np.exp(-0.5 * (dist / sigma) ** 2)
+                        local_score[i] += weight
         
         # boundary_scoreを加算
         if 'boundary_score' in boundaries:
@@ -207,62 +242,55 @@ class AnomalyDetectorGPU(GPUBackend):
                 'rg_based': 0.3
             }
             
-            combined = cp.zeros_like(list(extended_scores.values())[0]) if self.is_gpu else np.zeros_like(list(extended_scores.values())[0])
-            for key, score in extended_scores.items():
-                if key in weights:
-                    combined += weights[key] * score
-                    
-            extended_scores['extended_combined'] = combined
+            combined_extended = cp.zeros(len(structures['rho_T'])) if self.is_gpu else np.zeros(len(structures['rho_T']))
             
+            for key, score in extended_scores.items():
+                if key in weights and len(score) > 0:
+                    weight = weights[key]
+                    combined_extended[:len(score)] += weight * score
+            
+            extended_scores['combined_extended'] = combined_extended
+        
         return extended_scores
     
     def _normalize_scores_gpu(self, scores: NDArray) -> NDArray:
-        """
-        ロバストなスコア正規化（MAD使用、GPU版）
-        """
-        median = cp.median(scores) if self.is_gpu else np.median(scores)
-        mad = cp.median(cp.abs(scores - median)) if self.is_gpu else np.median(np.abs(scores - median))
-        
-        if mad > 1e-10:
-            # MAD to standard deviation
-            normalized = 0.6745 * (scores - median) / mad
+        """スコアの正規化"""
+        if self.is_gpu:
+            mean_score = cp.mean(scores)
+            std_score = cp.std(scores)
         else:
-            # Fallback to IQR
+            mean_score = np.mean(scores)
+            std_score = np.std(scores)
+        
+        if std_score > 1e-10:
+            normalized = (scores - mean_score) / std_score
+            # 外れ値のクリッピング
             if self.is_gpu:
-                q75, q25 = cp.percentile(scores, [75, 25])
+                normalized = cp.clip(normalized, -5, 5)
             else:
-                q75, q25 = np.percentile(scores, [75, 25])
-            iqr = q75 - q25
-            if iqr > 1e-10:
-                normalized = (scores - median) / (1.5 * iqr)
-            else:
-                normalized = scores - median
-                
+                normalized = np.clip(normalized, -5, 5)
+        else:
+            normalized = scores - mean_score
+        
         return normalized
     
     def _compute_final_combined_gpu(self,
-                                  global_norm: NDArray,
-                                  local_norm: NDArray,
-                                  extended_scores: Dict) -> NDArray:
+                                  global_score: NDArray,
+                                  local_score: NDArray,
+                                  extended_scores: Dict[str, NDArray]) -> NDArray:
         """最終統合スコア計算"""
-        # extended_combinedの正規化
-        if 'extended_combined' in extended_scores:
-            extended_combined_norm = self._normalize_scores_gpu(
-                extended_scores['extended_combined']
-            )
-        else:
-            extended_combined_norm = cp.zeros_like(global_norm) if self.is_gpu else np.zeros_like(global_norm)
-            
-        # 最終統合
-        final_combined = (
-            0.5 * global_norm +
-            0.3 * local_norm +
-            0.2 * extended_combined_norm
-        )
+        # 基本スコア
+        combined = 0.4 * global_score + 0.3 * local_score
         
-        return final_combined
+        # 拡張スコアの追加
+        if 'combined_extended' in extended_scores:
+            extended = extended_scores['combined_extended']
+            combined[:len(extended)] += 0.3 * extended
+        
+        return combined
     
-    # 拡張検出メソッド（簡略版）
+    # ===== 各種検出メソッド =====
+    
     def _detect_periodic_gpu(self, structures: Dict) -> NDArray:
         """周期的遷移検出（CuPy FFT使用）"""
         rho_t_gpu = self.to_gpu(structures['rho_T'])
@@ -273,16 +301,32 @@ class AnomalyDetectorGPU(GPUBackend):
             yf = cp.fft.rfft(rho_t_centered)
             power = cp.abs(yf)**2
             
-            # 簡略化：パワーの変動を異常スコアとして使用
+            # 周期成分の強さをスコア化（簡略版）
+            # 高周波成分を除去
+            cutoff = len(power) // 4
+            power_low = power[:cutoff]
+            
+            # パワーの変動を異常スコアとして使用
             scores = cp.zeros_like(rho_t_gpu)
+            # 簡単のため、パワーの移動平均を使用
+            window = 50
+            for i in range(window, len(scores) - window):
+                local_power = cp.mean(power_low[max(0, i//10 - 5):i//10 + 5])
+                scores[i] = local_power / (cp.mean(power_low) + 1e-10)
         else:
             # NumPy版
             rho_t_centered = rho_t_gpu - np.mean(rho_t_gpu)
             yf = np.fft.rfft(rho_t_centered)
             power = np.abs(yf)**2
+            
+            cutoff = len(power) // 4
+            power_low = power[:cutoff]
+            
             scores = np.zeros_like(rho_t_gpu)
-        
-        # 実際の実装ではより詳細な周期検出を行う
+            window = 50
+            for i in range(window, len(scores) - window):
+                local_power = np.mean(power_low[max(0, i//10 - 5):i//10 + 5])
+                scores[i] = local_power / (np.mean(power_low) + 1e-10)
         
         return scores
     
@@ -295,17 +339,18 @@ class AnomalyDetectorGPU(GPUBackend):
         gradual_scores = cp.zeros_like(rho_t_gpu) if self.is_gpu else np.zeros_like(rho_t_gpu)
         
         for window in window_sizes:
-            # 簡略化：移動平均で代用
-            smoothed = self._moving_average_gpu(rho_t_gpu, window)
-            gradient = cp.gradient(smoothed) if self.is_gpu else np.gradient(smoothed)
-            gradual_scores += (cp.abs(gradient) if self.is_gpu else np.abs(gradient)) / len(window_sizes)
+            if window < len(rho_t_gpu):
+                # 簡略化：移動平均で代用
+                smoothed = self._moving_average_gpu(rho_t_gpu, min(window, len(rho_t_gpu)))
+                gradient = cp.gradient(smoothed) if self.is_gpu else np.gradient(smoothed)
+                gradual_scores += (cp.abs(gradient) if self.is_gpu else np.abs(gradient)) / len(window_sizes)
             
         return self._normalize_scores_gpu(gradual_scores)
     
     def _detect_drift_gpu(self, structures: Dict) -> NDArray:
         """構造ドリフト検出"""
         rho_t_gpu = self.to_gpu(structures['rho_T'])
-        reference_window = 1000
+        reference_window = min(1000, len(rho_t_gpu) // 4)
         
         # 参照値
         ref_value = cp.mean(rho_t_gpu[:reference_window]) if self.is_gpu else np.mean(rho_t_gpu[:reference_window])
@@ -347,34 +392,51 @@ class AnomalyDetectorGPU(GPUBackend):
         
         return local_std
     
-    # ユーティリティメソッド
+    # ===== ユーティリティメソッド =====
+    
     def _moving_average_gpu(self, data: NDArray, window: int) -> NDArray:
         """GPU上での移動平均"""
+        if window >= len(data):
+            window = len(data) - 1
+            
         if self.is_gpu:
-            return cp.convolve(data, cp.ones(window)/window, mode='same')
+            # CuPyのconvolveを使用
+            kernel = cp.ones(window) / window
+            # パディングして同じサイズを維持
+            padded = cp.pad(data, (window//2, window//2), mode='edge')
+            result = cp.convolve(padded, kernel, mode='valid')
+            # サイズ調整
+            if len(result) > len(data):
+                result = result[:len(data)]
+            elif len(result) < len(data):
+                result = cp.pad(result, (0, len(data) - len(result)), mode='edge')
+            return result
         else:
-            return np.convolve(data, np.ones(window)/window, mode='same')
+            kernel = np.ones(window) / window
+            padded = np.pad(data, (window//2, window//2), mode='edge')
+            result = np.convolve(padded, kernel, mode='valid')
+            if len(result) > len(data):
+                result = result[:len(data)]
+            elif len(result) < len(data):
+                result = np.pad(result, (0, len(data) - len(result)), mode='edge')
+            return result
     
     def _local_std_gpu(self, data: NDArray, window: int) -> NDArray:
         """局所標準偏差"""
-        # 実装は簡略化
+        n = len(data)
         if self.is_gpu:
-            return cp.zeros_like(data)
+            std_array = cp.zeros_like(data)
         else:
-            return np.zeros_like(data)
-    
-    # カスタムCUDAカーネル
-    @cuda.jit
-    def _apply_boundary_emphasis_kernel(local_score, boundary_locs, n_frames, 
-                                      window, sigma):
-        """境界周辺を強調するカーネル"""
-        idx = cuda.grid(1)
-        if idx < boundary_locs.shape[0]:
-            loc = boundary_locs[idx]
+            std_array = np.zeros_like(data)
+        
+        for i in range(n):
+            start = max(0, i - window // 2)
+            end = min(n, i + window // 2 + 1)
             
-            # ガウシアンウィンドウを適用
-            for i in range(max(0, loc - window), 
-                          min(n_frames, loc + window)):
-                dist = abs(i - loc)
-                weight = math.exp(-0.5 * (dist / sigma) ** 2)
-                cuda.atomic.add(local_score, i, weight)
+            if end - start > 1:
+                if self.is_gpu:
+                    std_array[i] = cp.std(data[start:end])
+                else:
+                    std_array[i] = np.std(data[start:end])
+        
+        return std_array
