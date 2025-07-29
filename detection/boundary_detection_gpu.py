@@ -11,10 +11,10 @@ from cupyx.scipy.ndimage import gaussian_filter1d as gaussian_filter1d_gpu
 
 from ..types import ArrayType, NDArray
 from ..core.gpu_utils import GPUBackend
-# from ..core.gpu_kernels import (
-#     compute_local_fractal_dimension_kernel,
-#     compute_gradient_kernel
-# )
+from ..core.gpu_kernels import (
+    compute_local_fractal_dimension_kernel,
+    compute_gradient_kernel
+)
 
 class BoundaryDetectorGPU(GPUBackend):
     """構造境界検出のGPU実装"""
@@ -88,16 +88,9 @@ class BoundaryDetectorGPU(GPUBackend):
                                       window: int) -> NDArray:
         """局所フラクタル次元の計算（GPU版）"""
         q_cum_gpu = self.to_gpu(q_cumulative)
-        n = len(q_cum_gpu)
-        dims = cp.ones(n)
         
         # CUDAカーネルでフラクタル次元計算
-        threads = 256
-        blocks = (n + threads - 1) // threads
-        
-        # compute_local_fractal_dimension_kernel[blocks, threads](
-        #     q_cum_gpu, dims, window, n
-        # )
+        dims = compute_local_fractal_dimension_kernel(q_cum_gpu, window)
         
         return dims
     
@@ -154,11 +147,11 @@ class BoundaryDetectorGPU(GPUBackend):
         if len(coherence) > 0:
             min_len = min(min_len, len(coherence))
         
-        # 各成分の計算
-        fractal_gradient = cp.abs(cp.gradient(fractal_dims[:min_len]))
+        # 各成分の計算（compute_gradient_kernelを使用）
+        fractal_gradient = cp.abs(compute_gradient_kernel(fractal_dims[:min_len]))
         coherence_drop = 1 - coherence[:min_len] if len(coherence) > 0 else cp.zeros(min_len)
         coupling_weakness = 1 - coupling[:min_len]
-        entropy_gradient = cp.abs(cp.gradient(entropy[:min_len]))
+        entropy_gradient = cp.abs(compute_gradient_kernel(entropy[:min_len]))
         
         # 重み付き統合
         boundary_score = (
@@ -192,7 +185,7 @@ class BoundaryDetectorGPU(GPUBackend):
         
         return peaks, properties
     
-    # カスタムCUDAカーネル
+    # カスタムCUDAカーネル（@cuda.jitは残す）
     @cuda.jit
     def _shannon_entropy_kernel(rho_t, entropy, window, n):
         """シャノンエントロピー計算カーネル"""
