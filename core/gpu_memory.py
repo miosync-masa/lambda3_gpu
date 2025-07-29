@@ -35,6 +35,8 @@ if TYPE_CHECKING:
 else:
     # 実行時の定義
     from ..types import ArrayType, NDArray
+
+logger = logging.getLogger('lambda3_gpu.core.memory')
     
 # ===============================
 # Memory Info Classes
