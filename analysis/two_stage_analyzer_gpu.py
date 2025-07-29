@@ -6,7 +6,7 @@ Lambda³ GPU版2段階解析モジュール
 import numpy as np
 import time
 from typing import Dict, List, Tuple, Optional, Any, TYPE_CHECKING
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 # CuPyの条件付きインポート
 try:
