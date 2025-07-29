@@ -11,11 +11,6 @@ from cupyx.scipy.ndimage import gaussian_filter1d as gaussian_filter1d_gpu
 
 from ..types import ArrayType, NDArray
 from ..core.gpu_utils import GPUBackend
-# 存在しないカーネルのインポートを削除
-# from ..core.gpu_kernels import (
-#     compute_local_fractal_dimension_kernel,
-#     compute_gradient_kernel
-# )
 
 class BoundaryDetectorGPU(GPUBackend):
     """構造境界検出のGPU実装"""
@@ -93,11 +88,11 @@ class BoundaryDetectorGPU(GPUBackend):
     
     def _compute_fractal_dimensions_gpu(self,
                                       q_cumulative: np.ndarray,
-                                      window: int) -> cp.ndarray:
+                                      window: int) -> NDArray:
         """局所フラクタル次元の計算（GPU版）"""
         q_cum_gpu = self.to_gpu(q_cumulative)
         n = len(q_cum_gpu)
-        dims = cp.ones(n)
+        dims = cp.ones(n) if self.is_gpu else np.ones(n)
         
         # CUDAカーネルの代わりに簡易実装
         threads = 256
@@ -118,41 +113,44 @@ class BoundaryDetectorGPU(GPUBackend):
             return 1.0
         
         # ボックスカウント法の簡易版
-        eps_values = cp.logspace(-2, 0, 10)
+        xp = cp if self.is_gpu else np
+        eps_values = xp.logspace(-2, 0, 10)
         counts = []
         
         for eps in eps_values:
-            count = len(cp.unique(cp.floor(data / eps)))
+            count = len(xp.unique(xp.floor(data / eps)))
             counts.append(count)
         
         if len(counts) > 2:
-            log_eps = cp.log(eps_values)
-            log_counts = cp.log(cp.array(counts))
+            log_eps = xp.log(eps_values)
+            log_counts = xp.log(xp.array(counts))
             # 線形回帰で傾きを計算
-            slope = -cp.polyfit(log_eps, log_counts, 1)[0]
+            slope = -xp.polyfit(log_eps, log_counts, 1)[0]
             return float(slope)
         
         return 1.0
     
-    def _get_coherence_gpu(self, structures: Dict) -> cp.ndarray:
+    def _get_coherence_gpu(self, structures: Dict) -> NDArray:
         """構造的コヒーレンスを取得"""
         if 'structural_coherence' in structures:
             return self.to_gpu(structures['structural_coherence'])
         else:
             # なければゼロ配列
-            return cp.zeros(len(structures['rho_T']))
+            xp = cp if self.is_gpu else np
+            return xp.zeros(len(structures['rho_T']))
     
     def _compute_coupling_strength_gpu(self,
                                      q_cumulative: np.ndarray,
-                                     window: int) -> cp.ndarray:
+                                     window: int) -> NDArray:
         """結合強度の計算（GPU版）"""
         q_cum_gpu = self.to_gpu(q_cumulative)
-        coupling = cp.ones_like(q_cum_gpu)
+        xp = cp if self.is_gpu else np
+        coupling = xp.ones_like(q_cum_gpu)
         
         # 並列で局所分散を計算
         for i in range(window, len(q_cum_gpu) - window):
             local_q = q_cum_gpu[i-window:i+window]
-            var = cp.var(local_q)
+            var = xp.var(local_q)
             if var > 1e-10:
                 coupling[i] = 1.0 / (1.0 + var)
         
@@ -160,11 +158,12 @@ class BoundaryDetectorGPU(GPUBackend):
     
     def _compute_structural_entropy_gpu(self,
                                       rho_t: np.ndarray,
-                                      window: int) -> cp.ndarray:
+                                      window: int) -> NDArray:
         """構造エントロピーの計算（GPU版）"""
         rho_t_gpu = self.to_gpu(rho_t)
         n = len(rho_t_gpu)
-        entropy = cp.zeros(n)
+        xp = cp if self.is_gpu else np
+        entropy = xp.zeros(n)
         
         # シャノンエントロピー計算（簡易版）
         for i in range(window, n - window):
@@ -176,33 +175,36 @@ class BoundaryDetectorGPU(GPUBackend):
     def _compute_shannon_entropy(self, data):
         """シャノンエントロピー計算"""
         # ヒストグラムを作成
-        hist, _ = cp.histogram(data, bins=10)
-        hist = hist / cp.sum(hist)  # 正規化
+        xp = cp if self.is_gpu else np
+        hist, _ = xp.histogram(data, bins=10)
+        hist = hist / xp.sum(hist)  # 正規化
         
         # エントロピー計算
         entropy = 0.0
         for p in hist:
             if p > 0:
-                entropy -= p * cp.log(p)
+                entropy -= p * xp.log(p)
         
         return entropy
     
     def _compute_boundary_score_gpu(self,
-                                  fractal_dims: cp.ndarray,
-                                  coherence: cp.ndarray,
-                                  coupling: cp.ndarray,
-                                  entropy: cp.ndarray) -> cp.ndarray:
+                                  fractal_dims: NDArray,
+                                  coherence: NDArray,
+                                  coupling: NDArray,
+                                  entropy: NDArray) -> NDArray:
         """統合境界スコアの計算"""
+        xp = cp if self.is_gpu else np
+        
         # 長さを揃える
         min_len = min(len(fractal_dims), len(coupling), len(entropy))
         if len(coherence) > 0:
             min_len = min(min_len, len(coherence))
         
         # 各成分の計算
-        fractal_gradient = cp.abs(cp.gradient(fractal_dims[:min_len]))
-        coherence_drop = 1 - coherence[:min_len] if len(coherence) > 0 else cp.zeros(min_len)
+        fractal_gradient = xp.abs(xp.gradient(fractal_dims[:min_len]))
+        coherence_drop = 1 - coherence[:min_len] if len(coherence) > 0 else xp.zeros(min_len)
         coupling_weakness = 1 - coupling[:min_len]
-        entropy_gradient = cp.abs(cp.gradient(entropy[:min_len]))
+        entropy_gradient = xp.abs(xp.gradient(entropy[:min_len]))
         
         # 重み付き統合
         boundary_score = (
@@ -215,21 +217,31 @@ class BoundaryDetectorGPU(GPUBackend):
         return boundary_score
     
     def _detect_peaks_gpu(self,
-                        boundary_score: cp.ndarray,
-                        n_steps: int) -> Tuple[cp.ndarray, Dict]:
+                        boundary_score: NDArray,
+                        n_steps: int) -> Tuple[NDArray, Dict]:
         """ピーク検出（GPU版）"""
+        xp = cp if self.is_gpu else np
+        
         if len(boundary_score) > 10:
             min_distance_steps = max(50, n_steps // 30)
-            height_threshold = cp.mean(boundary_score) + cp.std(boundary_score)
+            height_threshold = xp.mean(boundary_score) + xp.std(boundary_score)
             
             # CuPyのfind_peaks使用
-            peaks, properties = find_peaks_gpu(
-                boundary_score,
-                height=height_threshold,
-                distance=min_distance_steps
-            )
+            if self.is_gpu:
+                peaks, properties = find_peaks_gpu(
+                    boundary_score,
+                    height=height_threshold,
+                    distance=min_distance_steps
+                )
+            else:
+                from scipy.signal import find_peaks
+                peaks, properties = find_peaks(
+                    boundary_score,
+                    height=height_threshold,
+                    distance=min_distance_steps
+                )
         else:
-            peaks = cp.array([])
+            peaks = xp.array([])
             properties = {}
         
         print(f"   Found {len(peaks)} structural boundaries")
@@ -293,7 +305,7 @@ class BoundaryDetectorGPU(GPUBackend):
     
     def _detect_lambda_anomalies_gpu(self,
                                    series: np.ndarray,
-                                   window: int) -> cp.ndarray:
+                                   window: int) -> NDArray:
         """Lambda系列の異常検出"""
         from .anomaly_detection_gpu import AnomalyDetectorGPU
         
@@ -303,40 +315,48 @@ class BoundaryDetectorGPU(GPUBackend):
     
     def _detect_tension_jumps_gpu(self,
                                  rho_t: np.ndarray,
-                                 window_steps: int) -> cp.ndarray:
+                                 window_steps: int) -> NDArray:
         """テンション場のジャンプ検出"""
         rho_t_gpu = self.to_gpu(rho_t)
         
         # ガウシアンフィルタでスムージング
         sigma = window_steps / 3
-        rho_t_smooth = gaussian_filter1d_gpu(rho_t_gpu, sigma=sigma)
+        if self.is_gpu:
+            rho_t_smooth = gaussian_filter1d_gpu(rho_t_gpu, sigma=sigma)
+        else:
+            from scipy.ndimage import gaussian_filter1d
+            rho_t_smooth = gaussian_filter1d(rho_t_gpu, sigma=sigma)
         
         # ジャンプ = 元データとスムージングの差
-        jumps = cp.abs(rho_t_gpu - rho_t_smooth)
+        xp = cp if self.is_gpu else np
+        jumps = xp.abs(rho_t_gpu - rho_t_smooth)
         
         return jumps
     
-    def _detect_phase_breaks_gpu(self, phase_series: np.ndarray) -> cp.ndarray:
+    def _detect_phase_breaks_gpu(self, phase_series: np.ndarray) -> NDArray:
         """位相破れの検出"""
         phase_gpu = self.to_gpu(phase_series)
-        breaks = cp.zeros_like(phase_gpu)
+        xp = cp if self.is_gpu else np
+        breaks = xp.zeros_like(phase_gpu)
         
         # 位相差を計算
-        phase_diff = cp.abs(cp.diff(phase_gpu))
+        phase_diff = xp.abs(xp.diff(phase_gpu))
         
         # 急激な位相ジャンプを検出（0.1 * 2π radians）
-        breaks[1:] = cp.where(phase_diff > 0.1, phase_diff, 0)
+        breaks[1:] = xp.where(phase_diff > 0.1, phase_diff, 0)
         
         return breaks
     
-    def _combine_anomalies_gpu(self, *anomalies) -> cp.ndarray:
+    def _combine_anomalies_gpu(self, *anomalies) -> NDArray:
         """異常スコアの統合"""
+        xp = cp if self.is_gpu else np
+        
         # 全ての長さを揃える
         min_len = min(len(a) for a in anomalies)
         
         # 重み付き統合
         weights = [1.0, 0.8, 0.6, 1.2]  # ΛF, ΛFF, ρT, Q
-        combined = cp.zeros(min_len)
+        combined = xp.zeros(min_len)
         
         for anomaly, weight in zip(anomalies, weights):
             combined += weight * anomaly[:min_len]
