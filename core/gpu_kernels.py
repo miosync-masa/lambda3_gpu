@@ -10,7 +10,7 @@ by 環ちゃん
 
 import numpy as np
 import logging
-from typing import Optional, Tuple, Union
+from typing import Dict, List, Tuple, Optional, Union, Any, Callable, TYPE_CHECKING
 
 # GPU imports
 try:
@@ -21,6 +21,11 @@ except ImportError:
     HAS_GPU = False
     cp = None
     cuda = None
+
+if TYPE_CHECKING and cp is not None:
+    NDArray = cp.ndarray
+else:
+    NDArray = Union[np.ndarray, Any] 
 
 logger = logging.getLogger('lambda3_gpu.core.kernels')
 
