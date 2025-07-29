@@ -163,7 +163,30 @@ class GPUBackend:
             import gc
             gc.collect()
             logger.debug("CPU memory garbage collected")
-
+    
+    def clear_cache(self):
+        """キャッシュクリア（clear_memoryのエイリアス）"""
+        self.clear_memory()
+    
+    def zeros(self, shape, dtype=np.float32):
+        """ゼロ配列を作成"""
+        return self.xp.zeros(shape, dtype=dtype)
+    
+    def ones(self, shape, dtype=np.float32):
+        """1配列を作成"""
+        return self.xp.ones(shape, dtype=dtype)
+    
+    def empty(self, shape, dtype=np.float32):
+        """空配列を作成"""
+        return self.xp.empty(shape, dtype=dtype)
+    
+    def zeros_like(self, array, dtype=None):
+        """同じ形状のゼロ配列"""
+        return self.xp.zeros_like(array, dtype=dtype)
+    
+    def ones_like(self, array, dtype=None):
+        """同じ形状の1配列"""
+        return self.xp.ones_like(array, dtype=dtype)　
 
 # ===============================
 # Utility Functions
