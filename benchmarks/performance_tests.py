@@ -9,6 +9,11 @@ import psutil
 import GPUtil
 from typing import Dict, List, Tuple, Optional, Any, TYPE_CHECKING
 from dataclasses import dataclass
+import matplotlib.pyplot as plt
+import pandas as pd
+from contextlib import contextmanager
+import json
+import os
 
 # CuPyの条件付きインポート
 try:
@@ -18,16 +23,9 @@ except ImportError:
     cp = None
     HAS_CUPY = False
 
-import matplotlib.pyplot as plt
-import pandas as pd
-from contextlib import contextmanager
-import json
-import os
-
 from ..analysis.md_lambda3_detector_gpu import MDLambda3DetectorGPU, MDConfig
 from ..analysis.two_stage_analyzer_gpu import TwoStageAnalyzerGPU, ResidueAnalysisConfig
 from ..types import ArrayType, NDArray
-
 
 @dataclass
 class BenchmarkResult:
