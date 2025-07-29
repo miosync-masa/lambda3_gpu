@@ -24,21 +24,6 @@ except ImportError:
     cp = None
     cuda = None
 
-# 型ヒント用の定義（修正版）
-if TYPE_CHECKING:
-    # 型チェック時のみ（mypyなど）
-    try:
-        import cupy as cp
-        NDArray = Union[np.ndarray, cp.ndarray]
-    except ImportError:
-        NDArray = Union[np.ndarray, Any]
-else:
-    # 実行時
-    if HAS_GPU:
-        NDArray = Union[np.ndarray, cp.ndarray]
-    else:
-        NDArray = Union[np.ndarray, Any]
-
 logger = logging.getLogger('lambda3_gpu.core.utils')
 
 # ===============================
