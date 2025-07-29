@@ -108,8 +108,10 @@ class MDLambda3DetectorGPU(GPUBackend):
         device : str, default='auto'
             'auto', 'gpu', 'cpu'のいずれか
         """
-        force_cpu = (device == 'cpu')
-        super().__init__(force_cpu)
+        if device == 'cpu':
+            super().__init__(device='cpu', force_cpu=True)
+        else:
+            super().__init__(device=device, force_cpu=False)
         
         self.config = config or MDConfig()
         self.verbose = True
