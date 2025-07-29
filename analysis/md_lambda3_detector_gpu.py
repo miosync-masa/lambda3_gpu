@@ -112,7 +112,12 @@ class MDLambda3DetectorGPU(GPUBackend):
             super().__init__(device='cpu', force_cpu=True)
         else:
             super().__init__(device=device, force_cpu=False)
+
+        force_cpu_flag = not self.is_gpu  # これを追加！
         
+        # そして114-121行目を修正
+        self.structure_computer = LambdaStructuresGPU(force_cpu_flag)
+        self.feature_extractor = MDFeaturesGPU(force_cpu_flag)
         self.config = config or MDConfig()
         self.verbose = True
         
@@ -248,7 +253,7 @@ class MDLambda3DetectorGPU(GPUBackend):
             # GPU情報を収集
             gpu_info = {
                 'device_name': str(self.device),
-                'memory_used': self.memory_manager.get_used_memory() / 1e9,
+                'memory_used': self.memory_manager.get_memory_info().used / 1e9,
                 'computation_mode': 'single_batch'
             }
         
