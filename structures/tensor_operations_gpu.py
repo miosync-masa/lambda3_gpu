@@ -28,7 +28,7 @@ except ImportError:
 
 # Local imports
 from ..types import ArrayType, NDArray
-from ..core import GPUBackend, GPUMemoryManager, profile_gpu
+from ..core import GPUBackend, GPUMemoryManager
 
 logger = logging.getLogger('lambda3_gpu.structures.tensor_operations')
 
