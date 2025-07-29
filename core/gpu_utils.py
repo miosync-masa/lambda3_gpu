@@ -9,7 +9,7 @@ by 環ちゃん
 import numpy as np
 import logging
 import time
-from typing import Union, Optional, Tuple, Any, List
+from typing import Dict, List, Tuple, Optional, Union, Any, Callable, TYPE_CHECKING
 from contextlib import contextmanager
 from functools import wraps
 import warnings
@@ -25,6 +25,12 @@ except ImportError:
     GPU_AVAILABLE = False
     cp = None
     cuda = None
+
+# 型ヒント用の定義
+if TYPE_CHECKING and cp is not None:
+    NDArray = cp.ndarray
+else:
+    NDArray = Union[np.ndarray, Any]  # Any for when cp is None
 
 logger = logging.getLogger('lambda3_gpu.core.utils')
 
