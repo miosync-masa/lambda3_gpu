@@ -7,7 +7,6 @@ CUDA Kernels for Lambda³ GPU
 
 by 環ちゃん
 """
-
 import numpy as np
 import logging
 from typing import Dict, List, Tuple, Optional, Union, Any, Callable, TYPE_CHECKING
@@ -22,7 +21,6 @@ except ImportError:
     HAS_GPU = False
     cp = None
     cuda = None
-
 
 logger = logging.getLogger('lambda3_gpu.core.kernels')
 
