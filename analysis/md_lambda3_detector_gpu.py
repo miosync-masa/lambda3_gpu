@@ -1,6 +1,6 @@
 """
-Lambda³ GPU版メイン検出器
-完全GPU化されたMD軌道解析パイプライン
+Lambda³ GPU版MD軌道解析メインモジュール
+全体的な解析フローを管理する中心的なクラス
 """
 
 import numpy as np
@@ -9,11 +9,15 @@ import warnings
 from typing import Dict, List, Tuple, Optional, Any, TYPE_CHECKING
 from dataclasses import dataclass
 
-# CuPyの条件付きインポート（ここが重要！）
-    except ImportError:
-        cp = None
-        NDArray = np.ndarray 
+# CuPyの条件付きインポート
+try:
+    import cupy as cp
+    HAS_CUPY = True
+except ImportError:
+    cp = None
+    HAS_CUPY = False
 
+from ..types import ArrayType, NDArray
 from ..core.gpu_utils import GPUBackend
 from ..structures.lambda_structures_gpu import LambdaStructuresGPU
 from ..structures.md_features_gpu import MDFeaturesGPU
@@ -22,7 +26,6 @@ from ..detection.boundary_detection_gpu import BoundaryDetectorGPU
 from ..detection.topology_breaks_gpu import TopologyBreaksDetectorGPU
 from ..detection.extended_detection_gpu import ExtendedDetectorGPU
 from ..detection.phase_space_gpu import PhaseSpaceAnalyzerGPU
-from ..types import ArrayType, NDArray
 
 warnings.filterwarnings('ignore')
 
