@@ -2,7 +2,6 @@
 Lambda³ GPU版構造境界検出モジュール
 構造境界（ΔΛC）検出のGPU最適化実装
 """
-
 import numpy as np
 import cupy as cp
 from typing import Dict, List, Tuple, Any
@@ -10,13 +9,12 @@ from numba import cuda
 from cupyx.scipy.signal import find_peaks as find_peaks_gpu
 from cupyx.scipy.ndimage import gaussian_filter1d as gaussian_filter1d_gpu
 
+from ..types import ArrayType, NDArray
 from ..core.gpu_utils import GPUBackend
 from ..core.gpu_kernels import (
-from ..types import ArrayType, NDArray
     compute_local_fractal_dimension_kernel,
     compute_gradient_kernel
 )
-
 
 class BoundaryDetectorGPU(GPUBackend):
     """構造境界検出のGPU実装"""
