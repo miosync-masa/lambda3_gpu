@@ -28,7 +28,7 @@ except ImportError:
     cp = None
 
 else:
-    NDArray = Union[np.ndarray, Any]  # Any for when cp is None
+    NDArray = Union[np.ndarray, Any]
     
 # ===============================
 # Memory Info Classes
