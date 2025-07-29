@@ -17,6 +17,39 @@ from ..core.gpu_kernels import (
     compute_gradient_kernel
 )
 
+# CuPyが利用可能かチェック
+try:
+    import cupy as cp
+    HAS_GPU = True
+except ImportError:
+    HAS_GPU = False
+    cp = None
+
+# ===============================
+# CUDAカーネル定義（クラス外）
+# ===============================
+
+@cuda.jit
+def local_extrema_kernel(data, extrema, window, n):
+    """局所極値検出カーネル"""
+    idx = cuda.grid(1)
+    
+    if idx >= window and idx < n - window:
+        center = data[idx]
+        is_max = True
+        is_min = True
+        
+        # 局所範囲で比較
+        for i in range(idx - window, idx + window + 1):
+            if i != idx:
+                if data[i] >= center:
+                    is_max = False
+                if data[i] <= center:
+                    is_min = False
+        
+        if is_max or is_min:
+            extrema[idx] = 1.0
+
 class TopologyBreaksDetectorGPU(GPUBackend):
     """トポロジカル破れ検出のGPU実装"""
     
@@ -355,24 +388,29 @@ class TopologyBreaksDetectorGPU(GPUBackend):
     def _find_local_extrema_gpu(self,
                                data: NDArray,
                                window: int) -> NDArray:
-        """局所極値の検出"""
-        if self.is_gpu:
+        """局所極値の検出 - CUDAカーネル使用"""
+        if self.is_gpu and HAS_GPU:
             extrema = cp.zeros_like(data)
-            # シンプルな実装（CUDAカーネルは使わない）
-            for i in range(window, len(data) - window):
-                local_max = cp.max(data[i-window:i+window+1])
-                local_min = cp.min(data[i-window:i+window+1])
-                if data[i] == local_max or data[i] == local_min:
-                    extrema[i] = 1.0
+            
+            # CUDAカーネル呼び出し
+            threads = 256
+            blocks = (len(data) + threads - 1) // threads
+            
+            local_extrema_kernel[blocks, threads](
+                data, extrema, window, len(data)
+            )
+            
+            cp.cuda.Stream.null.synchronize()
+            return extrema
         else:
+            # CPU版フォールバック
             extrema = np.zeros_like(data)
             for i in range(window, len(data) - window):
                 local_max = np.max(data[i-window:i+window+1])
                 local_min = np.min(data[i-window:i+window+1])
                 if data[i] == local_max or data[i] == local_min:
                     extrema[i] = 1.0
-        
-        return extrema
+            return extrema
     
     def _compute_divergence_gpu(self, vector_field: NDArray) -> NDArray:
         """ベクトル場の発散を計算"""
