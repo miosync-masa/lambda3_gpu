@@ -308,6 +308,65 @@ class GPUMemoryManager:
         )
         
         return batch_size
+
+    @contextmanager
+    def batch_context(self, size_bytes: int, name: Optional[str] = None):
+        """
+        バッチ処理用のメモリコンテキスト（temporary_allocationのエイリアス）
+        
+        既存のコードとの互換性のために提供されているよ〜！💕
+        
+        Parameters
+        ----------
+        size_bytes : int
+            必要なメモリサイズ（バイト）
+        name : str, optional
+            割り当て名（デフォルトは"batch"）
+            
+        使い方:
+            with memory_manager.batch_context(1024**3):
+                # バッチ処理
+        """
+        if name is None:
+            name = "batch"
+        
+        # temporary_allocationを呼び出す
+        with self.temporary_allocation(size_bytes, name):
+            yield
+    
+    # 互換性のための追加メソッド（オプション）
+    def get_free_memory(self) -> int:
+        """
+        空きメモリを取得（互換性メソッド）
+        
+        Returns
+        -------
+        int
+            空きメモリ（バイト）
+        """
+        return self.get_memory_info().free
+    
+    def get_used_memory(self) -> int:
+        """
+        使用中メモリを取得（互換性メソッド）
+        
+        Returns
+        -------
+        int
+            使用中メモリ（バイト）
+        """
+        return self.get_memory_info().used
+    
+    def get_total_memory(self) -> int:
+        """
+        総メモリを取得（互換性メソッド）
+        
+        Returns
+        -------
+        int
+            総メモリ（バイト）
+        """
+        return self.get_memory_info().total
     
     @contextmanager
     def temporary_allocation(self, size_bytes: int, name: str = "temp"):
