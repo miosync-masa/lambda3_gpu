@@ -215,3 +215,55 @@ def auto_select_device() -> int:
                 best_device = i
     
     return best_device
+
+def profile_gpu(func: Callable) -> Callable:
+    """
+    GPU関数のプロファイリングデコレータ
+    GPUBackendのtimerメソッドを利用
+    """
+    @wraps(func)
+    def wrapper(self, *args, **kwargs):
+        # self.timerを使う（GPUBackendのメソッド）
+        if hasattr(self, 'timer'):
+            with self.timer(func.__name__):
+                return func(self, *args, **kwargs)
+        else:
+            # timerがない場合は通常実行
+            return func(self, *args, **kwargs)
+    
+    return wrapper
+
+
+def handle_gpu_errors(func: Callable) -> Callable:
+    """
+    GPU関連のエラーをハンドリングするデコレータ
+    """
+    @wraps(func)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return func(self, *args, **kwargs)
+        except Exception as e:
+            error_str = str(e)
+            
+            # GPUメモリ不足の場合
+            if 'out of memory' in error_str.lower():
+                logger.warning(f"GPU out of memory in {func.__name__}: {e}")
+                
+                # メモリクリア試行
+                if hasattr(self, 'clear_memory'):
+                    self.clear_memory()
+                    logger.info("Cleared GPU memory, retrying...")
+                    # リトライは1回のみ
+                    try:
+                        return func(self, *args, **kwargs)
+                    except:
+                        logger.error("Retry failed. Consider using smaller batch size.")
+                        raise
+            
+            # その他のGPUエラー
+            elif any(keyword in error_str.lower() for keyword in ['cuda', 'cupy', 'gpu']):
+                logger.error(f"GPU error in {func.__name__}: {e}")
+            
+            raise
+    
+    return wrapper
