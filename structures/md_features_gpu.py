@@ -173,7 +173,6 @@ class MDFeaturesGPU(GPUBackend):
             self.rmsd_kernel = None
             self.rg_kernel = None
     
-    @handle_gpu_errors
     def extract_md_features(self,
                           trajectory: np.ndarray,
                           backbone_indices: Optional[np.ndarray] = None) -> Dict[str, np.ndarray]:
