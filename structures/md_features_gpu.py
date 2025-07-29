@@ -25,7 +25,7 @@ except ImportError:
 
 # Local imports
 from ..types import ArrayType, NDArray
-from ..core import GPUBackend, GPUMemoryManager, handle_gpu_errors
+from ..core import GPUBackend, GPUMemoryManager
 from ..core import get_optimal_block_size
 
 logger = logging.getLogger('lambda3_gpu.structures.md_features')
