@@ -12,7 +12,9 @@ from cupyx.scipy.ndimage import gaussian_filter1d as gaussian_filter1d_gpu
 from ..types import ArrayType, NDArray
 from ..core.gpu_utils import GPUBackend
 from ..core.gpu_kernels import (
-    anomaly_detection_kernel  # 正しい名前でインポート
+    anomaly_detection_kernel,
+    compute_local_fractal_dimension_kernel,
+    compute_gradient_kernel
 )
 
 class TopologyBreaksDetectorGPU(GPUBackend):
@@ -44,7 +46,8 @@ class TopologyBreaksDetectorGPU(GPUBackend):
         
         n_frames = len(structures['rho_T'])
         
-        with self.memory_manager.batch_context(n_frames):
+        # batch_contextをtemporary_allocationに修正
+        with self.memory_manager.temporary_allocation(n_frames * 4 * 8, "topology_breaks"):
             # 1. ΛF異常（構造フロー破れ）
             lambda_f_anomaly = self._detect_flow_anomalies_gpu(
                 structures['lambda_F_mag'], window_steps
@@ -105,11 +108,18 @@ class TopologyBreaksDetectorGPU(GPUBackend):
         anomaly_gpu = anomaly_detection_kernel(lf_mag_gpu, window)
         
         # 追加: 急激な変化の検出
-        gradient = cp.abs(cp.gradient(lf_mag_gpu))
+        if self.is_gpu:
+            gradient = cp.abs(cp.gradient(lf_mag_gpu))
+        else:
+            gradient = np.abs(np.gradient(lambda_f_mag))
+            
         sudden_changes = self._detect_sudden_changes_gpu(gradient, window)
         
         # 両方の異常を統合
-        return cp.maximum(anomaly_gpu, sudden_changes)
+        if self.is_gpu:
+            return cp.maximum(anomaly_gpu, sudden_changes)
+        else:
+            return np.maximum(anomaly_gpu, sudden_changes)
     
     def _detect_acceleration_anomalies_gpu(self,
                                          lambda_ff_mag: np.ndarray,
@@ -124,10 +134,14 @@ class TopologyBreaksDetectorGPU(GPUBackend):
         if 'lambda_FF' in self.breaks_cache:
             lambda_ff = self.to_gpu(self.breaks_cache['lambda_FF'])
             sign_changes = self._detect_sign_changes_gpu(lambda_ff)
-            anomaly_gpu = cp.maximum(anomaly_gpu, sign_changes)
+            if self.is_gpu:
+                anomaly_gpu = cp.maximum(anomaly_gpu, sign_changes)
+            else:
+                anomaly_gpu = np.maximum(anomaly_gpu, sign_changes)
         
         return anomaly_gpu
     
+
     def _detect_tension_field_jumps_gpu(self,
                                       rho_t: np.ndarray,
                                       window_steps: int) -> NDArray:
@@ -136,17 +150,25 @@ class TopologyBreaksDetectorGPU(GPUBackend):
         
         # マルチスケールスムージング
         sigmas = [window_steps/6, window_steps/3, window_steps/2]
-        jumps_multiscale = cp.zeros_like(rho_t_gpu)
+        
+        if self.is_gpu:
+            jumps_multiscale = cp.zeros_like(rho_t_gpu)
+        else:
+            jumps_multiscale = np.zeros_like(rho_t)
         
         for sigma in sigmas:
             # ガウシアンフィルタ
-            rho_t_smooth = gaussian_filter1d_gpu(rho_t_gpu, sigma=sigma)
-            
-            # ジャンプ検出
-            jumps = cp.abs(rho_t_gpu - rho_t_smooth)
-            
-            # 正規化
-            jumps_norm = jumps / (cp.std(jumps) + 1e-10)
+            if self.is_gpu:
+                rho_t_smooth = gaussian_filter1d_gpu(rho_t_gpu, sigma=sigma)
+                # ジャンプ検出
+                jumps = cp.abs(rho_t_gpu - rho_t_smooth)
+                # 正規化
+                jumps_norm = jumps / (cp.std(jumps) + 1e-10)
+            else:
+                from scipy.ndimage import gaussian_filter1d
+                rho_t_smooth = gaussian_filter1d(rho_t, sigma=sigma)
+                jumps = np.abs(rho_t - rho_t_smooth)
+                jumps_norm = jumps / (np.std(jumps) + 1e-10)
             
             jumps_multiscale += jumps_norm / len(sigmas)
         
@@ -156,39 +178,58 @@ class TopologyBreaksDetectorGPU(GPUBackend):
                                             q_lambda: np.ndarray) -> NDArray:
         """トポロジカルチャージの破れ検出"""
         q_lambda_gpu = self.to_gpu(q_lambda)
-        breaks = cp.zeros_like(q_lambda_gpu)
         
-        # 位相差の計算
-        phase_diff = cp.abs(cp.diff(q_lambda_gpu))
-        
-        # 閾値以上の急激な変化を検出
-        threshold = 0.1  # 0.1 * 2π radians
-        breaks[1:] = cp.where(phase_diff > threshold, phase_diff, 0)
+        if self.is_gpu:
+            breaks = cp.zeros_like(q_lambda_gpu)
+            # 位相差の計算
+            phase_diff = cp.abs(cp.diff(q_lambda_gpu))
+            # 閾値以上の急激な変化を検出
+            threshold = 0.1  # 0.1 * 2π radians
+            breaks[1:] = cp.where(phase_diff > threshold, phase_diff, 0)
+        else:
+            breaks = np.zeros_like(q_lambda)
+            phase_diff = np.abs(np.diff(q_lambda))
+            threshold = 0.1
+            breaks[1:] = np.where(phase_diff > threshold, phase_diff, 0)
         
         # 累積的な破れの検出
         cumulative_breaks = self._detect_cumulative_breaks_gpu(q_lambda_gpu)
         
-        return cp.maximum(breaks, cumulative_breaks)
+        if self.is_gpu:
+            return cp.maximum(breaks, cumulative_breaks)
+        else:
+            return np.maximum(breaks, cumulative_breaks)
     
     def _detect_phase_coherence_breaks_gpu(self,
                                          structures: Dict) -> NDArray:
         """位相コヒーレンスの破れ検出（新機能）"""
         if 'structural_coherence' not in structures:
-            return cp.zeros(len(structures['rho_T']))
+            if self.is_gpu:
+                return cp.zeros(len(structures['rho_T']))
+            else:
+                return np.zeros(len(structures['rho_T']))
         
         coherence_gpu = self.to_gpu(structures['structural_coherence'])
         
-        # コヒーレンスの急激な低下を検出
-        coherence_gradient = cp.gradient(coherence_gpu)
-        
-        # 負の勾配（コヒーレンス低下）を強調
-        breaks = cp.where(coherence_gradient < 0,
-                         -coherence_gradient * 2.0,
-                         cp.abs(coherence_gradient))
-        
-        # 閾値処理
-        threshold = cp.mean(breaks) + 2 * cp.std(breaks)
-        breaks = cp.where(breaks > threshold, breaks, 0)
+        if self.is_gpu:
+            # コヒーレンスの急激な低下を検出
+            coherence_gradient = cp.gradient(coherence_gpu)
+            
+            # 負の勾配（コヒーレンス低下）を強調
+            breaks = cp.where(coherence_gradient < 0,
+                             -coherence_gradient * 2.0,
+                             cp.abs(coherence_gradient))
+            
+            # 閾値処理
+            threshold = cp.mean(breaks) + 2 * cp.std(breaks)
+            breaks = cp.where(breaks > threshold, breaks, 0)
+        else:
+            coherence_gradient = np.gradient(structures['structural_coherence'])
+            breaks = np.where(coherence_gradient < 0,
+                             -coherence_gradient * 2.0,
+                             np.abs(coherence_gradient))
+            threshold = np.mean(breaks) + 2 * np.std(breaks)
+            breaks = np.where(breaks > threshold, breaks, 0)
         
         return breaks
     
@@ -197,7 +238,11 @@ class TopologyBreaksDetectorGPU(GPUBackend):
                                            window: int) -> NDArray:
         """構造的特異点の検出（新機能）"""
         n_frames = len(structures['rho_T'])
-        singularities = cp.zeros(n_frames)
+        
+        if self.is_gpu:
+            singularities = cp.zeros(n_frames)
+        else:
+            singularities = np.zeros(n_frames)
         
         # 複数の指標から特異点を検出
         rho_t_gpu = self.to_gpu(structures['rho_T'])
@@ -210,8 +255,13 @@ class TopologyBreaksDetectorGPU(GPUBackend):
         if len(structures['lambda_F'].shape) == 2:  # ベクトル場の場合
             lambda_f_gpu = self.to_gpu(structures['lambda_F'])
             divergence = self._compute_divergence_gpu(lambda_f_gpu)
-            div_anomaly = cp.abs(divergence) > cp.std(divergence) * 3
-            singularities += div_anomaly.astype(cp.float32)
+            
+            if self.is_gpu:
+                div_anomaly = cp.abs(divergence) > cp.std(divergence) * 3
+                singularities += div_anomaly.astype(cp.float32)
+            else:
+                div_anomaly = np.abs(divergence) > np.std(divergence) * 3
+                singularities += div_anomaly.astype(np.float32)
         
         # 3. 位相空間での異常軌道
         phase_anomaly = self._detect_phase_space_singularities_gpu(
@@ -231,11 +281,19 @@ class TopologyBreaksDetectorGPU(GPUBackend):
         
         # 外れ値検出
         threshold = 3.0
-        sudden_changes = cp.where(
-            gradient > moving_std * threshold,
-            gradient / (moving_std + 1e-10),
-            0
-        )
+        
+        if self.is_gpu:
+            sudden_changes = cp.where(
+                gradient > moving_std * threshold,
+                gradient / (moving_std + 1e-10),
+                0
+            )
+        else:
+            sudden_changes = np.where(
+                gradient > moving_std * threshold,
+                gradient / (moving_std + 1e-10),
+                0
+            )
         
         return sudden_changes
     
@@ -243,63 +301,100 @@ class TopologyBreaksDetectorGPU(GPUBackend):
         """符号変化の検出"""
         if len(vector_field.shape) == 1:
             # スカラー場
-            sign_diff = cp.diff(cp.sign(vector_field))
-            changes = cp.abs(sign_diff) / 2.0
-            return cp.pad(changes, (1, 0), mode='constant')
+            if self.is_gpu:
+                sign_diff = cp.diff(cp.sign(vector_field))
+                changes = cp.abs(sign_diff) / 2.0
+                return cp.pad(changes, (1, 0), mode='constant')
+            else:
+                sign_diff = np.diff(np.sign(vector_field))
+                changes = np.abs(sign_diff) / 2.0
+                return np.pad(changes, (1, 0), mode='constant')
         else:
             # ベクトル場
-            changes = cp.zeros(len(vector_field))
+            if self.is_gpu:
+                changes = cp.zeros(len(vector_field))
+            else:
+                changes = np.zeros(len(vector_field))
+                
             for i in range(vector_field.shape[1]):
                 component = vector_field[:, i]
-                sign_diff = cp.diff(cp.sign(component))
-                changes[1:] += cp.abs(sign_diff) / (2.0 * vector_field.shape[1])
+                if self.is_gpu:
+                    sign_diff = cp.diff(cp.sign(component))
+                    changes[1:] += cp.abs(sign_diff) / (2.0 * vector_field.shape[1])
+                else:
+                    sign_diff = np.diff(np.sign(component))
+                    changes[1:] += np.abs(sign_diff) / (2.0 * vector_field.shape[1])
             return changes
     
     def _detect_cumulative_breaks_gpu(self, q_lambda: NDArray) -> NDArray:
         """累積的な破れの検出"""
-        # 累積和
-        q_cumsum = cp.cumsum(q_lambda)
-        
-        # 期待される線形成長からの乖離
-        x = cp.arange(len(q_lambda))
-        slope = (q_cumsum[-1] - q_cumsum[0]) / (len(q_lambda) - 1)
-        expected = q_cumsum[0] + slope * x
-        
-        deviation = cp.abs(q_cumsum - expected)
-        
-        # 急激な乖離を検出
-        deviation_gradient = cp.abs(cp.gradient(deviation))
-        
-        return deviation_gradient / (cp.max(deviation_gradient) + 1e-10)
+        if self.is_gpu:
+            # 累積和
+            q_cumsum = cp.cumsum(q_lambda)
+            
+            # 期待される線形成長からの乖離
+            x = cp.arange(len(q_lambda))
+            slope = (q_cumsum[-1] - q_cumsum[0]) / (len(q_lambda) - 1)
+            expected = q_cumsum[0] + slope * x
+            
+            deviation = cp.abs(q_cumsum - expected)
+            
+            # 急激な乖離を検出
+            deviation_gradient = cp.abs(cp.gradient(deviation))
+            
+            return deviation_gradient / (cp.max(deviation_gradient) + 1e-10)
+        else:
+            q_cumsum = np.cumsum(q_lambda)
+            x = np.arange(len(q_lambda))
+            slope = (q_cumsum[-1] - q_cumsum[0]) / (len(q_lambda) - 1)
+            expected = q_cumsum[0] + slope * x
+            deviation = np.abs(q_cumsum - expected)
+            deviation_gradient = np.abs(np.gradient(deviation))
+            return deviation_gradient / (np.max(deviation_gradient) + 1e-10)
     
     def _find_local_extrema_gpu(self,
                                data: NDArray,
                                window: int) -> NDArray:
         """局所極値の検出"""
-        extrema = cp.zeros_like(data)
-        
-        # GPU並列処理で局所最大/最小を検出
-        threads = 256
-        blocks = (len(data) + threads - 1) // threads
-        
-        self._local_extrema_kernel[blocks, threads](
-            data, extrema, window, len(data)
-        )
+        if self.is_gpu:
+            extrema = cp.zeros_like(data)
+            # シンプルな実装（CUDAカーネルは使わない）
+            for i in range(window, len(data) - window):
+                local_max = cp.max(data[i-window:i+window+1])
+                local_min = cp.min(data[i-window:i+window+1])
+                if data[i] == local_max or data[i] == local_min:
+                    extrema[i] = 1.0
+        else:
+            extrema = np.zeros_like(data)
+            for i in range(window, len(data) - window):
+                local_max = np.max(data[i-window:i+window+1])
+                local_min = np.min(data[i-window:i+window+1])
+                if data[i] == local_max or data[i] == local_min:
+                    extrema[i] = 1.0
         
         return extrema
     
     def _compute_divergence_gpu(self, vector_field: NDArray) -> NDArray:
         """ベクトル場の発散を計算"""
         if len(vector_field.shape) != 2:
-            return cp.zeros(len(vector_field))
+            if self.is_gpu:
+                return cp.zeros(len(vector_field))
+            else:
+                return np.zeros(len(vector_field))
         
         # 各成分の偏微分
-        div = cp.zeros(len(vector_field) - 1)
-        for i in range(vector_field.shape[1]):
-            component_grad = cp.gradient(vector_field[:, i])
-            div += component_grad[:-1]
-        
-        return cp.pad(div, (0, 1), mode='edge')
+        if self.is_gpu:
+            div = cp.zeros(len(vector_field) - 1)
+            for i in range(vector_field.shape[1]):
+                component_grad = cp.gradient(vector_field[:, i])
+                div += component_grad[:-1]
+            return cp.pad(div, (0, 1), mode='edge')
+        else:
+            div = np.zeros(len(vector_field) - 1)
+            for i in range(vector_field.shape[1]):
+                component_grad = np.gradient(vector_field[:, i])
+                div += component_grad[:-1]
+            return np.pad(div, (0, 1), mode='edge')
     
     def _detect_phase_space_singularities_gpu(self,
                                             lf_mag: NDArray,
@@ -307,7 +402,11 @@ class TopologyBreaksDetectorGPU(GPUBackend):
                                             window: int) -> NDArray:
         """位相空間での特異点検出"""
         n = len(lf_mag)
-        singularities = cp.zeros(n)
+        
+        if self.is_gpu:
+            singularities = cp.zeros(n)
+        else:
+            singularities = np.zeros(n)
         
         # 簡易的な位相空間埋め込み
         for i in range(window, n - window):
@@ -317,26 +416,36 @@ class TopologyBreaksDetectorGPU(GPUBackend):
             
             # 相関の急激な変化
             if len(local_lf) > 5:
-                corr = cp.corrcoef(local_lf, local_rho)[0, 1]
-                if cp.isnan(corr):
-                    corr = 0
-                
-                # 相関の絶対値が低い = 特異的
-                singularities[i] = 1 - cp.abs(corr)
+                if self.is_gpu:
+                    corr = cp.corrcoef(local_lf, local_rho)[0, 1]
+                    if cp.isnan(corr):
+                        corr = 0
+                    # 相関の絶対値が低い = 特異的
+                    singularities[i] = 1 - cp.abs(corr)
+                else:
+                    corr = np.corrcoef(local_lf, local_rho)[0, 1]
+                    if np.isnan(corr):
+                        corr = 0
+                    singularities[i] = 1 - np.abs(corr)
         
         return singularities
     
     def _moving_std_gpu(self, data: NDArray, window: int) -> NDArray:
         """移動標準偏差の計算"""
-        # 簡易実装（より効率的な実装も可能）
-        std_array = cp.zeros_like(data)
+        if self.is_gpu:
+            std_array = cp.zeros_like(data)
+        else:
+            std_array = np.zeros_like(data)
         
         for i in range(len(data)):
             start = max(0, i - window // 2)
             end = min(len(data), i + window // 2 + 1)
             
             if end - start > 1:
-                std_array[i] = cp.std(data[start:end])
+                if self.is_gpu:
+                    std_array[i] = cp.std(data[start:end])
+                else:
+                    std_array[i] = np.std(data[start:end])
         
         return std_array
     
@@ -348,7 +457,10 @@ class TopologyBreaksDetectorGPU(GPUBackend):
         # 重み（新しい破れタイプも含む）
         weights = [1.0, 0.8, 0.6, 1.2, 0.9, 1.1]
         
-        combined = cp.zeros(min_len)
+        if self.is_gpu:
+            combined = cp.zeros(min_len)
+        else:
+            combined = np.zeros(min_len)
         
         for i, (anomaly, weight) in enumerate(zip(anomalies, weights)):
             if i < len(weights):
@@ -357,25 +469,3 @@ class TopologyBreaksDetectorGPU(GPUBackend):
         combined /= sum(weights[:len(anomalies)])
         
         return combined
-    
-    # カスタムCUDAカーネル（@cuda.jitは残す）
-    @cuda.jit
-    def _local_extrema_kernel(data, extrema, window, n):
-        """局所極値検出カーネル"""
-        idx = cuda.grid(1)
-        
-        if idx >= window and idx < n - window:
-            center = data[idx]
-            is_max = True
-            is_min = True
-            
-            # 局所範囲で比較
-            for i in range(idx - window, idx + window + 1):
-                if i != idx:
-                    if data[i] >= center:
-                        is_max = False
-                    if data[i] <= center:
-                        is_min = False
-            
-            if is_max or is_min:
-                extrema[idx] = 1.0
