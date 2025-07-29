@@ -2,30 +2,30 @@
 Lambda³ GPU版異常検出モジュール
 異常検出アルゴリズムの完全GPU実装
 """
-
 import numpy as np
 from typing import Dict, List, Tuple, Optional, Any, TYPE_CHECKING
 from dataclasses import dataclass
-
-# CuPyの条件付きインポート（ここが重要！）
-    except ImportError:
-        cp = None
-        NDArray = np.ndarray 
-        
-from numba import cuda
 import math
 import warnings
+from numba import cuda
 
+# CuPyの条件付きインポート
+try:
+    import cupy as cp
+    HAS_CUPY = True
+except ImportError:
+    cp = None
+    HAS_CUPY = False
+
+from ..types import ArrayType, NDArray
 from ..core.gpu_utils import GPUBackend
 from ..core.gpu_kernels import (
-from ..types import ArrayType, NDArray
     detect_local_anomalies_kernel,
     compute_mad_kernel,
     gaussian_filter_1d_kernel
 )
 
 warnings.filterwarnings('ignore')
-
 
 class AnomalyDetectorGPU(GPUBackend):
     """異常検出のGPU実装"""
