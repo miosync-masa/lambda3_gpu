@@ -185,7 +185,7 @@ class MDLambda3DetectorGPU(GPUBackend):
         
         # 単一バッチ処理
         try:
-            with self.memory_manager.batch_context(n_frames * n_atoms * 3 * 4):
+            with self.memory_manager.temporary_allocation(n_frames * n_atoms * 3 * 4, "analysis"):
                 result = self._analyze_single_trajectory(trajectory, backbone_indices)
         except Exception as e:
             print(f"Analysis failed: {e}")
