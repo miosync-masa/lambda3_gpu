@@ -8,10 +8,13 @@ import time
 from typing import Dict, List, Tuple, Optional, Any, TYPE_CHECKING
 from dataclasses import dataclass
 
-# CuPyの条件付きインポート（ここが重要！）
-    except ImportError:
-        cp = None
-        NDArray = np.ndarray 
+# CuPyの条件付きインポート
+try:
+    import cupy as cp
+    HAS_CUPY = True
+except ImportError:
+    cp = None
+    HAS_CUPY = False
 
 from concurrent.futures import ThreadPoolExecutor
 import warnings
