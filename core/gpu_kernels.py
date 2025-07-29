@@ -335,9 +335,9 @@ class CUDAKernels:
 # Kernel Wrapper Functions
 # ===============================
 
-def residue_com_kernel(trajectory: 'cp.ndarray',
+def residue_com_kernel(trajectory: NDArray,
                       residue_mapping: dict,
-                      block_size: int = 256) -> 'cp.ndarray':
+                      block_size: int = 256) -> NDArray:
     """
     残基COM計算カーネルのラッパー
     
@@ -397,9 +397,9 @@ def residue_com_kernel(trajectory: 'cp.ndarray',
     
     return com_output
 
-def tension_field_kernel(positions: cp.ndarray,
+def tension_field_kernel(positions: NDArray,
                         window_size: int,
-                        block_size: int = 256) -> cp.ndarray:
+                        block_size: int = 256) -> NDArray:
     """
     テンション場計算カーネルのラッパー
     """
@@ -421,9 +421,9 @@ def tension_field_kernel(positions: cp.ndarray,
     
     return rho_T
 
-def anomaly_detection_kernel(series: cp.ndarray,
+def anomaly_detection_kernel(series: NDArray,
                            window_size: int,
-                           block_size: int = 256) -> cp.ndarray:
+                           block_size: int = 256) -> NDArray:
     """
     異常検出カーネルのラッパー
     """
@@ -445,8 +445,8 @@ def anomaly_detection_kernel(series: cp.ndarray,
     
     return anomaly_scores
 
-def distance_matrix_kernel(positions: cp.ndarray,
-                         block_size: int = 16) -> cp.ndarray:
+def distance_matrix_kernel(positions: NDArray,
+                         block_size: int = 16) -> NDArray:
     """
     距離行列計算カーネルのラッパー
     共有メモリ使用で高速化！
@@ -474,9 +474,9 @@ def distance_matrix_kernel(positions: cp.ndarray,
     
     return distances
 
-def topological_charge_kernel(lambda_F: cp.ndarray,
-                            lambda_F_mag: cp.ndarray,
-                            block_size: int = 256) -> cp.ndarray:
+def topological_charge_kernel(lambda_F: NDArray,
+                            lambda_F_mag: NDArray,
+                            block_size: int = 256) -> NDArray:
     """
     トポロジカルチャージ計算カーネルのラッパー
     """
