@@ -12,7 +12,7 @@ import numpy as np
 import logging
 import gc
 import warnings
-from typing import Dict, List, Tuple, Optional, Union, Any, Callable
+from typing import Dict, List, Tuple, Optional, Union, Any, Callable, TYPE_CHECKING
 from dataclasses import dataclass
 from contextlib import contextmanager
 import psutil
@@ -26,8 +26,12 @@ except ImportError:
     HAS_GPU = False
     cp = None
 
-logger = logging.getLogger('lambda3_gpu.core.memory')
-
+# 型ヒント用の定義
+if TYPE_CHECKING and cp is not None:
+    NDArray = cp.ndarray
+else:
+    NDArray = Union[np.ndarray, Any]  # Any for when cp is None
+    
 # ===============================
 # Memory Info Classes
 # ===============================
