@@ -328,37 +328,63 @@ class BoundaryDetectorGPU(GPUBackend):
         
         return boundary_score
     
+    # boundary_detection_gpu.py の_detect_peaks_gpu メソッドを修正
     def _detect_peaks_gpu(self,
                         boundary_score: NDArray,
                         n_steps: int) -> Tuple[NDArray, Dict]:
-        """ピーク検出（GPU版）"""
+        """ピーク検出（GPU版） - 修正版"""
         if len(boundary_score) > 10:
             min_distance_steps = max(50, n_steps // 30)
             
             if self.is_gpu:
-                height_threshold = cp.mean(boundary_score) + cp.std(boundary_score)
+                # NaN値のチェックと除去
+                if cp.any(cp.isnan(boundary_score)):
+                    logger.warning("NaN values detected in boundary_score, cleaning...")
+                    boundary_score = cp.nan_to_num(boundary_score, nan=0.0)
                 
-                # CuPyのfind_peaks使用
-                if find_peaks_gpu is not None:
-                    peaks, properties = find_peaks_gpu(
-                        boundary_score,
-                        height=height_threshold,
-                        distance=min_distance_steps
-                    )
+                # 統計値の計算（安全に）
+                mean_val = float(cp.mean(boundary_score))
+                std_val = float(cp.std(boundary_score))
+                
+                # NaNチェック
+                if cp.isnan(mean_val) or cp.isnan(std_val) or std_val < 1e-10:
+                    logger.warning("Invalid statistics in boundary_score")
+                    # デフォルト値を使用
+                    height_threshold = 0.1
                 else:
-                    # 簡易実装
-                    peaks = []
-                    for i in range(1, len(boundary_score) - 1):
-                        if (boundary_score[i] > height_threshold and
-                            boundary_score[i] > boundary_score[i-1] and
-                            boundary_score[i] > boundary_score[i+1]):
-                            if not peaks or i - peaks[-1] >= min_distance_steps:
-                                peaks.append(i)
-                    peaks = cp.array(peaks)
+                    height_threshold = mean_val + std_val
+                
+                # CuPyのfind_peaks使用（修正版）
+                if find_peaks_gpu is not None:
+                    try:
+                        # height を配列として渡す（CuPyの期待する形式）
+                        height_array = cp.full(len(boundary_score), height_threshold, dtype=boundary_score.dtype)
+                        
+                        peaks, properties = find_peaks_gpu(
+                            boundary_score,
+                            height=height_array,  # 配列として渡す
+                            distance=min_distance_steps
+                        )
+                    except Exception as e:
+                        logger.warning(f"GPU find_peaks failed: {e}, using fallback")
+                        peaks = self._simple_peak_detection_gpu(boundary_score, height_threshold, min_distance_steps)
+                        properties = {}
+                else:
+                    # フォールバック実装
+                    peaks = self._simple_peak_detection_gpu(boundary_score, height_threshold, min_distance_steps)
                     properties = {}
             else:
+                # CPU版
                 from scipy.signal import find_peaks
-                height_threshold = np.mean(boundary_score) + np.std(boundary_score)
+                boundary_score = np.nan_to_num(boundary_score, nan=0.0)
+                mean_val = np.mean(boundary_score)
+                std_val = np.std(boundary_score)
+                
+                if np.isnan(mean_val) or np.isnan(std_val) or std_val < 1e-10:
+                    height_threshold = 0.1
+                else:
+                    height_threshold = mean_val + std_val
+                    
                 peaks, properties = find_peaks(
                     boundary_score,
                     height=height_threshold,
@@ -368,9 +394,29 @@ class BoundaryDetectorGPU(GPUBackend):
             peaks = cp.array([]) if self.is_gpu else np.array([])
             properties = {}
         
-        print(f"   Found {len(peaks)} structural boundaries")
+        logger.info(f"   Found {len(peaks)} structural boundaries")
         
         return peaks, properties
+
+    def _simple_peak_detection_gpu(self, array: NDArray, threshold: float, min_distance: int) -> NDArray:
+        """シンプルなピーク検出実装（フォールバック用）"""
+        peaks = []
+        
+        # GPU配列をCPUに転送して処理（安定性重視）
+        array_cpu = cp.asnumpy(array) if self.is_gpu else array
+        
+        for i in range(1, len(array_cpu) - 1):
+            if (array_cpu[i] > threshold and 
+                array_cpu[i] > array_cpu[i-1] and 
+                array_cpu[i] > array_cpu[i+1]):
+                if not peaks or i - peaks[-1] >= min_distance:
+                    peaks.append(i)
+        
+        # GPU配列として返す
+        if self.is_gpu:
+            return cp.array(peaks, dtype=cp.int64)
+        else:
+            return np.array(peaks, dtype=np.int64)
     
     # ===============================
     # 追加のメソッド（トポロジカル破れ検出など）
