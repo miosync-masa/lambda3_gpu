@@ -186,8 +186,8 @@ class GPUBackend:
     
     def ones_like(self, array, dtype=None):
         """同じ形状の1配列"""
-        return self.xp.ones_like(array, dtype=dtype)　
-
+        return self.xp.ones_like(array, dtype=dtype)
+        
 # ===============================
 # Utility Functions
 # ===============================
