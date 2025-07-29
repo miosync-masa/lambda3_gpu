@@ -269,6 +269,104 @@ void compute_topological_charge_kernel(
 }
 '''
 
+# フラクタル次元計算カーネル（新規追加）
+FRACTAL_DIMENSION_KERNEL = r'''
+extern "C" __global__
+void compute_local_fractal_dimension_kernel(
+    const float* __restrict__ q_cumulative,    // (n_points,)
+    float* __restrict__ dimensions,            // (n_points,)
+    const int window_size,
+    const int n_points
+) {
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    if (idx >= n_points) return;
+    
+    const int start = max(0, idx - window_size);
+    const int end = min(n_points, idx + window_size + 1);
+    const int local_size = end - start;
+    
+    if (local_size < 3) {
+        dimensions[idx] = 1.0f;
+        return;
+    }
+    
+    // 簡易ボックスカウント法
+    float min_val = 1e30f;
+    float max_val = -1e30f;
+    
+    // 局所範囲の最小・最大値
+    for (int i = start; i < end; i++) {
+        min_val = fminf(min_val, q_cumulative[i]);
+        max_val = fmaxf(max_val, q_cumulative[i]);
+    }
+    
+    float range = max_val - min_val;
+    if (range < 1e-10f) {
+        dimensions[idx] = 1.0f;
+        return;
+    }
+    
+    // 複数のボックスサイズでカウント
+    float log_n_sum = 0.0f;
+    float log_eps_sum = 0.0f;
+    int n_scales = 0;
+    
+    for (int scale = 2; scale <= 10 && scale < local_size; scale++) {
+        float eps = range / scale;
+        int box_count = 0;
+        
+        // ボックスカウント
+        for (int i = start; i < end; i++) {
+            int box_id = (int)((q_cumulative[i] - min_val) / eps);
+            // 簡易的な重複チェック（完全ではないが高速）
+            if (i == start || box_id != (int)((q_cumulative[i-1] - min_val) / eps)) {
+                box_count++;
+            }
+        }
+        
+        if (box_count > 0) {
+            log_n_sum += logf((float)box_count);
+            log_eps_sum += logf(eps);
+            n_scales++;
+        }
+    }
+    
+    // 線形回帰で次元推定
+    if (n_scales > 1) {
+        dimensions[idx] = -log_n_sum / log_eps_sum;
+        dimensions[idx] = fmaxf(1.0f, fminf(3.0f, dimensions[idx])); // クランプ
+    } else {
+        dimensions[idx] = 1.0f;
+    }
+}
+'''
+
+# 勾配計算カーネル（新規追加）
+GRADIENT_KERNEL = r'''
+extern "C" __global__
+void compute_gradient_kernel(
+    const float* __restrict__ input,           // (n_points,)
+    float* __restrict__ gradient,              // (n_points,)
+    const int n_points
+) {
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    if (idx >= n_points) return;
+    
+    if (idx == 0) {
+        // 前方差分
+        gradient[idx] = input[1] - input[0];
+    } else if (idx == n_points - 1) {
+        // 後方差分
+        gradient[idx] = input[idx] - input[idx - 1];
+    } else {
+        // 中心差分
+        gradient[idx] = (input[idx + 1] - input[idx - 1]) * 0.5f;
+    }
+}
+'''
+
 # ===============================
 # Kernel Manager Class
 # ===============================
@@ -312,6 +410,16 @@ class CUDAKernels:
             # トポロジカルチャージ
             self.kernels['topological_charge'] = cp.RawKernel(
                 TOPOLOGICAL_CHARGE_KERNEL, 'compute_topological_charge_kernel'
+            )
+            
+            # フラクタル次元（新規追加）
+            self.kernels['fractal_dimension'] = cp.RawKernel(
+                FRACTAL_DIMENSION_KERNEL, 'compute_local_fractal_dimension_kernel'
+            )
+            
+            # 勾配計算（新規追加）
+            self.kernels['gradient'] = cp.RawKernel(
+                GRADIENT_KERNEL, 'compute_gradient_kernel'
             )
             
             self.is_initialized = True
@@ -498,6 +606,53 @@ def topological_charge_kernel(lambda_F: NDArray,
     
     return Q_lambda
 
+def compute_local_fractal_dimension_kernel(q_cumulative: NDArray,
+                                         window_size: int,
+                                         block_size: int = 256) -> NDArray:
+    """
+    局所フラクタル次元計算カーネルのラッパー（新規追加）
+    """
+    if not HAS_GPU:
+        raise RuntimeError("GPU not available")
+    
+    n_points = len(q_cumulative)
+    dimensions = cp.ones(n_points, dtype=cp.float32)
+    
+    kernel_manager = get_kernel_manager()
+    kernel = kernel_manager.get_kernel('fractal_dimension')
+    
+    grid_size = (n_points + block_size - 1) // block_size
+    
+    kernel(
+        (grid_size,), (block_size,),
+        (q_cumulative, dimensions, window_size, n_points)
+    )
+    
+    return dimensions
+
+def compute_gradient_kernel(input_array: NDArray,
+                          block_size: int = 256) -> NDArray:
+    """
+    勾配計算カーネルのラッパー（新規追加）
+    """
+    if not HAS_GPU:
+        raise RuntimeError("GPU not available")
+    
+    n_points = len(input_array)
+    gradient = cp.zeros(n_points, dtype=cp.float32)
+    
+    kernel_manager = get_kernel_manager()
+    kernel = kernel_manager.get_kernel('gradient')
+    
+    grid_size = (n_points + block_size - 1) // block_size
+    
+    kernel(
+        (grid_size,), (block_size,),
+        (input_array, gradient, n_points)
+    )
+    
+    return gradient
+
 # ===============================
 # Utility Kernels
 # ===============================
@@ -618,6 +773,8 @@ __all__ = [
     'anomaly_detection_kernel',
     'distance_matrix_kernel',
     'topological_charge_kernel',
+    'compute_local_fractal_dimension_kernel',  # 新規追加
+    'compute_gradient_kernel',                 # 新規追加
     'create_elementwise_kernel',
     'benchmark_kernels',
     'get_kernel_manager'
