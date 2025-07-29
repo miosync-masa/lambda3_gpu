@@ -9,9 +9,8 @@ from typing import Dict, List, Tuple, Optional, Any
 from numba import cuda
 from cupyx.scipy.spatial import distance_matrix
 
-from ..core.gpu_utils import GPUBackend
 from ..types import ArrayType, NDArray
-
+from ..core.gpu_utils import GPUBackend
 
 class PhaseSpaceAnalyzerGPU(GPUBackend):
     """位相空間解析のGPU実装"""
