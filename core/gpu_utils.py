@@ -238,7 +238,7 @@ class GPUBackend:
     def batch_context(self, estimated_memory: int):
         """バッチ処理用のメモリコンテキスト"""
         if hasattr(self, 'memory_manager'):
-            with self.memory_manager.batch_context(estimated_memory):
+            with self.memory_manager.temporary_allocation(estimated_memory, "batch"):
                 yield
         else:
             yield
