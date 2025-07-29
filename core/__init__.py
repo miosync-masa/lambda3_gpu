@@ -13,7 +13,6 @@ Components:
 
 from .gpu_utils import (
     GPUBackend,
-    GPUArray,
     GPUTimer,
     auto_select_device,
     get_optimal_block_size,
@@ -40,7 +39,6 @@ from .gpu_kernels import (
 __all__ = [
     # Utils
     'GPUBackend',
-    'GPUArray',
     'GPUTimer',
     'auto_select_device',
     'get_optimal_block_size',
