@@ -23,10 +23,12 @@ try:
 except ImportError:
     HAS_GPU = False
     cp = None
+    cp_ndimage = None
+    cp_signal = None
 
 # Local imports
-from ..core import GPUBackend, GPUMemoryManager, profile_gpu
 from ..types import ArrayType, NDArray
+from ..core import GPUBackend, GPUMemoryManager, profile_gpu
 
 logger = logging.getLogger('lambda3_gpu.structures.tensor_operations')
 
