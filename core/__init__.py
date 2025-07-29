@@ -40,7 +40,7 @@ from .gpu_kernels import (
     compute_local_fractal_dimension_kernel,  # 新規追加
     compute_gradient_kernel,                 # 新規追加
     create_elementwise_kernel,
-    benchmark_kernels',
+    benchmark_kernels,  # ← ここを修正！クォートを直したよ〜！
     get_kernel_manager
 )
 
