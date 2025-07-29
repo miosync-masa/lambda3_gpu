@@ -13,8 +13,6 @@ from ..types import ArrayType, NDArray
 from ..core.gpu_utils import GPUBackend
 from ..core.gpu_kernels import detect_local_anomalies_kernel
 
-
-
 class TopologyBreaksDetectorGPU(GPUBackend):
     """トポロジカル破れ検出のGPU実装"""
     
