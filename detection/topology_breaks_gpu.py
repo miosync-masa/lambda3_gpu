@@ -5,6 +5,7 @@ Lambda³ GPU版トポロジカル破れ検出モジュール
 
 import numpy as np
 import cupy as cp
+import logging
 from typing import Dict, List, Tuple, Optional
 from numba import cuda
 from cupyx.scipy.ndimage import gaussian_filter1d as gaussian_filter1d_gpu
@@ -16,6 +17,9 @@ from ..core.gpu_kernels import (
     compute_local_fractal_dimension_kernel,
     compute_gradient_kernel
 )
+
+# ロガー設定
+logger = logging.getLogger(__name__)
 
 # CuPyが利用可能かチェック
 try:
