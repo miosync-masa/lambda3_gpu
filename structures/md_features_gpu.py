@@ -7,7 +7,6 @@ RMSD、Rg、接触マップとか全部速いよ〜！💕
 
 by 環ちゃん
 """
-
 import numpy as np
 import logging
 from typing import Dict, Optional, List, Tuple, Union
@@ -22,11 +21,12 @@ try:
 except ImportError:
     HAS_GPU = False
     cp = None
+    cp_cdist = None
 
 # Local imports
+from ..types import ArrayType, NDArray
 from ..core import GPUBackend, GPUMemoryManager, GPUTimer, handle_gpu_errors
 from ..core import get_optimal_block_size
-from ..types import ArrayType, NDArray
 
 logger = logging.getLogger('lambda3_gpu.structures.md_features')
 
