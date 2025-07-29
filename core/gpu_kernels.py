@@ -335,9 +335,9 @@ class CUDAKernels:
 # Kernel Wrapper Functions
 # ===============================
 
-def residue_com_kernel(trajectory: cp.ndarray,
+def residue_com_kernel(trajectory: 'cp.ndarray',
                       residue_mapping: dict,
-                      block_size: int = 256) -> cp.ndarray:
+                      block_size: int = 256) -> 'cp.ndarray':
     """
     残基COM計算カーネルのラッパー
     
