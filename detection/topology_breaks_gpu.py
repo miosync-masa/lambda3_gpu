@@ -9,9 +9,10 @@ from typing import Dict, List, Tuple, Optional
 from numba import cuda
 from cupyx.scipy.ndimage import gaussian_filter1d as gaussian_filter1d_gpu
 
+from ..types import ArrayType, NDArray
 from ..core.gpu_utils import GPUBackend
 from ..core.gpu_kernels import detect_local_anomalies_kernel
-from ..types import ArrayType, NDArray
+
 
 
 class TopologyBreaksDetectorGPU(GPUBackend):
