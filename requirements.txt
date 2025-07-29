@@ -19,8 +19,8 @@ xarray>=2023.0.0  # 最新版で多次元配列処理の安定性向上
 cupy-cuda12x==13.2.0  # CUDA 12.4まで対応の最新安定版
 
 # JIT compilation and CUDA kernels
-# CUDA 12.5対応のため、numbaも特定バージョンに固定
-numba==0.59.1  # CUDA 12.xとの互換性が良いバージョン
+numba==0.59.1  # CUDA 12.4対応
+# nvidia-cuda-nvjitlink-cu12  # CUDA 12.4なら不要！
 
 # Visualization
 matplotlib>=3.4.0,<4.0.0
