@@ -37,7 +37,8 @@ class Lambda3VisualizerGPU:
     def visualize_results(self, 
                          result: MDLambda3Result,
                          save_path: Optional[str] = None,
-                         show_extended: bool = True) -> plt.Figure:
+                         show_extended: bool = True,
+                         figsize: Optional[Tuple[int, int]] = None) -> plt.Figure:
         """
         Lambda³解析結果の包括的可視化
         
@@ -49,20 +50,35 @@ class Lambda3VisualizerGPU:
             保存パス
         show_extended : bool
             拡張検出結果を表示するか
+        figsize : tuple, optional
+            図のサイズ (width, height)。指定しない場合はデフォルトサイズ
             
         Returns
         -------
         plt.Figure
             生成した図
         """
+        # figsizeの決定
+        if figsize is not None:
+            # ユーザー指定のサイズ
+            fig_width, fig_height = figsize
+        else:
+            # デフォルトサイズ
+            if show_extended and 'extended_combined' in result.anomaly_scores:
+                fig_width, fig_height = 24, 20
+            else:
+                fig_width, fig_height = 20, 16
+        
+        # 図の作成
+        fig = plt.figure(figsize=(fig_width, fig_height))
+        
         # レイアウト設定
         if show_extended and 'extended_combined' in result.anomaly_scores:
-            fig = plt.figure(figsize=(24, 20))
             gs = gridspec.GridSpec(5, 3, figure=fig, hspace=0.3, wspace=0.25)
         else:
-            fig = plt.figure(figsize=(20, 16))
             gs = gridspec.GridSpec(4, 3, figure=fig, hspace=0.3, wspace=0.25)
         
+        # 以下、各プロットの追加（既存のコードと同じ）
         # 1. マルチスケール異常スコア
         ax1 = fig.add_subplot(gs[0, :])
         self._plot_multiscale_anomalies(ax1, result)
