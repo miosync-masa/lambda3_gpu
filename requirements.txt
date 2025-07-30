@@ -7,6 +7,7 @@ scipy>=1.7.0,<2.0.0
 scikit-learn>=1.0.0,<2.0.0
 pandas>=1.3.0,<2.0.0
 xarray>=2023.0.0  # 最新版で多次元配列処理の安定性向上
+pylibraft-cu11 
 
 # GPU computing (choose based on your CUDA version)
 # For CUDA 11.x:
