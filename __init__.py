@@ -22,6 +22,8 @@ __license__ = 'MIT'
 import warnings
 import logging
 import sys
+import random
+import time
 import os
 from typing import Optional, Dict, Any, Tuple
 
@@ -312,15 +314,89 @@ _apply_patches()
 # ===============================
 
 def _print_banner():
-    if sys.stdout.isatty() and not os.environ.get('LAMBDA3_NO_BANNER'):
-        print("\n" + "="*60)
-        print("🚀 Lambda³ GPU Framework 🚀")
-        print("="*60)
-        if GPU_AVAILABLE:
-            print(f"✨ GPU Mode: {GPU_NAME} ({GPU_MEMORY:.1f}GB)")
-        else:
-            print("💻 CPU Mode (Install CuPy for GPU acceleration)")
-        print("="*60 + "\n")
+    """設定可能なバナー表示"""
+    if not sys.stdout.isatty() or os.environ.get('LAMBDA3_NO_BANNER'):
+        return
+    
+    # 環境変数でスタイル選択
+    # LAMBDA3_BANNER_STYLE = simple | random | anime | matrix | tamaki
+    banner_style = os.environ.get('LAMBDA3_BANNER_STYLE', 'random').lower()
+    
+    if banner_style == 'simple':
+        _print_simple_banner()
+    elif banner_style == 'anime':
+        _print_anime_banner()
+    elif banner_style == 'matrix':
+        _print_matrix_banner()
+    elif banner_style == 'tamaki':
+        _print_tamaki_banner()
+    else:  # random or default
+        # ランダムに選択
+        banners = [_print_simple_banner, _print_anime_banner, 
+                  _print_matrix_banner, _print_tamaki_banner]
+        random.choice(banners)()
+
+def _print_simple_banner():
+    """シンプルバナー（元のスタイル）"""
+    print("\n" + "="*60)
+    print("🌟 Lambda³ GPU - Structural Analysis at Light Speed! 🚀")
+    print("="*60)
+    if GPU_AVAILABLE:
+        print(f"✨ GPU Mode: {GPU_NAME} ({GPU_MEMORY:.1f}GB)")
+    else:
+        print("💻 CPU Mode (Install CuPy for GPU acceleration)")
+    print("="*60 + "\n")
+
+def _print_anime_banner():
+    """アニメーションバナー"""
+    print("\n", end='')
+    loading = "Loading Lambda³ GPU"
+    for char in loading:
+        print(char, end='', flush=True)
+        time.sleep(0.03)
+    
+    for _ in range(3):
+        time.sleep(0.2)
+        print(".", end='', flush=True)
+    
+    print(" ✨")
+    _print_simple_banner()
+
+def _print_matrix_banner():
+    """マトリックス風バナー"""
+    print("\n╔══════════════════════════════════════════════════════════╗")
+    print("║ 01001100 01000001 01001101 01000010 01000100 01000001 ³ ║")
+    print("║          Λ  Λ  Λ  NO.TIME.MATRIX  Λ  Λ  Λ              ║")
+    print("╚══════════════════════════════════════════════════════════╝")
+    if GPU_AVAILABLE:
+        print(f"  [{GPU_NAME}] ONLINE | MEMORY: {GPU_MEMORY:.1f}GB")
+    else:
+        print("  [CPU MODE] GPU NOT DETECTED")
+    print()
+
+def _print_tamaki_banner():
+    """環ちゃんバナー"""
+    faces = ["(◕‿◕)", "(｡♥‿♥｡)", "(✧ω✧)", "(´･ω･`)", "(*´▽｀*)"]
+    messages = [
+        "起動したよ〜！", 
+        "今日も頑張るぞ〜！",
+        "ご主人さま、準備OK！",
+        "GPU最高〜！",
+        "構造解析の時間だよ〜！"
+    ]
+    
+    face = random.choice(faces)
+    message = random.choice(messages)
+    
+    print(f"\n{'='*60}")
+    print(f"    {face} < {message}")
+    print(f"    Lambda³ GPU v{__version__}")
+    print(f"{'='*60}")
+    if GPU_AVAILABLE:
+        print(f"    GPU: {GPU_NAME} ({GPU_MEMORY:.1f}GB)")
+    else:
+        print("    CPU Mode")
+    print(f"{'='*60}\n")
 
 # Show banner in interactive mode
 if hasattr(sys, 'ps1'):
@@ -464,45 +540,6 @@ def __getattr__(name):
     
     # Not found
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-# ===============================
-# Import Hook for Monkey Patching
-# ===============================
-
-def _apply_patches():
-    """必要なパッチを適用"""
-    try:
-        # CuPyのfind_peaksパッチ
-        from cupyx.scipy import signal
-        
-        if not hasattr(signal, 'find_peaks') or True:  # 常に適用
-            # 簡易実装
-            def find_peaks(x, height=None, distance=None, **kwargs):
-                """CuPy用find_peaks簡易実装"""
-                import cupy as cp
-                
-                if isinstance(x, cp.ndarray):
-                    x_cpu = cp.asnumpy(x)
-                else:
-                    x_cpu = x
-                
-                from scipy.signal import find_peaks as scipy_find_peaks
-                peaks, properties = scipy_find_peaks(x_cpu, height=height, distance=distance, **kwargs)
-                
-                if isinstance(x, cp.ndarray):
-                    return cp.asarray(peaks), {k: cp.asarray(v) if isinstance(v, np.ndarray) else v 
-                                               for k, v in properties.items()}
-                else:
-                    return peaks, properties
-            
-            signal.find_peaks = find_peaks
-            logger.debug("Applied find_peaks patch for CuPy")
-            
-    except Exception as e:
-        logger.debug(f"Could not apply patches: {e}")
-
-# Apply patches
-_apply_patches()
 
 # ===============================
 # Final Setup
