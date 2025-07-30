@@ -43,7 +43,8 @@ OPTIONAL_PACKAGES = {
     'cupy': '8.0.0',
     'cupyx': None,
     'joblib': '0.16.0',
-    'tqdm': '4.50.0'
+    'tqdm': '4.50.0',
+    'pylibraft-cu11': '25.6.0',  # 位相空間解析用
 }
 
 # Default values for A100
@@ -103,95 +104,47 @@ class GPUEnvironment:
             self.has_cupy = True
             warnings.warn(
                 f"GPU initialization error: {e}. Running in CPU mode.",
-                RuntimeWarning
+                ImportWarning
             )
     
     def _get_gpu_info(self, cp):
-        """GPU詳細情報を取得"""
+        """GPU情報を取得"""
         try:
-            # デバイスを選択
-            cp.cuda.Device(self.device_id).use()
+            # デバイス情報
+            self.device_id = cp.cuda.Device().id
             
-            # デバイスプロパティを取得
-            props = self._get_device_properties(cp)
-            
-            # GPU名
-            self.gpu_name = self._extract_gpu_name(props)
+            # GPU名の取得（新しい方法）
+            try:
+                props = cp.cuda.runtime.getDeviceProperties(self.device_id)
+                self.gpu_name = props['name'].decode() if isinstance(props['name'], bytes) else props['name']
+            except:
+                self.gpu_name = DEFAULT_GPU_NAME
             
             # メモリ情報
-            self.gpu_memory = self._get_gpu_memory(cp)
+            mempool = cp.get_default_memory_pool()
+            free_mem, total_mem = cp.cuda.runtime.memGetInfo()
+            self.gpu_memory = total_mem / (1024**3)  # GB
             
             # Compute Capability
-            self.compute_capability = self._get_compute_capability(cp, props)
+            self.compute_capability = self._get_compute_capability(cp)
             
-            # CUDA version
+            # CUDAバージョン
             self.cuda_version = self._get_cuda_version(cp)
             
-        except Exception as e:
-            logger.error(f"Failed to get GPU info: {e}")
-            self.gpu_available = False
-    
-    def _get_device_properties(self, cp):
-        """デバイスプロパティを安全に取得"""
-        try:
-            return cp.cuda.runtime.getDeviceProperties(self.device_id)
-        except Exception as e:
-            logger.warning(f"Could not get device properties: {e}")
-            return {}
-    
-    def _extract_gpu_name(self, props) -> str:
-        """GPU名を抽出"""
-        try:
-            if isinstance(props, dict):
-                name = props.get('name', DEFAULT_GPU_NAME)
-            else:
-                name = getattr(props, 'name', DEFAULT_GPU_NAME)
+            logger.info(f"GPU detected: {self.gpu_name} ({self.gpu_memory:.1f}GB)")
             
-            # バイト文字列の場合はデコード
-            if isinstance(name, bytes):
-                return name.decode('utf-8')
-            return str(name)
-        except:
-            return DEFAULT_GPU_NAME
+        except Exception as e:
+            logger.warning(f"Failed to get full GPU info: {e}")
+            self.gpu_name = "Unknown GPU"
+            self.gpu_memory = 0
     
-    def _get_gpu_memory(self, cp) -> float:
-        """GPUメモリ容量を取得（GB）"""
-        try:
-            _, total_memory = cp.cuda.runtime.memGetInfo()
-            return total_memory / 1024**3
-        except:
-            return 0.0
-    
-    def _get_compute_capability(self, cp, props) -> str:
+    def _get_compute_capability(self, cp) -> str:
         """Compute Capabilityを取得"""
         try:
-            # 方法1: propsから取得
-            if isinstance(props, dict):
-                major = props.get('major', 0)
-                minor = props.get('minor', 0)
-            else:
-                major = getattr(props, 'major', 0)
-                minor = getattr(props, 'minor', 0)
-            
-            # 取得できた場合
-            if major > 0:
-                return f"{major}.{minor}"
-            
-            # 方法2: デバイス属性から取得（古い方法）
-            try:
-                device = cp.cuda.Device(self.device_id)
-                attrs = device.attributes
-                if hasattr(attrs, 'get') and 'ComputeCapability' in attrs:
-                    return attrs['ComputeCapability']
-            except:
-                pass
-            
-            # デフォルト値を返す
-            logger.warning(f"Could not detect compute capability, using default: {DEFAULT_COMPUTE_CAPABILITY}")
-            return DEFAULT_COMPUTE_CAPABILITY
-            
-        except Exception as e:
-            logger.warning(f"Error getting compute capability: {e}")
+            major = cp.cuda.Device().compute_capability_major
+            minor = cp.cuda.Device().compute_capability_minor
+            return f"{major}.{minor}"
+        except:
             return DEFAULT_COMPUTE_CAPABILITY
     
     def _get_cuda_version(self, cp) -> str:
@@ -256,23 +209,8 @@ def check_dependencies():
             f"Please install with: pip install {' '.join(missing_required)}"
         )
     
-    if missing_optional:
+    if missing_optional and logger.isEnabledFor(logging.DEBUG):
         logger.debug(f"Optional packages not installed: {', '.join(missing_optional)}")
-
-# Run dependency check
-check_dependencies()
-
-# ===============================
-# Log GPU Status
-# ===============================
-
-if GPU_AVAILABLE:
-    logger.info(f"🚀 GPU Enabled: {GPU_NAME}")
-    logger.info(f"   Memory: {GPU_MEMORY:.1f} GB")
-    logger.info(f"   CUDA: {CUDA_VERSION_STR}")
-    logger.info(f"   Compute Capability: {GPU_COMPUTE_CAPABILITY}")
-else:
-    logger.warning("💻 Running in CPU mode (GPU not available)")
 
 # ===============================
 # Utility Functions
@@ -282,81 +220,101 @@ def get_gpu_info() -> Dict[str, Any]:
     """GPU情報を取得"""
     return gpu_env.get_info_dict()
 
-def set_gpu_device(device_id: int = 0) -> bool:
+def set_gpu_device(device_id: int) -> None:
     """使用するGPUデバイスを設定"""
-    if not GPU_AVAILABLE:
-        logger.warning("GPU not available, cannot set device")
-        return False
-    
-    try:
+    if GPU_AVAILABLE:
         import cupy as cp
         cp.cuda.Device(device_id).use()
-        logger.info(f"Set GPU device to: {device_id}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to set GPU device: {e}")
-        return False
+        logger.info(f"GPU device set to: {device_id}")
+    else:
+        logger.warning("No GPU available")
 
-def enable_gpu_logging(level: str = 'DEBUG') -> None:
-    """GPU関連の詳細ログを有効化"""
+def enable_gpu_logging(level: str = 'INFO') -> None:
+    """GPU関連のログレベルを設定"""
     numeric_level = getattr(logging, level.upper(), None)
     if not isinstance(numeric_level, int):
         raise ValueError(f'Invalid log level: {level}')
     
     logger.setLevel(numeric_level)
-    
-    if HAS_CUPY:
-        cupy_logger = logging.getLogger('cupy')
-        cupy_logger.setLevel(numeric_level)
+    logging.getLogger('lambda3_gpu').setLevel(numeric_level)
 
-def benchmark_gpu(size: int = 10000) -> Optional[Dict[str, float]]:
-    """簡易GPUベンチマーク"""
+def benchmark_gpu() -> Optional[float]:
+    """簡単なGPUベンチマーク（GFLOPS）"""
     if not GPU_AVAILABLE:
-        logger.warning("GPU not available for benchmarking")
         return None
     
-    import time
-    import numpy as np
-    import cupy as cp
-    
-    # CPU計測
-    cpu_array = np.random.randn(size, size).astype(np.float32)
-    
-    cpu_start = time.perf_counter()
-    cpu_result = np.matmul(cpu_array, cpu_array)
-    cpu_time = time.perf_counter() - cpu_start
-    
-    # GPU計測
-    gpu_array = cp.asarray(cpu_array)
-    cp.cuda.Stream.null.synchronize()
-    
-    gpu_start = time.perf_counter()
-    gpu_result = cp.matmul(gpu_array, gpu_array)
-    cp.cuda.Stream.null.synchronize()
-    gpu_time = time.perf_counter() - gpu_start
-    
-    speedup = cpu_time / gpu_time
-    
-    result = {
-        'matrix_size': size,
-        'cpu_time': cpu_time,
-        'gpu_time': gpu_time,
-        'speedup': speedup
-    }
-    
-    logger.info(f"Benchmark result: {speedup:.1f}x speedup on {size}x{size} matrix multiplication")
-    
-    return result
+    try:
+        import cupy as cp
+        size = 10000
+        a = cp.random.rand(size, size, dtype=cp.float32)
+        b = cp.random.rand(size, size, dtype=cp.float32)
+        
+        # Warm up
+        cp.dot(a, b)
+        cp.cuda.Stream.null.synchronize()
+        
+        # Benchmark
+        import time
+        start = time.time()
+        for _ in range(10):
+            cp.dot(a, b)
+        cp.cuda.Stream.null.synchronize()
+        elapsed = time.time() - start
+        
+        # Calculate GFLOPS
+        gflops = (10 * 2 * size**3) / (elapsed * 1e9)
+        return gflops
+    except Exception as e:
+        logger.warning(f"GPU benchmark failed: {e}")
+        return None
 
 # ===============================
-# Banner Display
+# Monkey Patches
+# ===============================
+
+def _apply_patches():
+    """必要なパッチを適用"""
+    try:
+        # CuPyのfind_peaksパッチ
+        from cupyx.scipy import signal
+        
+        if not hasattr(signal, 'find_peaks') or True:  # 常に適用
+            # 簡易実装
+            def find_peaks(x, height=None, distance=None, **kwargs):
+                """CuPy用find_peaks簡易実装"""
+                import cupy as cp
+                
+                if isinstance(x, cp.ndarray):
+                    x_cpu = cp.asnumpy(x)
+                else:
+                    x_cpu = x
+                
+                from scipy.signal import find_peaks as scipy_find_peaks
+                peaks, properties = scipy_find_peaks(x_cpu, height=height, distance=distance, **kwargs)
+                
+                if isinstance(x, cp.ndarray):
+                    return cp.asarray(peaks), {k: cp.asarray(v) if isinstance(v, np.ndarray) else v 
+                                               for k, v in properties.items()}
+                else:
+                    return peaks, properties
+            
+            signal.find_peaks = find_peaks
+            logger.debug("Applied find_peaks patch for CuPy")
+            
+    except Exception as e:
+        logger.debug(f"Could not apply patches: {e}")
+
+# Apply patches
+_apply_patches()
+
+# ===============================
+# Banner
 # ===============================
 
 def _print_banner():
-    """かわいいバナー表示"""
-    if sys.stdout.isatty():
+    if sys.stdout.isatty() and not os.environ.get('LAMBDA3_NO_BANNER'):
         print("\n" + "="*60)
-        print("🌟 Lambda³ GPU - Structural Analysis at Light Speed! 🚀")
+        print("🚀 Lambda³ GPU Framework 🚀")
         print("="*60)
         if GPU_AVAILABLE:
             print(f"✨ GPU Mode: {GPU_NAME} ({GPU_MEMORY:.1f}GB)")
@@ -423,6 +381,19 @@ __all__ = [
     'MDLambda3DetectorGPU',
     'TwoStageAnalyzerGPU',
     
+    # Functions（追加！）
+    'perform_two_stage_analysis_gpu',
+    
+    # Result classes（追加！）
+    'MDLambda3Result',
+    'TwoStageLambda3Result',
+    'ResidueLevelAnalysis',
+    'ResidueEvent',
+    
+    # Visualization（追加！）
+    'Lambda3VisualizerGPU',
+    'CausalityVisualizerGPU',
+    
     # Utilities
     'get_gpu_info',
     'set_gpu_device',
@@ -459,6 +430,37 @@ def __getattr__(name):
     elif name == 'TwoStageAnalyzerGPU':
         from lambda3_gpu.analysis.two_stage_analyzer_gpu import TwoStageAnalyzerGPU
         return TwoStageAnalyzerGPU
+    
+    # Functions
+    elif name == 'perform_two_stage_analysis_gpu':
+        from lambda3_gpu.analysis.two_stage_analyzer_gpu import perform_two_stage_analysis_gpu
+        return perform_two_stage_analysis_gpu
+    
+    # Result classes
+    elif name == 'MDLambda3Result':
+        from lambda3_gpu.analysis.md_lambda3_detector_gpu import MDLambda3Result
+        return MDLambda3Result
+    
+    elif name == 'TwoStageLambda3Result':
+        from lambda3_gpu.analysis.two_stage_analyzer_gpu import TwoStageLambda3Result
+        return TwoStageLambda3Result
+    
+    elif name == 'ResidueLevelAnalysis':
+        from lambda3_gpu.analysis.two_stage_analyzer_gpu import ResidueLevelAnalysis
+        return ResidueLevelAnalysis
+    
+    elif name == 'ResidueEvent':
+        from lambda3_gpu.analysis.two_stage_analyzer_gpu import ResidueEvent
+        return ResidueEvent
+    
+    # Visualization
+    elif name == 'Lambda3VisualizerGPU':
+        from lambda3_gpu.visualization.plot_results_gpu import Lambda3VisualizerGPU
+        return Lambda3VisualizerGPU
+    
+    elif name == 'CausalityVisualizerGPU':
+        from lambda3_gpu.visualization.causality_viz_gpu import CausalityVisualizerGPU
+        return CausalityVisualizerGPU
     
     # Not found
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
@@ -508,3 +510,16 @@ def _apply_patches():
 
 # Apply patches on import
 _apply_patches()
+
+# ===============================
+# Final Setup
+# ===============================
+
+# Check dependencies on import
+try:
+    check_dependencies()
+except ImportError as e:
+    logger.warning(f"Dependency check failed: {e}")
+
+# Log initialization
+logger.debug(f"Lambda³ GPU initialized. GPU Available: {GPU_AVAILABLE}")
