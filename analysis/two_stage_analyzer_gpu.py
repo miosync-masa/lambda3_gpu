@@ -304,8 +304,8 @@ class TwoStageAnalyzerGPU(GPUBackend):
             # 3. ネットワーク解析
             network_results = self.residue_network.analyze(
                 anomaly_scores,
-                structures['residue_coupling'],
-                structures.get('residue_coms')
+                structures.residue_coupling,
+                structures.residue_coms 
             )
             
             # 4. イベント構築
