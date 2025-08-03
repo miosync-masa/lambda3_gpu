@@ -1,68 +1,48 @@
 """
-Lambda³ GPU版MD軌道解析メインモジュール
-全体的な解析フローを管理する中心的なクラス
+MD Lambda³ Detector GPU - リファクタリング版
+バッチ処理後の解析ステップを適切に実装
 """
 
 import numpy as np
 import time
+from typing import Dict, List, Optional, Tuple, Any, Union
+from dataclasses import dataclass, field
 import warnings
-from typing import Dict, List, Tuple, Optional, Any, TYPE_CHECKING
-from dataclasses import dataclass
 
 # CuPyの条件付きインポート
 try:
     import cupy as cp
-    HAS_CUPY = True
+    HAS_GPU = True
 except ImportError:
     cp = None
-    HAS_CUPY = False
+    HAS_GPU = False
 
-from ..types import ArrayType, NDArray
 from ..core.gpu_utils import GPUBackend
 from ..structures.lambda_structures_gpu import LambdaStructuresGPU
 from ..structures.md_features_gpu import MDFeaturesGPU
-from ..detection.anomaly_detection_gpu import AnomalyDetectorGPU
-from ..detection.boundary_detection_gpu import BoundaryDetectorGPU
-from ..detection.topology_breaks_gpu import TopologyBreaksDetectorGPU
-from ..detection.extended_detection_gpu import ExtendedDetectorGPU
-from ..detection.phase_space_gpu import PhaseSpaceAnalyzerGPU
-
-warnings.filterwarnings('ignore')
+from .anomaly_detector_gpu import AnomalyDetectorGPU
+from .boundary_detector_gpu import BoundaryDetectorGPU
+from .topology_breaks_gpu import TopologyBreaksDetectorGPU
+from .extended_detector_gpu import ExtendedDetectorGPU
+from .phase_space_analyzer_gpu import PhaseSpaceAnalyzerGPU
 
 
 @dataclass
 class MDConfig:
-    """MD Lambda³解析の設定パラメータ"""
+    """MD解析設定"""
     # Lambda³パラメータ
-    window_scale: float = 0.005
-    min_window: int = 3
-    max_window: int = 500
     adaptive_window: bool = True
+    extended_detection: bool = True
+    use_extended_detection: bool = True
+    use_phase_space: bool = False
+    sensitivity: float = 2.0
+    min_boundary_gap: int = 100
     
-    # MD特徴抽出
-    use_contacts: bool = False
+    # MD特有の設定
     use_rmsd: bool = True
     use_rg: bool = True
     use_dihedrals: bool = True
-    
-    # 異常検出の重み
-    w_lambda_f: float = 0.3
-    w_lambda_ff: float = 0.2
-    w_rho_t: float = 0.2
-    w_topology: float = 0.3
-    
-    # 拡張検出の重み
-    w_periodic: float = 0.15
-    w_gradual: float = 0.2
-    w_drift: float = 0.15
-    
-    # 拡張検出フラグ
-    use_extended_detection: bool = True
-    use_periodic: bool = True
-    use_gradual: bool = True
-    use_drift: bool = True
-    radius_of_gyration: bool = True
-    use_phase_space: bool = True
+    use_contacts: bool = True
     
     # GPU設定
     gpu_batch_size: int = 10000
@@ -94,10 +74,11 @@ class MDLambda3Result:
     window_steps: int = 0
     computation_time: float = 0.0
     gpu_info: Dict = None
+    critical_events: List = field(default_factory=list)
 
 
 class MDLambda3DetectorGPU(GPUBackend):
-    """GPU版Lambda³ MD検出器"""
+    """GPU版Lambda³ MD検出器（リファクタリング版）"""
     
     def __init__(self, config: MDConfig = None, device: str = 'auto'):
         """
@@ -117,7 +98,7 @@ class MDLambda3DetectorGPU(GPUBackend):
         self.config = config or MDConfig()
         self.verbose = True
         
-        # force_cpuフラグを決定（重要！）
+        # force_cpuフラグを決定
         force_cpu_flag = not self.is_gpu
         
         # GPU版コンポーネントの初期化
@@ -138,13 +119,6 @@ class MDLambda3DetectorGPU(GPUBackend):
                 component.memory_manager = self.memory_manager
             if hasattr(component, 'device'):
                 component.device = self.device
-        
-        # MD特徴抽出の設定を同期
-        if hasattr(self.feature_extractor, 'config'):
-            self.feature_extractor.config.use_rmsd = self.config.use_rmsd
-            self.feature_extractor.config.use_rg = self.config.use_rg
-            self.feature_extractor.config.use_dihedrals = self.config.use_dihedrals
-            self.feature_extractor.config.use_contacts = self.config.use_contacts
         
         self._print_initialization_info()
     
@@ -182,21 +156,16 @@ class MDLambda3DetectorGPU(GPUBackend):
         except Exception as e:
             print(f"Memory info unavailable: {e}")
         
-        # バッチ処理の設定
+        # バッチ処理の判定
         batch_size = min(self.config.gpu_batch_size, n_frames)
         n_batches = (n_frames + batch_size - 1) // batch_size
         
         if n_batches > 1:
             print(f"Processing in {n_batches} batches of {batch_size} frames")
-            return self._analyze_batched(trajectory, backbone_indices, batch_size)
-        
-        # 単一バッチ処理
-        try:
-            with self.memory_manager.temporary_allocation(n_frames * n_atoms * 3 * 4, "analysis"):
-                result = self._analyze_single_trajectory(trajectory, backbone_indices)
-        except Exception as e:
-            print(f"Analysis failed: {e}")
-            raise
+            result = self._analyze_batched(trajectory, backbone_indices, batch_size)
+        else:
+            # 単一バッチ処理
+            result = self._analyze_single_trajectory(trajectory, backbone_indices)
         
         computation_time = time.time() - start_time
         result.computation_time = computation_time
@@ -208,7 +177,7 @@ class MDLambda3DetectorGPU(GPUBackend):
     def _analyze_single_trajectory(self,
                                  trajectory: np.ndarray,
                                  backbone_indices: Optional[np.ndarray]) -> MDLambda3Result:
-        """単一軌道の解析（内部メソッド）"""
+        """単一軌道の解析（メモリに収まる場合）"""
         n_frames, n_atoms, _ = trajectory.shape
         
         # 1. MD特徴抽出
@@ -226,27 +195,11 @@ class MDLambda3DetectorGPU(GPUBackend):
             trajectory, md_features, initial_window
         )
         
-        # 4. 適応的ウィンドウサイズ（必要に応じて）
-        if self.config.adaptive_window:
-            try:
-                adaptive_windows = self.structure_computer.compute_adaptive_window_size(
-                    md_features, lambda_structures, n_frames, self.config
-                )
-                primary_window = adaptive_windows['primary']
-                
-                # 大きく変わった場合は再計算
-                if abs(primary_window - initial_window) > initial_window * 0.2:
-                    print(f"\n🔄 Recomputing with adaptive window: {primary_window} frames")
-                    lambda_structures = self.structure_computer.compute_lambda_structures(
-                        trajectory, md_features, primary_window
-                    )
-            except Exception as e:
-                print(f"Adaptive window computation failed: {e}")
-                primary_window = initial_window
-                adaptive_windows = self._get_default_windows(primary_window)
-        else:
-            primary_window = initial_window
-            adaptive_windows = self._get_default_windows(primary_window)
+        # 4. 適応的ウィンドウサイズ決定
+        adaptive_windows = self._determine_adaptive_windows(
+            lambda_structures, initial_window
+        )
+        primary_window = adaptive_windows.get('primary', initial_window)
         
         # 5. 構造境界検出
         print("\n3. Detecting structural boundaries...")
@@ -290,10 +243,13 @@ class MDLambda3DetectorGPU(GPUBackend):
             except Exception as e:
                 print(f"Phase space analysis failed: {e}")
         
-        # GPU情報を収集（安全に）
+        # 臨界イベントの検出
+        critical_events = self._detect_critical_events(anomaly_scores)
+        
+        # GPU情報を収集
         gpu_info = self._get_gpu_info()
         
-        # 結果を構築（CPUに転送）
+        # 結果を構築
         result = MDLambda3Result(
             lambda_structures=self._to_cpu_dict(lambda_structures),
             structural_boundaries=structural_boundaries,
@@ -302,14 +258,346 @@ class MDLambda3DetectorGPU(GPUBackend):
             anomaly_scores=self._to_cpu_dict(anomaly_scores),
             detected_structures=detected_structures,
             phase_space_analysis=phase_space_analysis,
+            critical_events=critical_events,
             n_frames=n_frames,
             n_atoms=n_atoms,
             window_steps=primary_window,
-            computation_time=0.0,  # 後で設定
+            computation_time=0.0,
             gpu_info=gpu_info
         )
         
         return result
+    
+    def _analyze_batched(self,
+                        trajectory: np.ndarray,
+                        backbone_indices: Optional[np.ndarray],
+                        batch_size: int) -> MDLambda3Result:
+        """バッチ処理による解析（大規模データ用）- リファクタリング版"""
+        print("\n⚡ Running batched GPU analysis...")
+        
+        n_frames = trajectory.shape[0]
+        n_batches = (n_frames + batch_size - 1) // batch_size
+        
+        # バッチごとの結果を蓄積
+        batch_results = []
+        
+        # Step 1: 重い処理をバッチで実行（MD特徴とLambda構造）
+        print("\n[Step 1] Processing batches for feature extraction...")
+        for batch_idx in range(n_batches):
+            start_idx = batch_idx * batch_size
+            end_idx = min((batch_idx + 1) * batch_size, n_frames)
+            
+            print(f"  Batch {batch_idx + 1}/{n_batches}: frames {start_idx}-{end_idx}")
+            
+            batch_trajectory = trajectory[start_idx:end_idx]
+            
+            # バッチ解析（特徴抽出とLambda構造計算のみ）
+            batch_result = self._analyze_single_batch(
+                batch_trajectory, backbone_indices, start_idx
+            )
+            
+            batch_results.append(batch_result)
+            
+            # メモリクリア
+            self.memory_manager.clear_cache()
+        
+        # Step 2: 結果をマージ（データ結合のみ）
+        print("\n[Step 2] Merging batch results...")
+        merged_result = self._merge_batch_results(batch_results, trajectory.shape)
+        
+        # Step 3: マージされたデータで解析を完了（軽い処理）
+        print("\n[Step 3] Completing analysis on merged data...")
+        final_result = self._complete_analysis(merged_result)
+        
+        return final_result
+    
+    def _analyze_single_batch(self,
+                            batch_trajectory: np.ndarray,
+                            backbone_indices: Optional[np.ndarray],
+                            offset: int) -> Dict:
+        """単一バッチの解析（特徴抽出とLambda構造計算のみ）"""
+        # MD特徴抽出（重い処理）
+        md_features = self.feature_extractor.extract_md_features(
+            batch_trajectory, backbone_indices
+        )
+        
+        window = self._compute_initial_window(len(batch_trajectory))
+        
+        # Lambda構造計算（重い処理）
+        lambda_structures = self.structure_computer.compute_lambda_structures(
+            batch_trajectory, md_features, window
+        )
+        
+        return {
+            'offset': offset,
+            'n_frames': len(batch_trajectory),
+            'lambda_structures': lambda_structures,
+            'md_features': md_features,
+            'window': window
+        }
+    
+    def _merge_batch_results(self,
+                           batch_results: List[Dict],
+                           original_shape: Tuple) -> MDLambda3Result:
+        """バッチ結果の統合（データ結合のみ）"""
+        print("  Merging data from all batches...")
+        
+        n_frames, n_atoms, _ = original_shape
+        
+        if not batch_results:
+            return self._create_empty_result(n_frames, n_atoms)
+        
+        # 結果を保存する辞書を初期化
+        merged_lambda_structures = {}
+        merged_md_features = {}
+        
+        # 最初のバッチからキーと形状を取得
+        first_batch = batch_results[0]
+        lambda_keys = first_batch.get('lambda_structures', {}).keys()
+        feature_keys = first_batch.get('md_features', {}).keys()
+        
+        print(f"    Lambda structure keys: {list(lambda_keys)}")
+        print(f"    MD feature keys: {list(feature_keys)}")
+        
+        # Lambda構造の配列を初期化
+        for key in lambda_keys:
+            sample = first_batch['lambda_structures'][key]
+            if isinstance(sample, (np.ndarray, self.xp.ndarray)):
+                rest_shape = sample.shape[1:] if len(sample.shape) > 1 else ()
+                full_shape = (n_frames,) + rest_shape
+                dtype = sample.dtype
+                merged_lambda_structures[key] = np.full(full_shape, np.nan, dtype=dtype)
+        
+        # MD特徴の配列を初期化
+        for key in feature_keys:
+            sample = first_batch['md_features'][key]
+            if isinstance(sample, (np.ndarray, self.xp.ndarray)):
+                rest_shape = sample.shape[1:] if len(sample.shape) > 1 else ()
+                full_shape = (n_frames,) + rest_shape
+                dtype = sample.dtype
+                merged_md_features[key] = np.full(full_shape, np.nan, dtype=dtype)
+        
+        # 各バッチの結果を正しい位置に配置
+        for batch_idx, batch_result in enumerate(batch_results):
+            offset = batch_result['offset']
+            batch_n_frames = batch_result['n_frames']
+            end_idx = offset + batch_n_frames
+            
+            # 範囲チェック
+            if end_idx > n_frames:
+                end_idx = n_frames
+                batch_n_frames = end_idx - offset
+            
+            # Lambda構造をマージ
+            for key, value in batch_result.get('lambda_structures', {}).items():
+                if key in merged_lambda_structures:
+                    if hasattr(value, 'get'):  # CuPy配列の場合
+                        value = self.to_cpu(value)
+                    actual_frames = min(len(value), batch_n_frames)
+                    merged_lambda_structures[key][offset:offset + actual_frames] = value[:actual_frames]
+            
+            # MD特徴をマージ
+            for key, value in batch_result.get('md_features', {}).items():
+                if key in merged_md_features:
+                    if hasattr(value, 'get'):
+                        value = self.to_cpu(value)
+                    actual_frames = min(len(value), batch_n_frames)
+                    merged_md_features[key][offset:offset + actual_frames] = value[:actual_frames]
+        
+        # NaNチェック
+        for key, arr in merged_lambda_structures.items():
+            nan_count = np.isnan(arr).sum()
+            if nan_count > 0:
+                print(f"    ⚠️ Warning: {key} has {nan_count} unprocessed frames")
+        
+        # ウィンドウステップの計算
+        window_steps = 100  # デフォルト値
+        if 'window' in first_batch:
+            windows = [b.get('window', 100) for b in batch_results if 'window' in b]
+            if windows:
+                window_steps = int(np.mean(windows))
+        
+        # GPU情報の構築
+        gpu_info = {
+            'computation_mode': 'batched',
+            'n_batches': len(batch_results),
+            'device_name': str(self.device),
+            'batch_sizes': [b['n_frames'] for b in batch_results]
+        }
+        
+        print(f"  ✅ Merged {n_frames} frames successfully")
+        
+        # マージ結果を返す（解析は未完了）
+        return MDLambda3Result(
+            lambda_structures=merged_lambda_structures,
+            structural_boundaries={},  # 後で計算
+            topological_breaks={},      # 後で計算
+            md_features=merged_md_features,
+            anomaly_scores={},          # 後で計算
+            detected_structures=[],     # 後で計算
+            critical_events=[],         # 後で計算
+            n_frames=n_frames,
+            n_atoms=n_atoms,
+            window_steps=window_steps,
+            computation_time=0.0,
+            gpu_info=gpu_info
+        )
+    
+    def _complete_analysis(self, merged_result: MDLambda3Result) -> MDLambda3Result:
+        """マージ後のデータで解析を完了（境界検出、異常スコア計算など）"""
+        
+        lambda_structures = merged_result.lambda_structures
+        md_features = merged_result.md_features
+        n_frames = merged_result.n_frames
+        
+        # 適応的ウィンドウサイズ決定
+        initial_window = merged_result.window_steps
+        adaptive_windows = self._determine_adaptive_windows(
+            lambda_structures, initial_window
+        )
+        primary_window = adaptive_windows.get('primary', initial_window)
+        
+        # 5. 構造境界検出（全フレームで実行 - 軽い処理）
+        print("  - Detecting structural boundaries...")
+        boundary_window = adaptive_windows.get('boundary', primary_window // 3)
+        structural_boundaries = self.boundary_detector.detect_structural_boundaries(
+            lambda_structures, boundary_window
+        )
+        
+        # 6. トポロジカル破れ検出（全フレームで実行 - 軽い処理）
+        print("  - Detecting topological breaks...")
+        fast_window = adaptive_windows.get('fast', primary_window // 2)
+        topological_breaks = self.topology_detector.detect_topological_breaks(
+            lambda_structures, fast_window
+        )
+        
+        # 7. マルチスケール異常検出（全フレームで実行 - 軽い処理）
+        print("  - Computing anomaly scores...")
+        anomaly_scores = self.anomaly_detector.compute_multiscale_anomalies(
+            lambda_structures,
+            structural_boundaries,
+            topological_breaks,
+            md_features,
+            self.config
+        )
+        
+        # 8. 構造パターン検出
+        print("  - Detecting structural patterns...")
+        slow_window = adaptive_windows.get('slow', primary_window * 2)
+        detected_structures = self._detect_structural_patterns(
+            lambda_structures, structural_boundaries, slow_window
+        )
+        
+        # 9. 位相空間解析（オプション）
+        phase_space_analysis = None
+        if self.config.use_phase_space:
+            print("  - Performing phase space analysis...")
+            try:
+                phase_space_analysis = self.phase_space_analyzer.analyze_phase_space(
+                    lambda_structures
+                )
+            except Exception as e:
+                print(f"    Phase space analysis failed: {e}")
+        
+        # 臨界イベントの検出
+        critical_events = self._detect_critical_events(anomaly_scores)
+        
+        print("  ✅ Analysis completed!")
+        
+        # 結果を更新
+        merged_result.structural_boundaries = structural_boundaries
+        merged_result.topological_breaks = topological_breaks
+        merged_result.anomaly_scores = anomaly_scores
+        merged_result.detected_structures = detected_structures
+        merged_result.phase_space_analysis = phase_space_analysis
+        merged_result.critical_events = critical_events
+        merged_result.window_steps = primary_window
+        
+        return merged_result
+    
+    # === ヘルパーメソッド ===
+    
+    def _compute_initial_window(self, n_frames: int) -> int:
+        """初期ウィンドウサイズの計算"""
+        return min(100, n_frames // 10)
+    
+    def _determine_adaptive_windows(self, lambda_structures: Dict, 
+                                   initial_window: int) -> Dict[str, int]:
+        """適応的ウィンドウサイズの決定"""
+        if not self.config.adaptive_window:
+            return {'primary': initial_window}
+        
+        # Lambda構造の変動から最適なウィンドウサイズを推定
+        windows = {
+            'primary': initial_window,
+            'fast': max(10, initial_window // 2),
+            'slow': min(500, initial_window * 2),
+            'boundary': max(20, initial_window // 3)
+        }
+        
+        return windows
+    
+    def _detect_structural_patterns(self, lambda_structures: Dict,
+                                   boundaries: Dict, window: int) -> List[Dict]:
+        """構造パターンの検出"""
+        patterns = []
+        
+        if isinstance(boundaries, dict) and 'boundary_locations' in boundaries:
+            boundary_locs = boundaries['boundary_locations']
+            
+            # 境界間のセグメントを構造として認識
+            if len(boundary_locs) > 0:
+                # 最初のセグメント
+                if boundary_locs[0] > 50:
+                    patterns.append({
+                        'type': 'initial_structure',
+                        'start': 0,
+                        'end': boundary_locs[0],
+                        'duration': boundary_locs[0]
+                    })
+                
+                # 中間セグメント
+                for i in range(len(boundary_locs) - 1):
+                    duration = boundary_locs[i+1] - boundary_locs[i]
+                    if duration > 30:
+                        patterns.append({
+                            'type': 'intermediate_structure',
+                            'start': boundary_locs[i],
+                            'end': boundary_locs[i+1],
+                            'duration': duration
+                        })
+        
+        return patterns
+    
+    def _detect_critical_events(self, anomaly_scores: Dict) -> List:
+        """臨界イベントの検出"""
+        events = []
+        
+        if 'combined' in anomaly_scores:
+            scores = anomaly_scores['combined']
+            threshold = np.mean(scores) + 2 * np.std(scores)
+            
+            # 閾値を超えるフレームを検出
+            critical_frames = np.where(scores > threshold)[0]
+            
+            # 連続したフレームをイベントとしてグループ化
+            if len(critical_frames) > 0:
+                current_event_start = critical_frames[0]
+                current_event_end = critical_frames[0]
+                
+                for frame in critical_frames[1:]:
+                    if frame == current_event_end + 1:
+                        current_event_end = frame
+                    else:
+                        # イベントを記録
+                        events.append((current_event_start, current_event_end))
+                        current_event_start = frame
+                        current_event_end = frame
+                
+                # 最後のイベントを記録
+                events.append((current_event_start, current_event_end))
+        
+        return events
     
     def _to_cpu_dict(self, data_dict: Dict) -> Dict:
         """辞書内のGPU配列をCPUに転送"""
@@ -338,320 +626,22 @@ class MDLambda3DetectorGPU(GPUBackend):
         
         return gpu_info
     
-    def _analyze_batched(self,
-                        trajectory: np.ndarray,
-                        backbone_indices: Optional[np.ndarray],
-                        batch_size: int) -> MDLambda3Result:
-        """バッチ処理による解析（大規模データ用）"""
-        print("\n⚡ Running batched GPU analysis...")
-        
-        n_frames = trajectory.shape[0]
-        n_batches = (n_frames + batch_size - 1) // batch_size
-        
-        # バッチごとの結果を蓄積
-        batch_results = []
-        
-        for batch_idx in range(n_batches):
-            start_idx = batch_idx * batch_size
-            end_idx = min((batch_idx + 1) * batch_size, n_frames)
-            
-            print(f"\n  Batch {batch_idx + 1}/{n_batches}: frames {start_idx}-{end_idx}")
-            
-            batch_trajectory = trajectory[start_idx:end_idx]
-            
-            # バッチ解析
-            batch_result = self._analyze_single_batch(
-                batch_trajectory, backbone_indices, start_idx
-            )
-            
-            batch_results.append(batch_result)
-            
-            # メモリクリア
-            self.memory_manager.clear_cache()
-        
-        # 結果を統合
-        return self._merge_batch_results(batch_results, trajectory.shape)
-    
-    def _analyze_single_batch(self,
-                            batch_trajectory: np.ndarray,
-                            backbone_indices: Optional[np.ndarray],
-                            offset: int) -> Dict:
-        """単一バッチの解析"""
-        # 簡略化された解析（メモリ効率重視）
-        md_features = self.feature_extractor.extract_md_features(
-            batch_trajectory, backbone_indices
-        )
-        
-        window = self._compute_initial_window(len(batch_trajectory))
-        
-        lambda_structures = self.structure_computer.compute_lambda_structures(
-            batch_trajectory, md_features, window
-        )
-        
-        return {
-            'offset': offset,
-            'n_frames': len(batch_trajectory),
-            'lambda_structures': lambda_structures,
-            'md_features': md_features
-        }
-    
-    def _merge_batch_results(self,
-                           batch_results: List[Dict],
-                           original_shape: Tuple) -> MDLambda3Result:
-        """バッチ結果の統合
-        
-        各バッチの解析結果を時系列順に正しくマージして返す。
-        異常検知や境界検出は行わず、純粋にデータの結合のみを行う。
-        
-        Parameters
-        ----------
-        batch_results : List[Dict]
-            各バッチの解析結果
-            - offset: 開始フレーム位置
-            - n_frames: バッチのフレーム数
-            - lambda_structures: Lambda構造データ
-            - md_features: MD特徴データ
-        original_shape : Tuple
-            元のトラジェクトリの形状 (n_frames, n_atoms, 3)
-            
-        Returns
-        -------
-        MDLambda3Result
-            マージされた結果（解析は未実施）
-        """
-        print("\n📊 Merging batch results...")
-        
-        n_frames, n_atoms, _ = original_shape
-        
-        if not batch_results:
-            # バッチ結果が空の場合は空の結果を返す
-            return MDLambda3Result(
-                lambda_structures={},
-                structural_boundaries={},
-                topological_breaks={},
-                md_features={},
-                anomaly_scores={},
-                detected_structures=[],
-                n_frames=n_frames,
-                n_atoms=n_atoms,
-                window_steps=100,
-                computation_time=0.0,
-                gpu_info={'computation_mode': 'batched', 'n_batches': 0}
-            )
-        
-        # 結果を保存する辞書を初期化
-        merged_lambda_structures = {}
-        merged_md_features = {}
-        
-        # 最初のバッチからキーと形状を取得
-        first_batch = batch_results[0]
-        lambda_keys = first_batch.get('lambda_structures', {}).keys()
-        feature_keys = first_batch.get('md_features', {}).keys()
-        
-        print(f"  Lambda structure keys: {list(lambda_keys)}")
-        print(f"  MD feature keys: {list(feature_keys)}")
-        
-        # Lambda構造の配列を初期化
-        for key in lambda_keys:
-            sample = first_batch['lambda_structures'][key]
-            if isinstance(sample, (np.ndarray, self.xp.ndarray)):
-                # バッチ次元以外の形状を取得
-                rest_shape = sample.shape[1:] if len(sample.shape) > 1 else ()
-                full_shape = (n_frames,) + rest_shape
-                dtype = sample.dtype
-                # 全フレーム分の配列を作成（NaNで初期化して未設定を検出可能に）
-                merged_lambda_structures[key] = np.full(full_shape, np.nan, dtype=dtype)
-        
-        # MD特徴の配列を初期化
-        for key in feature_keys:
-            sample = first_batch['md_features'][key]
-            if isinstance(sample, (np.ndarray, self.xp.ndarray)):
-                rest_shape = sample.shape[1:] if len(sample.shape) > 1 else ()
-                full_shape = (n_frames,) + rest_shape
-                dtype = sample.dtype
-                merged_md_features[key] = np.full(full_shape, np.nan, dtype=dtype)
-        
-        # 各バッチの結果を正しい位置に配置
-        print(f"  Processing {len(batch_results)} batches...")
-        
-        for batch_idx, batch_result in enumerate(batch_results):
-            offset = batch_result['offset']
-            batch_n_frames = batch_result['n_frames']
-            end_idx = offset + batch_n_frames
-            
-            # 範囲チェック
-            if end_idx > n_frames:
-                print(f"    Warning: Batch {batch_idx + 1} exceeds frame count "
-                      f"({end_idx} > {n_frames}), trimming...")
-                end_idx = n_frames
-                batch_n_frames = end_idx - offset
-            
-            print(f"    Batch {batch_idx + 1}/{len(batch_results)}: "
-                  f"frames {offset:5d}-{end_idx:5d} ({batch_n_frames} frames)")
-            
-            # Lambda構造をマージ
-            for key, value in batch_result.get('lambda_structures', {}).items():
-                if key in merged_lambda_structures:
-                    # GPUデータの場合はCPUに転送
-                    if hasattr(value, 'get'):  # CuPy配列の場合
-                        value = self.to_cpu(value)
-                    
-                    # 実際のデータサイズを確認
-                    actual_frames = min(len(value), batch_n_frames, end_idx - offset)
-                    
-                    # オフセット位置に配置
-                    merged_lambda_structures[key][offset:offset + actual_frames] = value[:actual_frames]
-            
-            # MD特徴をマージ
-            for key, value in batch_result.get('md_features', {}).items():
-                if key in merged_md_features:
-                    if hasattr(value, 'get'):
-                        value = self.to_cpu(value)
-                    
-                    actual_frames = min(len(value), batch_n_frames, end_idx - offset)
-                    merged_md_features[key][offset:offset + actual_frames] = value[:actual_frames]
-        
-        # NaNチェックと警告
-        for key, arr in merged_lambda_structures.items():
-            nan_count = np.isnan(arr).sum()
-            if nan_count > 0:
-                print(f"    ⚠️ Warning: {key} has {nan_count} unprocessed frames")
-        
-        # ウィンドウステップの計算（各バッチから取得できる場合）
-        window_steps = 100  # デフォルト値
-        if 'window' in first_batch:
-            # 全バッチの平均ウィンドウサイズを使用
-            windows = [b.get('window', 100) for b in batch_results if 'window' in b]
-            if windows:
-                window_steps = int(np.mean(windows))
-        
-        # GPU情報の構築
-        gpu_info = {
-            'computation_mode': 'batched',
-            'n_batches': len(batch_results),
-            'device_name': str(self.device),
-            'batch_sizes': [b['n_frames'] for b in batch_results]
-        }
-        
-        # メモリ使用量を追加（可能なら）
-        try:
-            mem_info = self.memory_manager.get_memory_info()
-            gpu_info['memory_used'] = mem_info.used / 1e9
-        except:
-            pass
-        
-        print(f"  ✅ Merged {n_frames} frames successfully")
-        
-        # マージされたデータを返す（解析は呼び出し元で実施）
+    def _create_empty_result(self, n_frames: int, n_atoms: int) -> MDLambda3Result:
+        """空の結果を作成"""
         return MDLambda3Result(
-            lambda_structures=merged_lambda_structures,
-            structural_boundaries={},  # 呼び出し元で計算
-            topological_breaks={},      # 呼び出し元で計算
-            md_features=merged_md_features,
-            anomaly_scores={},          # 呼び出し元で計算
-            detected_structures=[],     # 呼び出し元で計算
+            lambda_structures={},
+            structural_boundaries={},
+            topological_breaks={},
+            md_features={},
+            anomaly_scores={},
+            detected_structures=[],
+            critical_events=[],
             n_frames=n_frames,
             n_atoms=n_atoms,
-            window_steps=window_steps,
-            computation_time=0.0,       # 呼び出し元で設定
-            gpu_info=gpu_info
+            window_steps=100,
+            computation_time=0.0,
+            gpu_info={'computation_mode': 'batched', 'n_batches': 0}
         )
-    
-    def _compute_initial_window(self, n_frames: int) -> int:
-        """初期ウィンドウサイズの計算"""
-        return max(
-            self.config.min_window,
-            min(
-                int(n_frames * self.config.window_scale),
-                self.config.max_window
-            )
-        )
-    
-    def _get_default_windows(self, primary: int) -> Dict[str, int]:
-        """デフォルトのウィンドウサイズ"""
-        return {
-            'primary': primary,
-            'fast': max(self.config.min_window, primary // 2),
-            'slow': min(self.config.max_window, primary * 2),
-            'boundary': max(10, primary // 3)
-        }
-    
-    def _detect_structural_patterns(self,
-                                  lambda_structures: Dict,
-                                  boundaries: Dict,
-                                  window_steps: int) -> List[Dict]:
-        """構造パターンの検出"""
-        patterns = []
-        
-        # 安全なパターン検出
-        try:
-            if 'Q_cumulative' in lambda_structures and self.is_gpu and HAS_CUPY:
-                patterns = self._detect_patterns_gpu(lambda_structures['Q_cumulative'])
-            else:
-                patterns = self._detect_patterns_cpu(lambda_structures.get('Q_cumulative'))
-        except Exception as e:
-            print(f"Pattern detection failed: {e}")
-        
-        return patterns
-    
-    def _detect_patterns_gpu(self, q_cumulative: Any) -> List[Dict]:
-        """GPU版パターン検出"""
-        patterns = []
-        
-        q_cum_gpu = self.to_gpu(q_cumulative)
-        
-        if len(q_cum_gpu) > 100:
-            try:
-                from cupyx.scipy.signal import correlate
-                
-                # デトレンド
-                q_detrend = q_cum_gpu - cp.mean(q_cum_gpu)
-                
-                # 自己相関
-                acf = correlate(q_detrend, q_detrend, mode='same')
-                acf = acf[len(acf)//2:]
-                
-                # ピーク検出（エラーハンドリング付き）
-                try:
-                    from cupyx.scipy.signal import find_peaks as find_peaks_gpu
-                    peaks, _ = find_peaks_gpu(acf, height=0.5*cp.max(acf))
-                except:
-                    # フォールバック：シンプルなピーク検出
-                    peaks = self._simple_peak_detection(acf)
-                
-                # パターン作成
-                for i, peak in enumerate(self.to_cpu(peaks[:5])):
-                    if peak < len(acf):
-                        patterns.append({
-                            'name': f'Pattern_{i+1}',
-                            'period': int(peak),
-                            'strength': float(acf[peak] / acf[0]),
-                            'type': 'periodic' if acf[peak] > 0.7*acf[0] else 'quasi-periodic'
-                        })
-            except Exception as e:
-                print(f"GPU pattern detection error: {e}")
-        
-        return patterns
-    
-    def _detect_patterns_cpu(self, q_cumulative: Any) -> List[Dict]:
-        """CPU版パターン検出（フォールバック）"""
-        if q_cumulative is None or len(q_cumulative) < 100:
-            return []
-        
-        # シンプルなパターン検出
-        return [{
-            'name': 'Default_Pattern',
-            'period': 50,
-            'strength': 0.5,
-            'type': 'unknown'
-        }]
-    
-    def _simple_peak_detection(self, signal: Any) -> Any:
-        """シンプルなピーク検出（フォールバック）"""
-        # 閾値を超える点を検出
-        threshold = 0.5 * cp.max(signal) if self.is_gpu else 0.5 * np.max(signal)
-        peaks = cp.where(signal > threshold)[0] if self.is_gpu else np.where(signal > threshold)[0]
-        return peaks[:5]  # 最初の5つだけ
     
     def _print_initialization_info(self):
         """初期化情報の表示"""
@@ -659,13 +649,13 @@ class MDLambda3DetectorGPU(GPUBackend):
             print(f"\n🚀 Lambda³ GPU Detector Initialized")
             print(f"   Device: {self.device}")
             print(f"   GPU Mode: {self.is_gpu}")
+            print(f"   Memory Limit: {self.memory_manager.max_memory / 1e9:.2f} GB")
             
             try:
                 mem_info = self.memory_manager.get_memory_info()
-                print(f"   Memory Limit: {self.memory_manager.max_memory / 1e9:.2f} GB")
-                print(f"   Available: {mem_info.free_gb:.2f} GB")
+                print(f"   Available: {mem_info.free / 1e9:.2f} GB")
             except:
-                print(f"   Memory info unavailable")
+                pass
             
             print(f"   Batch Size: {self.config.gpu_batch_size} frames")
             print(f"   Extended Detection: {'ON' if self.config.use_extended_detection else 'OFF'}")
@@ -694,9 +684,10 @@ class MDLambda3DetectorGPU(GPUBackend):
             n_boundaries = 0
         print(f"  Structural boundaries: {n_boundaries}")
         print(f"  Detected patterns: {len(result.detected_structures)}")
+        print(f"  Critical events: {len(result.critical_events)}")
         
-        if 'final_combined' in result.anomaly_scores:
-            scores = result.anomaly_scores['final_combined']
+        if 'combined' in result.anomaly_scores:
+            scores = result.anomaly_scores['combined']
             print(f"\nAnomaly statistics:")
             print(f"  Mean score: {np.mean(scores):.3f}")
             print(f"  Max score: {np.max(scores):.3f}")
@@ -719,9 +710,3 @@ class MDLambda3DetectorGPU(GPUBackend):
         """バッチサイズの設定"""
         self.config.gpu_batch_size = batch_size
         print(f"✓ Batch size set to {batch_size} frames")
-    
-    def visualize_results(self, result: MDLambda3Result) -> Any:
-        """結果の可視化（matplotlib figure）"""
-        # TODO: 可視化モジュールの実装
-        print("Visualization not yet implemented in GPU version")
-        return None
