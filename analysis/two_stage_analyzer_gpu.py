@@ -278,12 +278,12 @@ class TwoStageAnalyzerGPU(GPUBackend):
         return residue_analyses
     
     def _analyze_single_event_gpu(self,
-                                trajectory: np.ndarray,
-                                event_name: str,
-                                start_frame: int,
-                                end_frame: int,
-                                residue_atoms: Dict[int, List[int]],
-                                residue_names: Dict[int, str]) -> ResidueLevelAnalysis:
+                              trajectory: np.ndarray,
+                              event_name: str,
+                              start_frame: int,
+                              end_frame: int,
+                              residue_atoms: Dict[int, List[int]],
+                              residue_names: Dict[int, str]) -> ResidueLevelAnalysis:
         """単一イベントのGPU解析"""
         event_start_time = time.time()
         
@@ -292,7 +292,7 @@ class TwoStageAnalyzerGPU(GPUBackend):
         with self.memory_manager.batch_context(event_frames * len(residue_atoms) * 3 * 4):
             
             # 1. 残基構造計算
-            structures = self.residue_structures.compute(
+            structures = self.residue_structures.compute_residue_structures(
                 trajectory, start_frame, end_frame, residue_atoms
             )
             
@@ -338,6 +338,7 @@ class TwoStageAnalyzerGPU(GPUBackend):
         
         gpu_time = time.time() - event_start_time
         
+        # 結果を返す
         return ResidueLevelAnalysis(
             event_name=event_name,
             macro_start=start_frame,
