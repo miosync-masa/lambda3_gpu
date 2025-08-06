@@ -23,8 +23,9 @@ from ..structures.md_features_gpu import MDFeaturesGPU
 from ..detection.anomaly_detection_gpu import AnomalyDetectorGPU
 from ..detection.boundary_detection_gpu import BoundaryDetectorGPU  # detectionから！
 from ..detection.topology_breaks_gpu import TopologyBreaksDetectorGPU
-from ..detection.phase_space_gpu import PhaseSpaceAnalyzerGPU  
 from ..detection.extended_detection_gpu import ExtendedDetectorGPU
+from ..detection.phase_space_gpu import PhaseSpaceAnalyzerGPU  
+
 
 @dataclass
 class MDConfig:
