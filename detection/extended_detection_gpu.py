@@ -10,6 +10,7 @@ from numba import cuda
 from cupyx.scipy.signal import find_peaks as find_peaks_gpu
 from cupyx.scipy.ndimage import gaussian_filter1d as gaussian_filter1d_gpu
 
+from .phase_space_gpu import PhaseSpaceAnalyzerGPU
 from ..types import ArrayType, NDArray
 from ..core.gpu_utils import GPUBackend
 
