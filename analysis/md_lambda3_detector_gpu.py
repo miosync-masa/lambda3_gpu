@@ -20,7 +20,7 @@ except ImportError:
 from ..core.gpu_utils import GPUBackend
 from ..structures.lambda_structures_gpu import LambdaStructuresGPU
 from ..structures.md_features_gpu import MDFeaturesGPU
-from .anomaly_detector_gpu import AnomalyDetectorGPU
+from ..detection.anomaly_detection_gpu import AnomalyDetectorGPU
 from .boundary_detector_gpu import BoundaryDetectorGPU
 from .topology_breaks_gpu import TopologyBreaksDetectorGPU
 from .extended_detector_gpu import ExtendedDetectorGPU
