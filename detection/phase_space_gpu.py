@@ -577,10 +577,58 @@ class PhaseSpaceAnalyzerGPU(GPUBackend):
         """アトラクタ体積の推定"""
         return float(cp.prod(cp.max(phase_space, axis=0) - cp.min(phase_space, axis=0)))
     
-    def _compute_fractal_measure_gpu(self, phase_space: cp.ndarray) -> float:
-        """フラクタル性の測定"""
-        # 簡易版：ボックスカウント法の近似
-        return 0.7  # プレースホルダー
+    def compute_fractal_measure_gpu(self, phase_space: cp.ndarray) -> float:
+        """
+        相関次元による フラクタル測度（Grassberger-Procaccia法）
+        """
+        n_points = min(1000, len(phase_space))  # サンプリング
+        if n_points < 100:
+            return 1.5  # データ不足
+        
+        # ランダムサンプリング
+        indices = cp.random.choice(len(phase_space), n_points, replace=False)
+        sample = phase_space[indices]
+        
+        # 距離行列（上三角のみ）
+        distances = []
+        for i in range(n_points - 1):
+            dists = cp.linalg.norm(sample[i+1:] - sample[i], axis=1)
+            distances.append(dists)
+        
+        all_distances = cp.concatenate(distances)
+        all_distances = all_distances[all_distances > 0]
+        
+        if len(all_distances) == 0:
+            return 1.5
+        
+        # 相関積分C(r)を計算
+        r_values = cp.logspace(
+            cp.log10(cp.min(all_distances)),
+            cp.log10(cp.max(all_distances)),
+            20
+        )
+        
+        correlation_sum = cp.zeros(len(r_values))
+        for i, r in enumerate(r_values):
+            correlation_sum[i] = cp.sum(all_distances < r)
+        
+        # log-log勾配から次元推定
+        valid = correlation_sum > 0
+        if cp.sum(valid) > 5:
+            log_r = cp.log(r_values[valid])
+            log_c = cp.log(correlation_sum[valid] / (n_points * (n_points - 1) / 2))
+            
+            # 中間領域で勾配計算
+            mid_idx = len(log_r) // 2
+            slope = cp.polyfit(
+                log_r[mid_idx-2:mid_idx+3],
+                log_c[mid_idx-2:mid_idx+3],
+                1
+            )[0]
+            
+            return float(cp.clip(slope, 0.5, 3.0))
+        
+        return 1.5  # それでもダメなら...
     
     def _compute_determinism_gpu(self, rec_matrix: cp.ndarray) -> float:
         """決定論性の計算"""
