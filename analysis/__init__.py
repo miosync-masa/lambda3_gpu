@@ -5,7 +5,6 @@ MD軌道の完全GPU化解析パイプライン
 
 from .md_lambda3_detector_gpu import (
     MDLambda3DetectorGPU,
-    MDLambda3AnalyzerGPU,  # これも追加（エイリアスの場合）
     MDConfig,
     MDLambda3Result
 )
