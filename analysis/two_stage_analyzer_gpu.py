@@ -360,10 +360,34 @@ class TwoStageAnalyzerGPU(GPUBackend):
         )
     
     def _detect_residue_anomalies_gpu(self,
-                                    structures: Dict[str, np.ndarray],
+                                    structures,  # ResidueStructureResultまたはDict
                                     event_type: str) -> Dict[int, np.ndarray]:
-        """残基異常検出（GPU最適化）"""
-        n_frames, n_residues = structures['residue_rho_t'].shape
+        """
+        残基異常検出（GPU最適化）
+        
+        Parameters
+        ----------
+        structures : ResidueStructureResult or Dict
+            残基構造解析結果（データクラスまたは辞書）
+        event_type : str
+            イベントタイプ名
+            
+        Returns
+        -------
+        Dict[int, np.ndarray]
+            残基ID -> 異常スコア時系列
+        """
+        # structuresがデータクラスか辞書か判定
+        if hasattr(structures, 'residue_rho_t'):
+            # データクラスの場合（ResidueStructureResult）
+            residue_rho_t = structures.residue_rho_t
+            residue_lambda_f_mag = structures.residue_lambda_f_mag
+        else:
+            # 辞書の場合（後方互換性）
+            residue_rho_t = structures['residue_rho_t']
+            residue_lambda_f_mag = structures['residue_lambda_f_mag']
+        
+        n_frames, n_residues = residue_rho_t.shape
         
         # イベント固有の感度
         sensitivity = self.config.event_sensitivities.get(
@@ -381,10 +405,10 @@ class TwoStageAnalyzerGPU(GPUBackend):
             
             # バッチデータをGPUに転送
             batch_lambda_f = self.to_gpu(
-                structures['residue_lambda_f_mag'][:, batch_start:batch_end]
+                residue_lambda_f_mag[:, batch_start:batch_end]
             )
             batch_rho_t = self.to_gpu(
-                structures['residue_rho_t'][:, batch_start:batch_end]
+                residue_rho_t[:, batch_start:batch_end]
             )
             
             # GPU上で異常スコア計算
@@ -422,26 +446,90 @@ class TwoStageAnalyzerGPU(GPUBackend):
                                 residue_names: Dict[int, str],
                                 start_frame: int,
                                 network_results: Dict) -> List[ResidueEvent]:
-        """残基イベントの構築"""
+        """
+        残基イベントの構築（安全版）
+        
+        Parameters
+        ----------
+        anomaly_scores : Dict[int, np.ndarray]
+            残基ID -> 異常スコア時系列
+        residue_names : Dict[int, str]
+            残基ID -> 残基名
+        start_frame : int
+            イベント開始フレーム
+        network_results : Dict
+            ネットワーク解析結果
+            
+        Returns
+        -------
+        List[ResidueEvent]
+            検出された残基イベントリスト
+        """
         events = []
         
+        # find_peaksのインポート（安全版）
+        find_peaks_func = None
+        use_gpu_peaks = False
+        
+        try:
+            if self.is_gpu and HAS_CUPY:
+                from cupyx.scipy.signal import find_peaks as find_peaks_func
+                use_gpu_peaks = True
+            else:
+                from scipy.signal import find_peaks as find_peaks_func
+                use_gpu_peaks = False
+        except ImportError:
+            # フォールバック：簡易ピーク検出を使用
+            print("  ⚠️ find_peaks not available, using simple peak detection")
+            find_peaks_func = None
+        
         for res_id, scores in anomaly_scores.items():
-            # ピーク検出
-            from cupyx.scipy.signal import find_peaks as find_peaks_gpu
-            scores_gpu = self.to_gpu(scores)
+            peaks = []
+            peak_heights = []
             
-            peaks, properties = find_peaks_gpu(
-                scores_gpu,
-                height=self.config.sensitivity,
-                distance=50
-            )
+            if find_peaks_func is not None:
+                # SciPy/CuPyのfind_peaksを使用
+                try:
+                    if use_gpu_peaks:
+                        scores_gpu = self.to_gpu(scores)
+                        peaks, properties = find_peaks_func(
+                            scores_gpu,
+                            height=self.config.sensitivity,
+                            distance=50
+                        )
+                        peaks = self.to_cpu(peaks)
+                        peak_heights = self.to_cpu(properties['peak_heights'])
+                    else:
+                        # CPU版
+                        peaks, properties = find_peaks_func(
+                            scores,
+                            height=self.config.sensitivity,
+                            distance=50
+                        )
+                        peak_heights = properties['peak_heights']
+                except Exception as e:
+                    # find_peaksが失敗した場合のフォールバック
+                    print(f"  ⚠️ find_peaks failed for residue {res_id}: {e}")
+                    find_peaks_func = None  # 次回からフォールバックを使用
             
+            # フォールバック：簡易ピーク検出
+            if find_peaks_func is None or len(peaks) == 0:
+                for i in range(1, len(scores)-1):
+                    if scores[i] > scores[i-1] and scores[i] > scores[i+1]:
+                        if scores[i] > self.config.sensitivity:
+                            peaks.append(i)
+                            peak_heights.append(scores[i])
+                peaks = np.array(peaks) if peaks else np.array([])
+                peak_heights = np.array(peak_heights) if peak_heights else np.array([])
+            
+            # ピークからイベントを構築
             if len(peaks) > 0:
-                peaks = self.to_cpu(peaks)
-                peak_heights = self.to_cpu(properties['peak_heights'])
-                
                 first_peak = peaks[0]
                 peak_height = peak_heights[0]
+                
+                # adaptive_windowsの安全なアクセス
+                adaptive_windows = network_results.get('adaptive_windows', {})
+                adaptive_window = adaptive_windows.get(res_id, 100)
                 
                 event = ResidueEvent(
                     residue_id=res_id,
@@ -451,7 +539,7 @@ class TwoStageAnalyzerGPU(GPUBackend):
                     peak_lambda_f=float(peak_height),
                     propagation_delay=first_peak,
                     role='initiator' if first_peak < 50 else 'propagator',
-                    adaptive_window=network_results['adaptive_windows'].get(res_id, 100)
+                    adaptive_window=adaptive_window
                 )
                 events.append(event)
         
