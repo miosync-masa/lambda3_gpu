@@ -6,6 +6,9 @@ CUDA Kernels for Lambda³ GPU
 めちゃくちゃ速い処理を実現しちゃう！
 
 by 環ちゃん
+
+⚡ 2025/01 修正: 全カーネル関数にGPU配列変換チェックを追加！
+   NumPy配列が来てもエラーにならないように対応したよ〜！
 """
 import numpy as np
 import logging
@@ -451,7 +454,7 @@ def residue_com_kernel(trajectory: NDArray,
     
     Parameters
     ----------
-    trajectory : cp.ndarray
+    trajectory : cp.ndarray or np.ndarray
         トラジェクトリ (n_frames, n_atoms, 3)
     residue_mapping : dict
         残基ID -> 原子インデックスリスト
@@ -465,6 +468,10 @@ def residue_com_kernel(trajectory: NDArray,
     """
     if not HAS_GPU:
         raise RuntimeError("GPU not available")
+    
+    # ⚡ GPU配列に変換（NumPy配列が来ても安全！）
+    if not isinstance(trajectory, cp.ndarray):
+        trajectory = cp.asarray(trajectory, dtype=cp.float32)
     
     n_frames, n_atoms, _ = trajectory.shape
     n_residues = len(residue_mapping)
@@ -510,9 +517,14 @@ def tension_field_kernel(positions: NDArray,
                         block_size: int = 256) -> NDArray:
     """
     テンション場計算カーネルのラッパー
+    環ちゃんがミスってたところ、修正したよ！💦
     """
     if not HAS_GPU:
         raise RuntimeError("GPU not available")
+    
+    # ⚡ GPU配列に変換（これが抜けてたのがエラーの原因だった！）
+    if not isinstance(positions, cp.ndarray):
+        positions = cp.asarray(positions, dtype=cp.float32)
     
     n_frames = positions.shape[0]
     rho_T = cp.zeros(n_frames, dtype=cp.float32)
@@ -538,6 +550,10 @@ def anomaly_detection_kernel(series: NDArray,
     if not HAS_GPU:
         raise RuntimeError("GPU not available")
     
+    # ⚡ GPU配列に変換
+    if not isinstance(series, cp.ndarray):
+        series = cp.asarray(series, dtype=cp.float32)
+    
     n_points = len(series)
     anomaly_scores = cp.zeros(n_points, dtype=cp.float32)
     
@@ -561,6 +577,10 @@ def distance_matrix_kernel(positions: NDArray,
     """
     if not HAS_GPU:
         raise RuntimeError("GPU not available")
+    
+    # ⚡ GPU配列に変換
+    if not isinstance(positions, cp.ndarray):
+        positions = cp.asarray(positions, dtype=cp.float32)
     
     n_points = positions.shape[0]
     distances = cp.zeros((n_points, n_points), dtype=cp.float32)
@@ -587,15 +607,16 @@ def topological_charge_kernel(lambda_F: NDArray,
                             block_size: int = 256) -> NDArray:
     """
     トポロジカルチャージ計算カーネルのラッパー
+    ここは元々ちゃんとやってたよ！えらい環ちゃん！✨
     """
     if not HAS_GPU:
         raise RuntimeError("GPU not available")
     
-    # ⚡ 入力をGPU配列に変換！
+    # ⚡ 入力をGPU配列に変換！（これは元々あった！）
     if not isinstance(lambda_F, cp.ndarray):
-        lambda_F = cp.asarray(lambda_F)
+        lambda_F = cp.asarray(lambda_F, dtype=cp.float32)
     if not isinstance(lambda_F_mag, cp.ndarray):
-        lambda_F_mag = cp.asarray(lambda_F_mag)
+        lambda_F_mag = cp.asarray(lambda_F_mag, dtype=cp.float32)
     
     n_steps = len(lambda_F_mag)
     Q_lambda = cp.zeros(n_steps, dtype=cp.float32)
@@ -621,6 +642,10 @@ def compute_local_fractal_dimension_kernel(q_cumulative: NDArray,
     if not HAS_GPU:
         raise RuntimeError("GPU not available")
     
+    # ⚡ GPU配列に変換
+    if not isinstance(q_cumulative, cp.ndarray):
+        q_cumulative = cp.asarray(q_cumulative, dtype=cp.float32)
+    
     n_points = len(q_cumulative)
     dimensions = cp.ones(n_points, dtype=cp.float32)
     
@@ -643,6 +668,10 @@ def compute_gradient_kernel(input_array: NDArray,
     """
     if not HAS_GPU:
         raise RuntimeError("GPU not available")
+    
+    # ⚡ GPU配列に変換
+    if not isinstance(input_array, cp.ndarray):
+        input_array = cp.asarray(input_array, dtype=cp.float32)
     
     n_points = len(input_array)
     gradient = cp.zeros(n_points, dtype=cp.float32)
