@@ -4,8 +4,6 @@ Lambda³ Structure Computation (GPU Version)
 
 Lambda³構造の計算をGPUで超高速化！
 NO TIME, NO PHYSICS, ONLY STRUCTURE... but FASTER! 🚀
-
-by 環ちゃん
 """
 import numpy as np
 import logging
