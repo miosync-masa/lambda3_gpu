@@ -1,68 +1,79 @@
-# Lambda³ GPU Requirements
-# Core dependencies for GPU-accelerated MD trajectory analysis
+# ============================================
+# Lambda³ GPU Requirements - Cleaned Version
+# ============================================
+# Python 3.8+ required
+# CUDA 12.0-12.4 supported
 
-# Core scientific computing
-numpy>=1.20.0,<2.0.0
-scipy>=1.7.0,<2.0.0
-scikit-learn>=1.0.0,<2.0.0
-pandas>=1.3.0,<2.0.0
-xarray>=2023.0.0  # 最新版で多次元配列処理の安定性向上
+# ============================================
+# CORE DEPENDENCIES (必須)
+# ============================================
 
-# GPU computing (choose based on your CUDA version)
-# For CUDA 11.x:
-#cupy-cuda11x>=10.0.0,<13.0.0
+# --- Scientific Computing ---
+numpy==1.26.4           # 1.x系の最新安定版（2.0は非対応）
+scipy==1.14.1           # numpy 1.26と互換性あり
+scikit-learn==1.5.2     # 最新安定版
+pandas==2.2.3           # 最新安定版
+xarray==2024.10.0       # 多次元配列処理
 
-# For CUDA 12.x (12.0-12.4):
-# cupy-cuda12x>=11.0.0,<13.0.0
+# --- GPU Computing (CUDA 12.x) ---
+cupy-cuda12x==13.2.0    # CUDA 12.0-12.4対応
+numba==0.59.1           # CUDA 12.4, PTX 8.4まで対応
 
-# For CUDA 12.x (12.0-12.4対応):
-cupy-cuda12x==13.2.0  # CUDA 12.4まで対応の最新安定版
+# --- Visualization ---
+matplotlib==3.9.2       # プロット生成
+seaborn==0.13.2        # 統計的可視化
+plotly==5.24.1         # インタラクティブ可視化
+networkx==3.4.2        # ネットワーク解析
 
-# JIT compilation and CUDA kernels
-numba==0.59.1  # CUDA 12.4対応
-# nvidia-cuda-nvjitlink-cu12  # CUDA 12.4なら不要！
+# --- System & Performance ---
+psutil==6.1.0          # システムモニタリング
+GPUtil==1.4.0          # GPU使用状況監視
+joblib==1.4.2          # 並列処理
 
-# Optional GPU libraries
-# ======================
-# 位相空間解析用（RAPIDS AI）
-# CUDA 11.x
-#pylibraft-cu11>=25.6.0
-# または CUDA 12.x
-pylibraft-cu12>=25.6.0
+# --- Data Formats ---
+h5py==3.12.1           # HDF5ファイル対応
+netCDF4==1.7.2         # NetCDFファイル対応
+zarr==2.18.3           # 大規模データ用Zarr形式
 
-# Visualization
-matplotlib>=3.4.0,<4.0.0
-seaborn>=0.11.0,<1.0.0
-plotly>=5.0.0,<6.0.0
-networkx>=2.6.0,<4.0.0
+# ============================================
+# OPTIONAL DEPENDENCIES (オプション)
+# ============================================
 
-# System monitoring
-psutil>=5.8.0,<6.0.0
-GPUtil>=1.4.0,<2.0.0
+# --- RAPIDS AI (高速GPU処理) ---
+# pylibraft-cu12==25.6.0  # 位相空間解析用
 
-# Parallel processing
-joblib>=1.0.0,<2.0.0
+# --- Development Tools ---
+# pytest==8.3.3
+# pytest-cov==6.0.0
+# black==24.10.0
+# flake8==7.1.1
+# mypy==1.13.0
 
-# Optional: for development
-# pytest>=6.0.0
-# pytest-cov>=2.0.0
-# black>=21.0
-# flake8>=3.9.0
-# mypy>=0.910
+# --- Jupyter Notebooks ---
+# jupyterlab==4.3.0
+# ipywidgets==8.1.5
+# notebook==7.3.1
 
-# Optional: for interactive notebooks
-# jupyterlab>=3.0.0
-# ipywidgets>=7.6.0
-# notebook>=6.4.0
+# --- Documentation ---
+# sphinx==8.1.3
+# sphinx-rtd-theme==3.0.1
 
-# Optional: for documentation
-# sphinx>=4.0.0
-# sphinx-rtd-theme>=0.5.0
-
-# Additional dependencies for CUDA 12.5 compatibility
-# cuda-python>=12.0.0  # もし必要なら
-
-# Data format support
-h5py>=3.0.0  # HDF5ファイル対応
-netCDF4>=1.6.0  # NetCDFファイル対応（xarrayのバックエンド）
-zarr>=2.13.0  # Zarrフォーマット対応（大規模データ用）
+# ============================================
+# INSTALLATION NOTES
+# ============================================
+# 
+# 1. Basic installation:
+#    pip install -r requirements.txt
+#
+# 2. For CUDA 11.x users:
+#    Replace cupy-cuda12x with cupy-cuda11x==13.2.0
+#
+# 3. For development:
+#    Uncomment the Development Tools section
+#
+# 4. Common issues:
+#    - numpy._core error → numpy must be <2.0.0
+#    - PTX version error → numba==0.59.1 required
+#    - Memory issues → Consider batch processing
+#
+# ============================================
