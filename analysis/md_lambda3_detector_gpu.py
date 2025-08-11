@@ -26,10 +26,9 @@ from ..detection.topology_breaks_gpu import TopologyBreaksDetectorGPU
 from ..detection.extended_detection_gpu import ExtendedDetectorGPU
 from ..detection.phase_space_gpu import PhaseSpaceAnalyzerGPU  
 
-
 @dataclass
 class MDConfig:
-    """MD解析設定"""
+    """MD解析設定（修正版）"""
     # Lambda³パラメータ
     adaptive_window: bool = True
     extended_detection: bool = True
@@ -48,7 +47,24 @@ class MDConfig:
     gpu_batch_size: int = 10000
     mixed_precision: bool = False
     benchmark_mode: bool = False
-
+    
+    # ===== 追加: 異常検出の重み属性 =====
+    # グローバル異常スコアの重み設定
+    w_lambda_f: float = 1.0      # λF異常の重み
+    w_lambda_ff: float = 0.8     # λFF異常（加速度）の重み
+    w_rho_t: float = 1.2          # ρTテンション場の重み
+    w_topology: float = 0.9       # トポロジカル異常の重み
+    
+    # その他の重み（オプション）
+    w_phase_coherence: float = 0.7  # 位相コヒーレンスの重み
+    w_singularities: float = 0.6    # 特異点の重み
+    
+    # 統合スコアの調整パラメータ
+    global_weight: float = 0.6      # グローバル異常の全体重み
+    local_weight: float = 0.4       # ローカル異常の全体重み
+    
+    # 適応的ウィンドウのスケール設定
+    window_scale: float = 0.02      # 基本ウィンドウサイズの比率
 
 @dataclass
 class MDLambda3Result:
