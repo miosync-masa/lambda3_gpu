@@ -591,6 +591,12 @@ def topological_charge_kernel(lambda_F: NDArray,
     if not HAS_GPU:
         raise RuntimeError("GPU not available")
     
+    # ⚡ 入力をGPU配列に変換！
+    if not isinstance(lambda_F, cp.ndarray):
+        lambda_F = cp.asarray(lambda_F)
+    if not isinstance(lambda_F_mag, cp.ndarray):
+        lambda_F_mag = cp.asarray(lambda_F_mag)
+    
     n_steps = len(lambda_F_mag)
     Q_lambda = cp.zeros(n_steps, dtype=cp.float32)
     
