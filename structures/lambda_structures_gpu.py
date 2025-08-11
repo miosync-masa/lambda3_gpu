@@ -643,7 +643,6 @@ def compute_local_fractal_dimension_gpu(series: NDArray,
 # ===============================
 # Main Function
 # ===============================
-
 def compute_lambda_structures_gpu(trajectory: np.ndarray,
                                 md_features: Dict[str, np.ndarray],
                                 window_steps: int,
@@ -682,3 +681,44 @@ def compute_adaptive_window_size_gpu(md_features: Dict[str, np.ndarray],
             'scale_factor': 1.0,
             'volatility_metrics': {}
         }
+
+def compute_structural_coherence_gpu(lambda_F: np.ndarray,
+                                    window: int = 50) -> np.ndarray:
+    """構造的コヒーレンス計算のラッパー"""
+    computer = LambdaStructuresGPU()
+    lambda_F_gpu = computer.to_gpu(lambda_F)
+    coherence = computer._compute_coherence(lambda_F_gpu, window)
+    return computer.to_cpu(coherence)
+
+def compute_local_fractal_dimension_gpu(q_cumulative: np.ndarray,
+                                       window: int = 50) -> np.ndarray:
+    """局所フラクタル次元計算のラッパー"""
+    from ..detection.boundary_detection_gpu import BoundaryDetectorGPU
+    detector = BoundaryDetectorGPU()
+    return detector._compute_fractal_dimensions_gpu(q_cumulative, window)
+
+def compute_coupling_strength_gpu(q_cumulative: np.ndarray,
+                                 window: int = 50) -> np.ndarray:
+    """結合強度計算のラッパー"""
+    from ..detection.boundary_detection_gpu import BoundaryDetectorGPU
+    detector = BoundaryDetectorGPU()
+    return detector._compute_coupling_strength_gpu(q_cumulative, window)
+
+def compute_structural_entropy_gpu(rho_t: np.ndarray,
+                                  window: int = 50) -> np.ndarray:
+    """構造エントロピー計算のラッパー"""
+    from ..detection.boundary_detection_gpu import BoundaryDetectorGPU
+    detector = BoundaryDetectorGPU()
+    return detector._compute_structural_entropy_gpu(rho_t, window)
+
+# エクスポート更新
+__all__ = [
+    'LambdaStructuresGPU',
+    'LambdaStructureConfig',
+    'compute_lambda_structures_gpu',
+    'compute_adaptive_window_size_gpu',
+    'compute_structural_coherence_gpu',
+    'compute_local_fractal_dimension_gpu',
+    'compute_coupling_strength_gpu',
+    'compute_structural_entropy_gpu',
+]
