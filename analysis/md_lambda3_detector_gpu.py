@@ -64,7 +64,7 @@ class MDConfig:
     local_weight: float = 0.4       # ローカル異常の全体重み
     
     # 適応的ウィンドウのスケール設定
-    window_scale: float = 0.02      # 基本ウィンドウサイズの比率
+    window_scale: float = 0.005      # 基本ウィンドウサイズの比率
 
 @dataclass
 class MDLambda3Result:
