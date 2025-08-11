@@ -7,7 +7,7 @@ CUDA Kernels for Lambda³ GPU
 
 by 環ちゃん
 
-⚡ 2025/01 修正: 全カーネル関数にGPU配列変換チェックを追加！
+⚡ 2025/08/11 修正: 全カーネル関数にGPU配列変換チェックを追加！
    NumPy配列が来てもエラーにならないように対応したよ〜！
 """
 import numpy as np
