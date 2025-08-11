@@ -4,6 +4,8 @@ Lambda³ Structure Computation (GPU Version)
 
 Lambda³構造の計算をGPUで超高速化！
 NO TIME, NO PHYSICS, ONLY STRUCTURE... but FASTER! 🚀
+
+⚡ 2025/01/15 修正: GPU/CPU切り替えのバグを修正 by 環ちゃん
 """
 import numpy as np
 import logging
@@ -71,6 +73,22 @@ class LambdaStructuresGPU(GPUBackend):
         self.memory_manager = memory_manager or GPUMemoryManager()
         self._cache = {} if self.config.cache_intermediates else None
         
+        # ⚡ 重要: 初期化後に状態を再確認
+        self._validate_gpu_state()
+        
+    def _validate_gpu_state(self):
+        """GPU/CPU状態の整合性を確認して修正"""
+        if self.is_gpu and HAS_GPU:
+            if self.xp != cp:
+                logger.warning("⚠️ Fixing inconsistent state: is_gpu=True but xp!=cp")
+                self.xp = cp
+        elif not self.is_gpu:
+            if self.xp != np:
+                logger.warning("⚠️ Fixing inconsistent state: is_gpu=False but xp!=np")
+                self.xp = np
+        
+        logger.debug(f"State validation: is_gpu={self.is_gpu}, xp={self.xp.__name__}")
+        
     def compute_lambda_structures(self,
                                 trajectory: np.ndarray,
                                 md_features: Dict[str, np.ndarray],
@@ -94,6 +112,9 @@ class LambdaStructuresGPU(GPUBackend):
         """
         with self.timer('compute_lambda_structures'):
             logger.info(f"🚀 GPU Computing Lambda³ structures (window={window_steps})")
+            
+            # ⚡ 計算前に状態を再確認
+            self._validate_gpu_state()
             
             # GPU転送
             positions_gpu = self.to_gpu(md_features['com_positions'])
@@ -164,10 +185,23 @@ class LambdaStructuresGPU(GPUBackend):
     def _compute_rho_T(self, positions: NDArray, window_steps: int) -> NDArray:
         """ρT計算（カスタムカーネル使用）"""
         if self.is_gpu and HAS_GPU:
+            # ⚡ カーネル呼び出し前に型を確認
+            if not isinstance(positions, cp.ndarray):
+                positions = cp.asarray(positions)
+            
             # カスタムカーネル使用
-            return tension_field_kernel(positions, window_steps)
+            rho_T = tension_field_kernel(positions, window_steps)
+            
+            # ⚡ 返り値の型チェック
+            if not isinstance(rho_T, cp.ndarray):
+                logger.warning("tension_field_kernel returned numpy array, converting to GPU")
+                rho_T = cp.asarray(rho_T)
+                
+            return rho_T
         else:
             # CPU版フォールバック
+            if isinstance(positions, cp.ndarray):
+                positions = cp.asnumpy(positions)
             return self._compute_rho_T_cpu(positions, window_steps)
     
     def _compute_rho_T_cpu(self, positions: np.ndarray, window_steps: int) -> np.ndarray:
@@ -190,22 +224,50 @@ class LambdaStructuresGPU(GPUBackend):
     def _compute_Q_lambda(self, 
                      lambda_F: NDArray, 
                      lambda_F_mag: NDArray) -> Tuple[NDArray, NDArray]:
-        """Q_Λ計算（カスタムカーネル使用）"""
+        """Q_Λ計算（カスタムカーネル使用）- 修正版"""
+        
+        # ⚡ まず状態を再確認
+        self._validate_gpu_state()
+        
         if self.is_gpu and HAS_GPU:
+            # ⚡ GPU版: 入力をGPU配列に変換
+            if not isinstance(lambda_F, cp.ndarray):
+                logger.debug("Converting lambda_F to GPU array")
+                lambda_F = cp.asarray(lambda_F)
+            if not isinstance(lambda_F_mag, cp.ndarray):
+                logger.debug("Converting lambda_F_mag to GPU array")
+                lambda_F_mag = cp.asarray(lambda_F_mag)
+                
             # カスタムカーネル使用
             Q_lambda = topological_charge_kernel(lambda_F, lambda_F_mag)
             
-            # ⚡ ここが重要！Q_lambdaの型をチェック
+            # ⚡ 返り値の型を確実にチェック！
             if not isinstance(Q_lambda, cp.ndarray):
-                print(f"⚠️ Warning: topological_charge_kernel returned numpy array, converting to GPU")
+                logger.warning("topological_charge_kernel returned numpy array, converting to GPU")
                 Q_lambda = cp.asarray(Q_lambda)
+            
+            # ⚡ cupyで累積を計算
+            Q_cumulative = cp.cumsum(Q_lambda)
                 
         else:
-            # CPU版
+            # ⚡ CPU版: 入力をNumPy配列に変換
+            if isinstance(lambda_F, cp.ndarray):
+                logger.debug("Converting lambda_F to CPU array")
+                lambda_F = cp.asnumpy(lambda_F)
+            if isinstance(lambda_F_mag, cp.ndarray):
+                logger.debug("Converting lambda_F_mag to CPU array")  
+                lambda_F_mag = cp.asnumpy(lambda_F_mag)
+                
+            # CPU版の計算
             Q_lambda = self._compute_Q_lambda_cpu(lambda_F, lambda_F_mag)
-        
-        # 累積
-        Q_cumulative = self.xp.cumsum(Q_lambda)
+            
+            # ⚡ CPU版でもチェック
+            if isinstance(Q_lambda, cp.ndarray):
+                logger.warning("CPU mode but got GPU array, converting...")
+                Q_lambda = cp.asnumpy(Q_lambda)
+            
+            # ⚡ numpyで累積を計算
+            Q_cumulative = np.cumsum(Q_lambda)
         
         return Q_lambda, Q_cumulative
     
