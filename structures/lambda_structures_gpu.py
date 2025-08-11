@@ -200,7 +200,8 @@ class LambdaStructuresGPU(GPUBackend):
             return rho_T
         else:
             # CPU版フォールバック
-            if isinstance(positions, cp.ndarray):
+            # ⚡⚡⚡ 修正箇所: cp が None でないことを確認！
+            if HAS_GPU and cp is not None and isinstance(positions, cp.ndarray):
                 positions = cp.asnumpy(positions)
             return self._compute_rho_T_cpu(positions, window_steps)
     
