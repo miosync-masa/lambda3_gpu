@@ -20,7 +20,7 @@ warnings.filterwarnings('ignore')
 
 # Lambda³ GPU imports
 from lambda3_gpu.analysis.md_lambda3_detector_gpu import (
-    MDLambda3AnalyzerGPU, 
+    MDLambda3DetectorGPU, 
     MDLambda3Result,
     MDConfig
 )
