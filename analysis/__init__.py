@@ -35,7 +35,6 @@ from .run_full_analysis import (
 __all__ = [
     # メイン検出器
     'MDLambda3DetectorGPU',
-    'MDLambda3AnalyzerGPU',
     'MDConfig',
     'MDLambda3Result',
     
