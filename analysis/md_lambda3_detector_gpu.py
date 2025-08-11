@@ -157,6 +157,14 @@ class MDLambda3DetectorGPU(GPUBackend):
             解析結果
         """
         start_time = time.time()
+         # ===== ここが修正箇所！ =====
+        # NumPy配列をGPU（CuPy配列）に変換
+        if self.is_gpu and cp is not None:
+            print("📊 Converting arrays to GPU...")
+            trajectory = cp.asarray(trajectory)
+            if backbone_indices is not None:
+                backbone_indices = cp.asarray(backbone_indices)
+        # ===========================          
         n_frames, n_atoms, _ = trajectory.shape
         
         print(f"\n{'='*60}")
