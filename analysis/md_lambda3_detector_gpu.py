@@ -50,10 +50,10 @@ class MDConfig:
     
     # ===== 追加: 異常検出の重み属性 =====
     # グローバル異常スコアの重み設定
-    w_lambda_f: float = 1.0      # λF異常の重み
-    w_lambda_ff: float = 0.8     # λFF異常（加速度）の重み
-    w_rho_t: float = 1.2          # ρTテンション場の重み
-    w_topology: float = 0.9       # トポロジカル異常の重み
+    w_lambda_f: float = 0.3       # Weight for ΛF anomalies
+    w_lambda_ff: float = 0.2      # Weight for ΛFF anomalies
+    w_rho_t: float = 0.2          # Weight for ρT anomalies
+    w_topology: float = 0.3       # Weight for topological anomalies
     
     # その他の重み（オプション）
     w_phase_coherence: float = 0.7  # 位相コヒーレンスの重み
