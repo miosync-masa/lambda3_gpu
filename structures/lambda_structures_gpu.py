@@ -196,6 +196,12 @@ class LambdaStructuresGPU(GPUBackend):
         if self.is_gpu and HAS_GPU:
             # カスタムカーネル使用
             Q_lambda = topological_charge_kernel(lambda_F, lambda_F_mag)
+            
+            # ⚡ ここが重要！Q_lambdaの型をチェック
+            if not isinstance(Q_lambda, cp.ndarray):
+                print(f"⚠️ Warning: topological_charge_kernel returned numpy array, converting to GPU")
+                Q_lambda = cp.asarray(Q_lambda)
+                
         else:
             # CPU版
             Q_lambda = self._compute_Q_lambda_cpu(lambda_F, lambda_F_mag)
