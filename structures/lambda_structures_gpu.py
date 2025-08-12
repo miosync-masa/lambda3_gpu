@@ -188,6 +188,10 @@ class LambdaStructuresGPU(GPUBackend):
     
     def _compute_lambda_F(self, positions: NDArray) -> Tuple[NDArray, NDArray]:
         """ΛF - 構造フロー計算"""
+        # 安全チェック
+        if self.xp is None:
+            self.xp = cp if (HAS_GPU and not getattr(self, 'force_cpu', False)) else np
+        
         # フレーム間の差分ベクトル
         lambda_F = self.xp.diff(positions, axis=0)
         
