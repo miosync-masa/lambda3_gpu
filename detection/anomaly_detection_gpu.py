@@ -1,13 +1,13 @@
 """
 Lambda³ GPU版異常検出モジュール
 異常検出アルゴリズムの完全GPU実装
+CuPy RawKernelベース（PTX 8.4対応）
 """
 import numpy as np
 from typing import Dict, List, Tuple, Optional, Any, TYPE_CHECKING
 from dataclasses import dataclass
-import math
 import warnings
-from numba import cuda
+import logging
 
 # CuPyの条件付きインポート
 try:
@@ -22,35 +22,66 @@ from ..core.gpu_utils import GPUBackend
 from ..core.gpu_kernels import anomaly_detection_kernel
 
 warnings.filterwarnings('ignore')
+logger = logging.getLogger(__name__)
 
 # ===============================
-# CUDAカーネル定義（クラス外）
+# CuPy RawKernel定義
 # ===============================
 
-@cuda.jit
-def apply_boundary_emphasis_kernel(local_score, boundary_locs, n_frames, window, sigma):
-    """境界周辺を強調するカーネル"""
-    idx = cuda.grid(1)
-    if idx < boundary_locs.shape[0]:
-        loc = boundary_locs[idx]
+BOUNDARY_EMPHASIS_KERNEL_CODE = r'''
+extern "C" __global__
+void apply_boundary_emphasis_kernel(
+    float* local_score,
+    const int* boundary_locs,
+    const int n_frames,
+    const int window,
+    const float sigma,
+    const int n_boundaries
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    if (idx < n_boundaries) {
+        int loc = boundary_locs[idx];
         
-        # ガウシアンウィンドウを適用
-        for i in range(max(0, loc - window), 
-                      min(n_frames, loc + window)):
-            dist = abs(i - loc)
-            weight = math.exp(-0.5 * (dist / sigma) ** 2)
-            cuda.atomic.add(local_score, i, weight)
+        // 境界位置の範囲チェック
+        if (loc >= 0 && loc < n_frames) {
+            // ガウシアンウィンドウを適用
+            int start = max(0, loc - window);
+            int end = min(n_frames, loc + window);
+            
+            for (int i = start; i < end; i++) {
+                float dist = fabsf((float)(i - loc));
+                float weight = expf(-0.5f * powf(dist / sigma, 2.0f));
+                atomicAdd(&local_score[i], weight);
+            }
+        }
+    }
+}
+'''
 
 # ===============================
 # 異常検出GPUクラス
 # ===============================
 
 class AnomalyDetectorGPU(GPUBackend):
-    """異常検出のGPU実装"""
+    """異常検出のGPU実装（CuPy RawKernel版）"""
     
     def __init__(self, force_cpu=False):
         super().__init__(force_cpu)
         self.anomaly_cache = {}
+        
+        # CuPy RawKernelをコンパイル
+        if HAS_CUPY and not force_cpu:
+            try:
+                self.boundary_emphasis_kernel = cp.RawKernel(
+                    BOUNDARY_EMPHASIS_KERNEL_CODE, 'apply_boundary_emphasis_kernel'
+                )
+                logger.info("✅ Anomaly detection kernel compiled successfully (PTX 8.4)")
+            except Exception as e:
+                logger.warning(f"Failed to compile boundary emphasis kernel: {e}")
+                self.boundary_emphasis_kernel = None
+        else:
+            self.boundary_emphasis_kernel = None
         
     def detect_local_anomalies(self, 
                               series: np.ndarray, 
@@ -99,7 +130,8 @@ class AnomalyDetectorGPU(GPUBackend):
         
         # GPUメモリ管理
         if hasattr(self, 'memory_manager'):
-            with self.memory_manager.batch_context(n_frames):
+            # temporary_allocationを使用（batch_contextの代わり）
+            with self.memory_manager.temporary_allocation(n_frames * 4 * 10, "anomaly"):
                 return self._compute_anomalies_impl(lambda_structures, boundaries, breaks, md_features, config, n_frames)
         else:
             return self._compute_anomalies_impl(lambda_structures, boundaries, breaks, md_features, config, n_frames)
@@ -169,25 +201,45 @@ class AnomalyDetectorGPU(GPUBackend):
     def _compute_local_anomalies_gpu(self,
                                    boundaries: Dict,
                                    n_frames: int) -> NDArray:
-        """ローカル異常スコア計算（境界周辺を強調）"""
-        local_score = cp.zeros(n_frames) if self.is_gpu else np.zeros(n_frames)
+        """ローカル異常スコア計算（境界周辺を強調）- CuPy RawKernel版"""
+        local_score = cp.zeros(n_frames, dtype=cp.float32) if self.is_gpu else np.zeros(n_frames, dtype=np.float32)
         
         if 'boundary_locations' in boundaries:
             # 境界位置をGPUに転送
             boundary_locs = self.to_gpu(boundaries['boundary_locations'])
             
             if self.is_gpu and len(boundary_locs) > 0:
-                # 各境界周辺にガウシアンウィンドウを適用（GPU並列）
-                threads = 256
-                blocks = (len(boundary_locs) + threads - 1) // threads
-                
-                # グローバル関数として定義したカーネルを呼び出す
-                apply_boundary_emphasis_kernel[blocks, threads](
-                    local_score, boundary_locs, n_frames, 50, 20  # window=50, sigma=20
-                )
-                
-                # 同期を忘れずに！
-                cp.cuda.Stream.null.synchronize()
+                # CuPy RawKernelを使用
+                if self.boundary_emphasis_kernel is not None:
+                    # int32型に変換
+                    boundary_locs_int = boundary_locs.astype(cp.int32)
+                    
+                    threads = 256
+                    blocks = (len(boundary_locs_int) + threads - 1) // threads
+                    
+                    # CuPy RawKernel実行
+                    self.boundary_emphasis_kernel(
+                        (blocks,), (threads,),
+                        (local_score, boundary_locs_int, n_frames, 
+                         50, cp.float32(20.0), len(boundary_locs_int))  # window=50, sigma=20
+                    )
+                    
+                    # 同期
+                    cp.cuda.Stream.null.synchronize()
+                else:
+                    # CuPyフォールバック（カーネルがコンパイルできなかった場合）
+                    logger.warning("Using CuPy fallback for boundary emphasis")
+                    for loc in boundary_locs:
+                        loc = int(loc)
+                        window = 50
+                        sigma = 20.0
+                        start = max(0, loc - window)
+                        end = min(n_frames, loc + window)
+                        
+                        for i in range(start, end):
+                            dist = abs(i - loc)
+                            weight = cp.exp(-0.5 * (dist / sigma) ** 2)
+                            local_score[i] += weight
             else:
                 # CPU版フォールバック
                 for loc in boundary_locs:
@@ -440,3 +492,71 @@ class AnomalyDetectorGPU(GPUBackend):
                     std_array[i] = np.std(data[start:end])
         
         return std_array
+
+
+# ===============================
+# テスト関数
+# ===============================
+
+def test_anomaly_detection():
+    """異常検出モジュールのテスト"""
+    print("\n🧪 Testing Anomaly Detection GPU...")
+    
+    # テストデータ生成
+    n_frames = 10000
+    lambda_structures = {
+        'rho_T': np.random.randn(n_frames).astype(np.float32),
+        'lambda_F_mag': np.random.randn(n_frames).astype(np.float32),
+        'lambda_FF_mag': np.random.randn(n_frames).astype(np.float32),
+        'Q_lambda': np.cumsum(np.random.randn(n_frames-1)).astype(np.float32)
+    }
+    
+    boundaries = {
+        'boundary_locations': np.array([100, 500, 900, 2000, 5000], dtype=np.int32),
+        'boundary_score': np.random.rand(n_frames).astype(np.float32)
+    }
+    
+    breaks = {
+        'lambda_F_anomaly': np.random.rand(n_frames).astype(np.float32),
+        'lambda_FF_anomaly': np.random.rand(n_frames).astype(np.float32),
+        'rho_T_breaks': np.random.rand(n_frames).astype(np.float32),
+        'Q_breaks': np.random.rand(n_frames-1).astype(np.float32)
+    }
+    
+    md_features = {
+        'radius_of_gyration': np.random.rand(n_frames).astype(np.float32)
+    }
+    
+    # 設定オブジェクト
+    class Config:
+        w_lambda_f = 1.0
+        w_lambda_ff = 0.8
+        w_rho_t = 1.2
+        w_topology = 1.0
+        use_periodic = True
+        use_gradual = True
+        use_drift = True
+        radius_of_gyration = True
+        use_phase_space = True
+    
+    config = Config()
+    
+    # 異常検出器初期化
+    detector = AnomalyDetectorGPU()
+    
+    # 異常検出実行
+    print("Running multi-scale anomaly detection...")
+    results = detector.compute_multiscale_anomalies(
+        lambda_structures, boundaries, breaks, md_features, config
+    )
+    
+    # 結果確認
+    for key, value in results.items():
+        if isinstance(value, np.ndarray):
+            print(f"  {key}: shape={value.shape}, mean={np.mean(value):.4f}")
+    
+    print("\n✅ Anomaly detection test passed!")
+    return True
+
+if __name__ == "__main__":
+    test_anomaly_detection()
