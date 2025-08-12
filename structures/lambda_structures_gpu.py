@@ -15,40 +15,67 @@ import logging
 from typing import Dict, Optional, Tuple, Union, Any
 from dataclasses import dataclass
 
-# GPU imports
-try:
-    import cupy as cp
-    from cupyx.scipy.signal import savgol_filter as cp_savgol_filter
-    HAS_GPU = True
-except ImportError:
-    HAS_GPU = False
-    cp = None
-    cp_savgol_filter = None
+# GPU imports（遅延インポート対応版）
+HAS_GPU = False
+cp = None
+cp_savgol_filter = None
+
+def _try_import_cupy():
+    """CuPyの遅延インポート"""
+    global HAS_GPU, cp, cp_savgol_filter
+    
+    if cp is not None:  # すでにインポート済み
+        return True
+    
+    try:
+        import cupy as _cp
+        from cupyx.scipy.signal import savgol_filter as _cp_savgol_filter
+        cp = _cp
+        cp_savgol_filter = _cp_savgol_filter
+        HAS_GPU = True
+        return True
+    except ImportError:
+        HAS_GPU = False
+        cp = None
+        cp_savgol_filter = None
+        return False
+
+# 初回インポート試行
+_try_import_cupy()
 
 # Local imports
 from ..types import ArrayType, NDArray
 from ..core import GPUBackend, GPUMemoryManager
-from ..core import tension_field_kernel, topological_charge_kernel
+
+# カーネルインポート（CuPyが利用可能な場合のみ）
+tension_field_kernel = None
+topological_charge_kernel = None
+
+if HAS_GPU and cp is not None:
+    try:
+        from ..core import tension_field_kernel, topological_charge_kernel
+    except ImportError:
+        pass
 
 logger = logging.getLogger('lambda3_gpu.structures.lambda_structures')
 
 # ===============================
-# 安全性ヘルパー関数（新規追加）
+# 安全性ヘルパー関数（修正版）
 # ===============================
 
 def safe_is_gpu_array(arr: Any) -> bool:
     """
     安全にGPU配列かチェック
-    
-    環ちゃんの特製安全チェッカー！💪
     """
+    # 再度CuPyインポートを試みる
+    if cp is None:
+        _try_import_cupy()
+    
     return HAS_GPU and cp is not None and isinstance(arr, cp.ndarray)
 
 def safe_to_cpu(arr: Any) -> np.ndarray:
     """
     安全にCPU配列に変換
-    
-    GPU配列でもNumPy配列でも、リストでも何でも来い！
     """
     if safe_is_gpu_array(arr):
         return cp.asnumpy(arr)
@@ -57,9 +84,11 @@ def safe_to_cpu(arr: Any) -> np.ndarray:
 def safe_to_gpu(arr: Any, dtype: Optional[np.dtype] = None) -> NDArray:
     """
     安全にGPU配列に変換（GPU利用可能な場合のみ）
-    
-    GPU使えない時は自動的にNumPy配列として返すよ！
     """
+    # 再度CuPyインポートを試みる
+    if cp is None:
+        _try_import_cupy()
+    
     if HAS_GPU and cp is not None:
         if safe_is_gpu_array(arr):
             return arr.astype(dtype) if dtype else arr
@@ -70,13 +99,11 @@ def safe_to_gpu(arr: Any, dtype: Optional[np.dtype] = None) -> NDArray:
 def get_array_module(arr: Any) -> Any:
     """
     配列に適したモジュール（np or cp）を返す
-    
-    これで xp の混乱を防げる！
     """
     if safe_is_gpu_array(arr):
         return cp
     return np
-
+    
 # ===============================
 # Configuration
 # ===============================
