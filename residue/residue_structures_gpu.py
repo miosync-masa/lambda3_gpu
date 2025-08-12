@@ -24,7 +24,12 @@ except ImportError:
 # Local imports
 from ..types import ArrayType, NDArray
 from ..core import GPUBackend, GPUMemoryManager, handle_gpu_errors
-from ..core import residue_com_kernel
+
+# residue_com_kernelのインポート（エラー時はNone）
+try:
+    from ..core import residue_com_kernel
+except ImportError:
+    residue_com_kernel = None
 
 logger = logging.getLogger('lambda3_gpu.residue.structures')
 
@@ -253,7 +258,7 @@ class ResidueStructuresGPU(GPUBackend):
             
             # 2. 残基レベルΛF（パディングで形状を合わせる）
             with self.timer('residue_lambda_f'):
-                residue_lambda_f, residue_lambda_f_mag = self._compute_residue_lambda_f_padded(
+                residue_lambda_f, residue_lambda_f_mag = self._compute_residue_lambda_f(
                     residue_coms
                 )
             
@@ -310,8 +315,8 @@ class ResidueStructuresGPU(GPUBackend):
         
         return residue_coms
     
-    def _compute_residue_lambda_f_padded(self,
-                                       residue_coms: cp.ndarray) -> Tuple[cp.ndarray, cp.ndarray]:
+    def _compute_residue_lambda_f(self,
+                                residue_coms: cp.ndarray) -> Tuple[cp.ndarray, cp.ndarray]:
         """残基レベルΛF計算（自動パディング版）"""
         n_frames, n_residues, _ = residue_coms.shape
         
@@ -450,7 +455,7 @@ def compute_residue_lambda_f_gpu(residue_coms: Union[np.ndarray, cp.ndarray],
     """残基ΛF計算のスタンドアロン関数（パディング済み）"""
     calculator = ResidueStructuresGPU() if backend is None else ResidueStructuresGPU(device=backend.device)
     coms_gpu = calculator.to_gpu(residue_coms)
-    lambda_f, lambda_f_mag = calculator._compute_residue_lambda_f_padded(coms_gpu)
+    lambda_f, lambda_f_mag = calculator._compute_residue_lambda_f(coms_gpu)
     return calculator.to_cpu(lambda_f), calculator.to_cpu(lambda_f_mag)
 
 def compute_residue_rho_t_gpu(residue_coms: Union[np.ndarray, cp.ndarray],
