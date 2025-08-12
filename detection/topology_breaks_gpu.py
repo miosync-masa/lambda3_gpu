@@ -1,14 +1,22 @@
 """
 Lambda³ GPU版トポロジカル破れ検出モジュール
 構造フローのトポロジカルな破れをGPUで高速検出
+CuPy RawKernelベース（PTX 8.4対応）
 """
 
 import numpy as np
-import cupy as cp
 import logging
 from typing import Dict, List, Tuple, Optional
-from numba import cuda
-from cupyx.scipy.ndimage import gaussian_filter1d as gaussian_filter1d_gpu
+
+# CuPyが利用可能かチェック
+try:
+    import cupy as cp
+    from cupyx.scipy.ndimage import gaussian_filter1d as gaussian_filter1d_gpu
+    HAS_GPU = True
+except ImportError:
+    HAS_GPU = False
+    cp = None
+    gaussian_filter1d_gpu = None
 
 from .phase_space_gpu import PhaseSpaceAnalyzerGPU
 from ..types import ArrayType, NDArray
@@ -22,45 +30,66 @@ from ..core.gpu_kernels import (
 # ロガー設定
 logger = logging.getLogger(__name__)
 
-# CuPyが利用可能かチェック
-try:
-    import cupy as cp
-    HAS_GPU = True
-except ImportError:
-    HAS_GPU = False
-    cp = None
-
 # ===============================
-# CUDAカーネル定義（クラス外）
+# CuPy RawKernel定義
 # ===============================
 
-@cuda.jit
-def local_extrema_kernel(data, extrema, window, n):
-    """局所極値検出カーネル"""
-    idx = cuda.grid(1)
+LOCAL_EXTREMA_KERNEL_CODE = r'''
+extern "C" __global__
+void local_extrema_kernel(
+    const float* data,
+    float* extrema,
+    const int window,
+    const int n
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
     
-    if idx >= window and idx < n - window:
-        center = data[idx]
-        is_max = True
-        is_min = True
+    if (idx >= window && idx < n - window) {
+        float center = data[idx];
+        bool is_max = true;
+        bool is_min = true;
         
-        # 局所範囲で比較
-        for i in range(idx - window, idx + window + 1):
-            if i != idx:
-                if data[i] >= center:
-                    is_max = False
-                if data[i] <= center:
-                    is_min = False
+        // 局所範囲で比較
+        for (int i = idx - window; i <= idx + window; i++) {
+            if (i != idx) {
+                if (data[i] >= center) {
+                    is_max = false;
+                }
+                if (data[i] <= center) {
+                    is_min = false;
+                }
+                
+                // 早期終了
+                if (!is_max && !is_min) {
+                    break;
+                }
+            }
+        }
         
-        if is_max or is_min:
-            extrema[idx] = 1.0
+        extrema[idx] = (is_max || is_min) ? 1.0f : 0.0f;
+    }
+}
+'''
 
 class TopologyBreaksDetectorGPU(GPUBackend):
-    """トポロジカル破れ検出のGPU実装"""
+    """トポロジカル破れ検出のGPU実装（CuPy RawKernel版）"""
     
     def __init__(self, force_cpu=False):
         super().__init__(force_cpu)
         self.breaks_cache = {}
+        
+        # CuPy RawKernelをコンパイル
+        if HAS_GPU and not force_cpu:
+            try:
+                self.local_extrema_kernel = cp.RawKernel(
+                    LOCAL_EXTREMA_KERNEL_CODE, 'local_extrema_kernel'
+                )
+                logger.info("✅ Topology breaks kernel compiled successfully (PTX 8.4)")
+            except Exception as e:
+                logger.warning(f"Failed to compile local extrema kernel: {e}")
+                self.local_extrema_kernel = None
+        else:
+            self.local_extrema_kernel = None
         
     def detect_topological_breaks(self,
                                 structures: Dict[str, np.ndarray],
@@ -84,7 +113,7 @@ class TopologyBreaksDetectorGPU(GPUBackend):
         
         n_frames = len(structures['rho_T'])
         
-        # batch_contextをtemporary_allocationに修正
+        # temporary_allocationを使用
         with self.memory_manager.temporary_allocation(n_frames * 4 * 8, "topology_breaks"):
             # 1. ΛF異常（構造フロー破れ）
             lambda_f_anomaly = self._detect_flow_anomalies_gpu(
@@ -196,7 +225,7 @@ class TopologyBreaksDetectorGPU(GPUBackend):
         
         for sigma in sigmas:
             # ガウシアンフィルタ
-            if self.is_gpu:
+            if self.is_gpu and gaussian_filter1d_gpu is not None:
                 rho_t_smooth = gaussian_filter1d_gpu(rho_t_gpu, sigma=sigma)
                 # ジャンプ検出
                 jumps = cp.abs(rho_t_gpu - rho_t_smooth)
@@ -204,9 +233,12 @@ class TopologyBreaksDetectorGPU(GPUBackend):
                 jumps_norm = jumps / (cp.std(jumps) + 1e-10)
             else:
                 from scipy.ndimage import gaussian_filter1d
-                rho_t_smooth = gaussian_filter1d(rho_t, sigma=sigma)
-                jumps = np.abs(rho_t - rho_t_smooth)
+                rho_t_np = rho_t if not self.is_gpu else cp.asnumpy(rho_t_gpu)
+                rho_t_smooth = gaussian_filter1d(rho_t_np, sigma=sigma)
+                jumps = np.abs(rho_t_np - rho_t_smooth)
                 jumps_norm = jumps / (np.std(jumps) + 1e-10)
+                if self.is_gpu:
+                    jumps_norm = cp.asarray(jumps_norm)
             
             jumps_multiscale += jumps_norm / len(sigmas)
         
@@ -294,7 +326,7 @@ class TopologyBreaksDetectorGPU(GPUBackend):
             lambda_f_gpu = self.to_gpu(structures['lambda_F'])
             divergence = self._compute_divergence_gpu(lambda_f_gpu)
             
-            # ここが重要！divergenceの長さを確認して調整
+            # divergenceの長さを確認して調整
             if len(divergence) != n_frames:
                 # divergenceが短い場合はパディング
                 if len(divergence) < n_frames:
@@ -425,28 +457,39 @@ class TopologyBreaksDetectorGPU(GPUBackend):
     def _find_local_extrema_gpu(self,
                                data: NDArray,
                                window: int) -> NDArray:
-        """局所極値の検出 - CUDAカーネル使用"""
-        if self.is_gpu and HAS_GPU:
-            extrema = cp.zeros_like(data)
+        """局所極値の検出 - CuPy RawKernel使用（PTX 8.4対応）"""
+        data_gpu = self.to_gpu(data).astype(cp.float32)
+        
+        if self.is_gpu and self.local_extrema_kernel is not None:
+            extrema = cp.zeros_like(data_gpu, dtype=cp.float32)
             
-            # CUDAカーネル呼び出し
+            # CuPy RawKernel呼び出し
             threads = 256
-            blocks = (len(data) + threads - 1) // threads
+            blocks = (len(data_gpu) + threads - 1) // threads
             
-            local_extrema_kernel[blocks, threads](
-                data, extrema, window, len(data)
+            self.local_extrema_kernel(
+                (blocks,), (threads,),
+                (data_gpu, extrema, window, len(data_gpu))
             )
             
             cp.cuda.Stream.null.synchronize()
             return extrema
         else:
-            # CPU版フォールバック
-            extrema = np.zeros_like(data)
-            for i in range(window, len(data) - window):
-                local_max = np.max(data[i-window:i+window+1])
-                local_min = np.min(data[i-window:i+window+1])
-                if data[i] == local_max or data[i] == local_min:
-                    extrema[i] = 1.0
+            # フォールバック（CPUまたはCuPy）
+            if self.is_gpu:
+                extrema = cp.zeros_like(data_gpu)
+                for i in range(window, len(data_gpu) - window):
+                    local_max = cp.max(data_gpu[i-window:i+window+1])
+                    local_min = cp.min(data_gpu[i-window:i+window+1])
+                    if data_gpu[i] == local_max or data_gpu[i] == local_min:
+                        extrema[i] = 1.0
+            else:
+                extrema = np.zeros_like(data)
+                for i in range(window, len(data) - window):
+                    local_max = np.max(data[i-window:i+window+1])
+                    local_min = np.min(data[i-window:i+window+1])
+                    if data[i] == local_max or data[i] == local_min:
+                        extrema[i] = 1.0
             return extrema
     
     def _compute_divergence_gpu(self, vector_field: NDArray) -> NDArray:
@@ -547,3 +590,47 @@ class TopologyBreaksDetectorGPU(GPUBackend):
         combined /= sum(weights[:len(anomalies)])
         
         return combined
+
+
+# ===============================
+# テスト関数
+# ===============================
+
+def test_topology_breaks():
+    """トポロジカル破れ検出のテスト"""
+    print("\n🧪 Testing Topology Breaks Detection GPU...")
+    
+    # テストデータ生成
+    n_frames = 10000
+    structures = {
+        'rho_T': np.random.randn(n_frames).astype(np.float32),
+        'lambda_F': np.random.randn(n_frames, 3).astype(np.float32),  # ベクトル場
+        'lambda_F_mag': np.random.rand(n_frames).astype(np.float32),
+        'lambda_FF_mag': np.random.rand(n_frames).astype(np.float32),
+        'Q_lambda': np.cumsum(np.random.randn(n_frames) * 0.1).astype(np.float32),
+        'structural_coherence': np.random.rand(n_frames).astype(np.float32)
+    }
+    
+    # 検出器初期化
+    detector = TopologyBreaksDetectorGPU()
+    
+    # トポロジカル破れ検出実行
+    print("Running topological breaks detection...")
+    results = detector.detect_topological_breaks(structures, window_steps=100)
+    
+    # 結果確認
+    for key, value in results.items():
+        print(f"  {key}: shape={value.shape}, mean={np.mean(value):.4f}, max={np.max(value):.4f}")
+    
+    # 局所極値検出のテスト
+    print("\nTesting local extrema detection...")
+    test_data = np.sin(np.linspace(0, 4*np.pi, 1000)).astype(np.float32)
+    extrema = detector._find_local_extrema_gpu(test_data, window=10)
+    n_extrema = np.sum(detector.to_cpu(extrema) > 0)
+    print(f"  Found {n_extrema} extrema in sine wave")
+    
+    print("\n✅ Topology breaks detection test passed!")
+    return True
+
+if __name__ == "__main__":
+    test_topology_breaks()
