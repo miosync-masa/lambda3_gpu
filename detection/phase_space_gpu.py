@@ -1288,10 +1288,10 @@ class PhaseSpaceAnalyzerGPU(GPUBackend):
         return phase_space
     
     def _compute_integrated_score_gpu(self,
-                                    anomaly_scores: cp.ndarray,
-                                    attractor_features: Dict,
-                                    recurrence_features: Dict) -> cp.ndarray:
-        """統合異常スコア（改良版）"""
+                                anomaly_scores: cp.ndarray,
+                                attractor_features: Dict,
+                                recurrence_features: Dict) -> cp.ndarray:
+        """統合異常スコア（修正版）"""
         # アトラクタ異常度
         attractor_anomaly = 0.0
         
@@ -1336,18 +1336,20 @@ class PhaseSpaceAnalyzerGPU(GPUBackend):
         if trapping > 10.0:
             recurrence_anomaly += 0.2
         
-        # 正規化
-        attractor_anomaly = cp.clip(attractor_anomaly, 0.0, 1.0)
-        recurrence_anomaly = cp.clip(recurrence_anomaly, 0.0, 1.0)
+        # ⚡ ここが修正箇所！float型にはPythonの組み込み関数を使う
+        # 正規化（float型なのでPythonのmin/maxを使用）
+        attractor_anomaly = max(0.0, min(1.0, attractor_anomaly))
+        recurrence_anomaly = max(0.0, min(1.0, recurrence_anomaly))
         
         # 統合（時系列全体に適用）
         global_anomaly = 0.5 * attractor_anomaly + 0.5 * recurrence_anomaly
         
-        # 局所異常と統合
+        # 局所異常と統合（anomaly_scoresはcp.ndarrayなのでcp/npを使う）
         integrated = 0.7 * anomaly_scores + 0.3 * global_anomaly
         
-        # 正規化
-        integrated = (integrated - cp.mean(integrated)) / (cp.std(integrated) + 1e-10)
+        # 正規化（配列なのでxpを使う）
+        xp = cp if isinstance(integrated, cp.ndarray) else np
+        integrated = (integrated - xp.mean(integrated)) / (xp.std(integrated) + 1e-10)
         
         return integrated
     
