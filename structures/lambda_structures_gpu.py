@@ -60,48 +60,77 @@ if HAS_GPU and cp is not None:
 logger = logging.getLogger('lambda3_gpu.structures.lambda_structures')
 
 # ===============================
-# 安全性ヘルパー関数（修正版）
+# 安全性ヘルパー関数（動的CuPy対応版）
 # ===============================
 
 def safe_is_gpu_array(arr: Any) -> bool:
     """
-    安全にGPU配列かチェック
-    """
-    # 再度CuPyインポートを試みる
-    if cp is None:
-        _try_import_cupy()
+    安全にGPU配列かチェック（動的CuPy確認付き）
     
-    return HAS_GPU and cp is not None and isinstance(arr, cp.ndarray)
+    環ちゃんの特製安全チェッカー！💪
+    """
+    # 現在のモジュール状態を確認
+    import sys
+    module = sys.modules[__name__]
+    
+    # cpがNoneなら再インポート試行
+    if module.cp is None:
+        try:
+            import cupy as _cp
+            module.cp = _cp
+            module.HAS_GPU = True
+        except ImportError:
+            pass
+    
+    return module.HAS_GPU and module.cp is not None and isinstance(arr, module.cp.ndarray)
 
 def safe_to_cpu(arr: Any) -> np.ndarray:
     """
-    安全にCPU配列に変換
+    安全にCPU配列に変換（動的CuPy確認付き）
+    
+    GPU配列でもNumPy配列でも、リストでも何でも来い！
     """
     if safe_is_gpu_array(arr):
-        return cp.asnumpy(arr)
+        import sys
+        module = sys.modules[__name__]
+        return module.cp.asnumpy(arr)
     return np.asarray(arr)
 
 def safe_to_gpu(arr: Any, dtype: Optional[np.dtype] = None) -> NDArray:
     """
-    安全にGPU配列に変換（GPU利用可能な場合のみ）
-    """
-    # 再度CuPyインポートを試みる
-    if cp is None:
-        _try_import_cupy()
+    安全にGPU配列に変換（動的CuPy確認付き）
     
-    if HAS_GPU and cp is not None:
+    GPU使えない時は自動的にNumPy配列として返すよ！
+    """
+    import sys
+    module = sys.modules[__name__]
+    
+    # cpがNoneなら再インポート試行
+    if module.cp is None:
+        try:
+            import cupy as _cp
+            module.cp = _cp
+            module.HAS_GPU = True
+        except ImportError:
+            pass
+    
+    if module.HAS_GPU and module.cp is not None:
         if safe_is_gpu_array(arr):
             return arr.astype(dtype) if dtype else arr
-        return cp.asarray(arr, dtype=dtype)
+        return module.cp.asarray(arr, dtype=dtype)
     else:
         return np.asarray(arr, dtype=dtype) if dtype else np.asarray(arr)
 
 def get_array_module(arr: Any) -> Any:
     """
-    配列に適したモジュール（np or cp）を返す
+    配列に適したモジュール（np or cp）を返す（動的版）
+    
+    これで xp の混乱を防げる！
     """
     if safe_is_gpu_array(arr):
-        return cp
+        import sys
+        module = sys.modules[__name__]
+        return module.cp
     return np
     
 # ===============================
@@ -157,22 +186,59 @@ class LambdaStructuresGPU(GPUBackend):
         GPU/CPU状態の整合性を完全検証して修正
         
         環ちゃんの完璧な状態チェッカー！🔍
+        2025/08/12 修正：CuPy再インポート対応
         """
+        # モジュールレベルの変数にアクセス
+        import sys
+        module = sys.modules[__name__]
+        
         # GPU利用可能性の再確認
         if self.is_gpu:
-            if not HAS_GPU or cp is None:
-                logger.warning("⚠️ GPU mode requested but CuPy not available! Falling back to CPU mode.")
+            # 親クラス（GPUBackend）がGPU使えると判断してる場合
+            # CuPyを強制的に再インポート試行
+            try:
+                import cupy as _cp
+                from cupyx.scipy.signal import savgol_filter as _cp_savgol_filter
+                
+                # モジュールレベルの変数を更新（これが重要！）
+                module.cp = _cp
+                module.cp_savgol_filter = _cp_savgol_filter
+                module.HAS_GPU = True
+                
+                # インスタンス変数も更新
+                self.xp = _cp
+                logger.info("✅ GPU mode confirmed: Using CuPy")
+                
+            except ImportError as e:
+                logger.warning(f"⚠️ GPU mode requested but CuPy import failed: {e}")
+                logger.warning("Falling back to CPU mode.")
+                
+                # フォールバック
+                module.cp = None
+                module.cp_savgol_filter = None
+                module.HAS_GPU = False
+                
                 self.is_gpu = False
                 self.xp = np
-            else:
-                self.xp = cp
-                logger.info("✅ GPU mode confirmed: Using CuPy")
         else:
+            # CPU モード
             self.xp = np
             logger.info("✅ CPU mode confirmed: Using NumPy")
         
         # デバッグ情報
-        logger.debug(f"State validation complete: is_gpu={self.is_gpu}, xp={self.xp.__name__}, HAS_GPU={HAS_GPU}")
+        logger.debug(f"State validation complete: is_gpu={self.is_gpu}, "
+                    f"xp={self.xp.__name__ if hasattr(self.xp, '__name__') else type(self.xp)}, "
+                    f"HAS_GPU={module.HAS_GPU}, cp={module.cp}")
+        
+        # ヘルパー関数も更新（安全のため）
+        if module.cp is not None:
+            # tension_field_kernelなども再インポート
+            try:
+                from ..core import tension_field_kernel, topological_charge_kernel
+                module.tension_field_kernel = tension_field_kernel
+                module.topological_charge_kernel = topological_charge_kernel
+            except ImportError:
+                pass
     
     def to_gpu(self, array: Any, dtype: Optional[np.dtype] = None) -> NDArray:
         """
