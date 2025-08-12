@@ -250,33 +250,55 @@ class BoundaryDetectorGPU(GPUBackend):
     def _compute_structural_entropy_gpu(self,
                                       rho_t: np.ndarray,
                                       window: int) -> NDArray:
-        """構造エントロピーの計算（GPU版）"""
+        """
+        構造エントロピーの計算（GPU版）
+        
+        PTXバージョンエラー回避のため、Numbaカーネルを使用せず
+        CuPyで直接計算する実装に変更（2025/01/16）
+        
+        Parameters
+        ----------
+        rho_t : np.ndarray
+            テンション密度の時系列
+        window : int
+            ウィンドウサイズ
+            
+        Returns
+        -------
+        NDArray
+            構造エントロピーの時系列
+        """
         rho_t_gpu = self.to_gpu(rho_t)
         n = len(rho_t_gpu)
         
         if self.is_gpu:
             entropy = cp.zeros(n)
             
-            # CUDAカーネルが使える場合
-            if HAS_CUDA and shannon_entropy_kernel is not None:
-                threads = 256
-                blocks = (n + threads - 1) // threads
-                
-                shannon_entropy_kernel[blocks, threads](
-                    rho_t_gpu, entropy, window, n
-                )
-                
-                cp.cuda.Stream.null.synchronize()
-            else:
-                # CuPyフォールバック
-                for i in range(window, n - window):
-                    local_data = rho_t_gpu[i-window:i+window]
-                    local_sum = cp.sum(local_data)
-                    if local_sum > 1e-10:
-                        p = local_data / local_sum
-                        valid = p > 1e-10
-                        if cp.any(valid):
-                            entropy[i] = -cp.sum(p[valid] * cp.log(p[valid]))
+            # PTXバージョンエラー回避：Numbaカーネルを使用しない
+            # CuPyで直接計算（十分高速）
+            for i in range(window, n - window):
+                local_data = rho_t_gpu[i-window:i+window]
+                local_sum = cp.sum(local_data)
+                if local_sum > 1e-10:
+                    p = local_data / local_sum
+                    valid = p > 1e-10
+                    if cp.any(valid):
+                        entropy[i] = -cp.sum(p[valid] * cp.log(p[valid]))
+            
+            # 以下、Numbaカーネル版（PTXエラーのため無効化）
+            # if HAS_CUDA and shannon_entropy_kernel is not None:
+            #     threads = 256
+            #     blocks = (n + threads - 1) // threads
+            #     
+            #     shannon_entropy_kernel[blocks, threads](
+            #         rho_t_gpu, entropy, window, n
+            #     )
+            #     
+            #     cp.cuda.Stream.null.synchronize()
+            # else:
+            #     # CuPyフォールバック（上記と同じ処理）
+            #     for i in range(window, n - window):
+            #         ...
         else:
             # CPU版
             entropy = np.zeros(n)
