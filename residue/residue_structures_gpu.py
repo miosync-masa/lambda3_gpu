@@ -223,31 +223,14 @@ class ResidueStructuresGPU(GPUBackend):
     
     @handle_gpu_errors
     def compute_residue_structures(self,
-                                 trajectory: np.ndarray,
-                                 start_frame: int,
-                                 end_frame: int,
-                                 residue_atoms: Dict[int, List[int]],
-                                 window_size: int = 50) -> ResidueStructureResult:
+                             trajectory: np.ndarray,
+                             start_frame: int,
+                             end_frame: int,
+                             residue_atoms: Dict[int, List[int]],
+                             window_size: int = 50) -> ResidueStructureResult:
         """
-        残基レベルのLambda³構造を計算
-        
-        Parameters
-        ----------
-        trajectory : np.ndarray
-            トラジェクトリ (n_frames, n_atoms, 3)
-        start_frame : int
-            開始フレーム
-        end_frame : int
-            終了フレーム
-        residue_atoms : dict
-            残基ID -> 原子インデックスのマッピング
-        window_size : int
-            ウィンドウサイズ
-            
-        Returns
-        -------
-        ResidueStructureResult
-            計算結果
+        残基レベルのLambda³構造を計算（完全修正版）
+        全ての配列の形状を統一！
         """
         with self.timer('compute_residue_structures'):
             logger.info(f"🔬 Computing residue-level Lambda³ (frames {start_frame}-{end_frame})")
@@ -261,19 +244,19 @@ class ResidueStructuresGPU(GPUBackend):
                     trajectory[start_frame:end_frame], residue_atoms
                 )
             
-            # 2. 残基レベルΛF
+            # 2. 残基レベルΛF（パディングで形状を合わせる）
             with self.timer('residue_lambda_f'):
-                residue_lambda_f, residue_lambda_f_mag = self._compute_residue_lambda_f(
+                residue_lambda_f, residue_lambda_f_mag = self._compute_residue_lambda_f_padded(
                     residue_coms
                 )
             
-            # 3. 残基レベルρT
+            # 3. 残基レベルρT（そのまま）
             with self.timer('residue_rho_t'):
                 residue_rho_t = self._compute_residue_rho_t(
                     residue_coms, window_size
                 )
             
-            # 4. 残基間カップリング
+            # 4. 残基間カップリング（そのまま）
             with self.timer('residue_coupling'):
                 residue_coupling = self._compute_residue_coupling(residue_coms)
             
@@ -286,9 +269,57 @@ class ResidueStructuresGPU(GPUBackend):
                 residue_coms=self.to_cpu(residue_coms)
             )
             
-            self._print_statistics(result)
+            # 形状検証
+            if not result.validate_shapes():
+                logger.warning("Shape validation failed! Debugging info:")
+                logger.warning(f"  lambda_f: {result.residue_lambda_f.shape}")
+                logger.warning(f"  lambda_f_mag: {result.residue_lambda_f_mag.shape}")
+                logger.warning(f"  rho_t: {result.residue_rho_t.shape}")
+                logger.warning(f"  coupling: {result.residue_coupling.shape}")
+                logger.warning(f"  coms: {result.residue_coms.shape}")
+            
+            self._print_statistics_safe(result)
             
             return result
+    
+    def _compute_residue_lambda_f_padded(self,
+                                       residue_coms: cp.ndarray) -> Tuple[cp.ndarray, cp.ndarray]:
+        """残基レベルΛF計算（自動パディング版）"""
+        n_frames, n_residues, _ = residue_coms.shape
+        
+        # フレーム間差分
+        residue_lambda_f = self.xp.diff(residue_coms, axis=0)
+        residue_lambda_f_mag = self.xp.linalg.norm(residue_lambda_f, axis=2)
+        
+        # 最初にゼロパディング（差分の前に相当）
+        zero_pad_f = self.xp.zeros((1, n_residues, 3), dtype=residue_lambda_f.dtype)
+        residue_lambda_f = self.xp.concatenate([zero_pad_f, residue_lambda_f], axis=0)
+        
+        zero_pad_mag = self.xp.zeros((1, n_residues), dtype=residue_lambda_f_mag.dtype)
+        residue_lambda_f_mag = self.xp.concatenate([zero_pad_mag, residue_lambda_f_mag], axis=0)
+        
+        return residue_lambda_f, residue_lambda_f_mag
+    
+    def _print_statistics_safe(self, result: ResidueStructureResult):
+        """統計情報を安全に表示"""
+        logger.info(f"  Residues: {result.n_residues}")
+        logger.info(f"  Frames: {result.n_frames}")
+        
+        # NaN/空配列チェック付き統計
+        def safe_mean(arr, name):
+            try:
+                if arr.size == 0:
+                    return f"{name}: N/A (empty)"
+                val = np.nanmean(arr)
+                if np.isnan(val):
+                    return f"{name}: N/A (all NaN)"
+                return f"{name}: {val:.3f}"
+            except Exception as e:
+                return f"{name}: Error ({e})"
+        
+        logger.info(f"  {safe_mean(result.residue_lambda_f_mag, '<ΛF>')}")
+        logger.info(f"  {safe_mean(result.residue_rho_t, '<ρT>')}")
+        logger.info(f"  {safe_mean(result.residue_coupling, '<Coupling>')}")
     
     def _compute_residue_coms(self,
                             trajectory: np.ndarray,
