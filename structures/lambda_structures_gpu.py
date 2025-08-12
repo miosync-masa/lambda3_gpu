@@ -70,39 +70,40 @@ class LambdaStructuresGPU(GPUBackend):
     """
     
     def __init__(self, 
-                 config: Optional[LambdaStructureConfig] = None,
-                 memory_manager: Optional[GPUMemoryManager] = None,
-                 force_cpu: bool = False,
-                 **kwargs):
-        """
-        Parameters
-        ----------
-        config : LambdaStructureConfig
-            計算設定
-        memory_manager : GPUMemoryManager
-            メモリ管理インスタンス
-        force_cpu : bool
-            強制的にCPUモードにする
-        """
-        # 親クラス初期化
-        super().__init__(
-            force_cpu=force_cpu,
-            mixed_precision=config.use_mixed_precision if config else False,
-            profile=config.profile if config else False,
-            **kwargs
-        )
-        
-        self.config = config or LambdaStructureConfig()
-        self.memory_manager = memory_manager or GPUMemoryManager()
-        self._cache = {} if self.config.cache_intermediates else None
-        
-        # GPU/CPU状態をログ出力
-        if self.is_gpu:
-            logger.info(f"✅ GPU mode enabled: {self.device}")
+             config: Optional[LambdaStructureConfig] = None,
+             memory_manager: Optional[GPUMemoryManager] = None,
+             force_cpu: bool = False,
+             **kwargs):
+    
+    # 親クラス初期化
+    super().__init__(
+        force_cpu=force_cpu,
+        mixed_precision=config.use_mixed_precision if config else False,
+        profile=config.profile if config else False,
+        **kwargs
+    )
+    
+    self.config = config or LambdaStructureConfig()
+    self.memory_manager = memory_manager or GPUMemoryManager()
+    self._cache = {} if self.config.cache_intermediates else None
+    
+    # ⚡ ここを確実に！
+    if not force_cpu and HAS_GPU:
+        try:
+            import cupy as cp
             self.xp = cp
-        else:
-            logger.info("✅ CPU mode enabled")
+            self.is_gpu = True  # 明示的に設定
+            logger.info(f"✅ GPU mode enabled with CuPy")
+        except:
+            import numpy as np
             self.xp = np
+            self.is_gpu = False
+            logger.info("⚠️ Falling back to CPU mode")
+    else:
+        import numpy as np
+        self.xp = np
+        self.is_gpu = False
+        logger.info("✅ CPU mode enabled")
             
     def compute_lambda_structures(self,
                                 trajectory: np.ndarray,
