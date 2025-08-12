@@ -3,9 +3,9 @@ Residue-Level Lambda³ Structure Computation (GPU Version)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 残基レベルのLambda³構造をGPUで計算！
-めちゃくちゃ細かい解析も爆速だよ〜！💕
+形状不一致を完全解決した版！💪
 
-by 環ちゃん
+by 環ちゃん - 完全修正版
 """
 
 import numpy as np
@@ -33,21 +33,7 @@ logger = logging.getLogger('lambda3_gpu.residue.structures')
 # ===============================
 
 def get_optimal_block_size(n_elements: int, max_block_size: int = 1024) -> int:
-    """
-    最適なブロックサイズを計算
-    
-    Parameters
-    ----------
-    n_elements : int
-        要素数
-    max_block_size : int
-        最大ブロックサイズ（デフォルト: 1024）
-    
-    Returns
-    -------
-    int
-        最適なブロックサイズ
-    """
+    """最適なブロックサイズを計算"""
     if n_elements <= 32:
         return 32
     elif n_elements <= 64:
@@ -67,20 +53,43 @@ def get_optimal_block_size(n_elements: int, max_block_size: int = 1024) -> int:
 
 @dataclass
 class ResidueStructureResult:
-    """残基レベル構造計算の結果"""
-    residue_lambda_f: np.ndarray      # (n_frames-1, n_residues, 3)
-    residue_lambda_f_mag: np.ndarray  # (n_frames-1, n_residues)
+    """残基レベル構造計算の結果（形状統一版）"""
+    residue_lambda_f: np.ndarray      # (n_frames, n_residues, 3) - パディング済み
+    residue_lambda_f_mag: np.ndarray  # (n_frames, n_residues) - パディング済み
     residue_rho_t: np.ndarray         # (n_frames, n_residues)
     residue_coupling: np.ndarray      # (n_frames, n_residues, n_residues)
     residue_coms: np.ndarray          # (n_frames, n_residues, 3)
     
     @property
     def n_frames(self) -> int:
+        """全配列で統一されたフレーム数"""
         return self.residue_coms.shape[0]
     
     @property
     def n_residues(self) -> int:
         return self.residue_coms.shape[1]
+    
+    def validate_shapes(self) -> bool:
+        """形状の整合性を確認"""
+        n_frames = self.n_frames
+        n_residues = self.n_residues
+        
+        expected_shapes = {
+            'residue_lambda_f': (n_frames, n_residues, 3),
+            'residue_lambda_f_mag': (n_frames, n_residues),
+            'residue_rho_t': (n_frames, n_residues),
+            'residue_coupling': (n_frames, n_residues, n_residues),
+            'residue_coms': (n_frames, n_residues, 3)
+        }
+        
+        for name, expected_shape in expected_shapes.items():
+            actual_shape = getattr(self, name).shape
+            if actual_shape != expected_shape:
+                logger.warning(f"Shape mismatch in {name}: "
+                             f"expected {expected_shape}, got {actual_shape}")
+                return False
+        
+        return True
 
 # ===============================
 # CUDA Kernels
@@ -191,9 +200,7 @@ void compute_residue_coupling_kernel(
 class ResidueStructuresGPU(GPUBackend):
     """
     残基レベルLambda³構造計算のGPU実装
-    
-    各残基の動きを独立に追跡して、
-    残基間の相互作用を高速に計算するよ〜！
+    形状不一致を完全解決！
     """
     
     def __init__(self,
@@ -223,11 +230,11 @@ class ResidueStructuresGPU(GPUBackend):
     
     @handle_gpu_errors
     def compute_residue_structures(self,
-                             trajectory: np.ndarray,
-                             start_frame: int,
-                             end_frame: int,
-                             residue_atoms: Dict[int, List[int]],
-                             window_size: int = 50) -> ResidueStructureResult:
+                                 trajectory: np.ndarray,
+                                 start_frame: int,
+                                 end_frame: int,
+                                 residue_atoms: Dict[int, List[int]],
+                                 window_size: int = 50) -> ResidueStructureResult:
         """
         残基レベルのLambda³構造を計算（完全修正版）
         全ての配列の形状を統一！
@@ -282,6 +289,27 @@ class ResidueStructuresGPU(GPUBackend):
             
             return result
     
+    def _compute_residue_coms(self,
+                            trajectory: np.ndarray,
+                            residue_atoms: Dict[int, List[int]]) -> cp.ndarray:
+        """残基COM計算（カスタムカーネル使用）"""
+        n_frames, n_atoms, _ = trajectory.shape
+        n_residues = len(residue_atoms)
+        
+        if self.is_gpu and HAS_GPU and residue_com_kernel is not None:
+            # GPU版：カスタムカーネル使用
+            trajectory_gpu = self.to_gpu(trajectory, dtype=cp.float32)
+            residue_coms = residue_com_kernel(trajectory_gpu, residue_atoms)
+        else:
+            # CPU版フォールバック
+            residue_coms = np.zeros((n_frames, n_residues, 3), dtype=np.float32)
+            for res_id, atoms in residue_atoms.items():
+                if len(atoms) > 0 and max(atoms) < n_atoms:
+                    residue_coms[:, res_id] = np.mean(trajectory[:, atoms], axis=1)
+            residue_coms = self.to_gpu(residue_coms)
+        
+        return residue_coms
+    
     def _compute_residue_lambda_f_padded(self,
                                        residue_coms: cp.ndarray) -> Tuple[cp.ndarray, cp.ndarray]:
         """残基レベルΛF計算（自動パディング版）"""
@@ -297,58 +325,6 @@ class ResidueStructuresGPU(GPUBackend):
         
         zero_pad_mag = self.xp.zeros((1, n_residues), dtype=residue_lambda_f_mag.dtype)
         residue_lambda_f_mag = self.xp.concatenate([zero_pad_mag, residue_lambda_f_mag], axis=0)
-        
-        return residue_lambda_f, residue_lambda_f_mag
-    
-    def _print_statistics_safe(self, result: ResidueStructureResult):
-        """統計情報を安全に表示"""
-        logger.info(f"  Residues: {result.n_residues}")
-        logger.info(f"  Frames: {result.n_frames}")
-        
-        # NaN/空配列チェック付き統計
-        def safe_mean(arr, name):
-            try:
-                if arr.size == 0:
-                    return f"{name}: N/A (empty)"
-                val = np.nanmean(arr)
-                if np.isnan(val):
-                    return f"{name}: N/A (all NaN)"
-                return f"{name}: {val:.3f}"
-            except Exception as e:
-                return f"{name}: Error ({e})"
-        
-        logger.info(f"  {safe_mean(result.residue_lambda_f_mag, '<ΛF>')}")
-        logger.info(f"  {safe_mean(result.residue_rho_t, '<ρT>')}")
-        logger.info(f"  {safe_mean(result.residue_coupling, '<Coupling>')}")
-    
-    def _compute_residue_coms(self,
-                            trajectory: np.ndarray,
-                            residue_atoms: Dict[int, List[int]]) -> cp.ndarray:
-        """残基COM計算（カスタムカーネル使用）"""
-        n_frames, n_atoms, _ = trajectory.shape
-        n_residues = len(residue_atoms)
-        
-        if self.is_gpu and HAS_GPU:
-            # GPU版：カスタムカーネル使用
-            trajectory_gpu = self.to_gpu(trajectory, dtype=cp.float32)
-            residue_coms = residue_com_kernel(trajectory_gpu, residue_atoms)
-        else:
-            # CPU版フォールバック
-            residue_coms = np.zeros((n_frames, n_residues, 3), dtype=np.float32)
-            for res_id, atoms in residue_atoms.items():
-                residue_coms[:, res_id] = np.mean(trajectory[:, atoms], axis=1)
-            residue_coms = self.to_gpu(residue_coms)
-        
-        return residue_coms
-    
-    def _compute_residue_lambda_f(self,
-                                residue_coms: cp.ndarray) -> Tuple[cp.ndarray, cp.ndarray]:
-        """残基レベルΛF計算"""
-        # フレーム間差分
-        residue_lambda_f = self.xp.diff(residue_coms, axis=0)
-        
-        # 大きさ
-        residue_lambda_f_mag = self.xp.linalg.norm(residue_lambda_f, axis=2)
         
         return residue_lambda_f, residue_lambda_f_mag
     
@@ -382,7 +358,7 @@ class ResidueStructuresGPU(GPUBackend):
             for frame in range(n_frames):
                 for res_id in range(n_residues):
                     local_start = max(0, frame - window_size // 2)
-                    local_end = min(n_frames, frame + window_size // 2)
+                    local_end = min(n_frames, frame + window_size // 2 + 1)
                     
                     local_coms = residue_coms[local_start:local_end, res_id]
                     if len(local_coms) > 1:
@@ -433,13 +409,26 @@ class ResidueStructuresGPU(GPUBackend):
         
         return coupling
     
-    def _print_statistics(self, result: ResidueStructureResult):
-        """統計情報を表示"""
+    def _print_statistics_safe(self, result: ResidueStructureResult):
+        """統計情報を安全に表示"""
         logger.info(f"  Residues: {result.n_residues}")
         logger.info(f"  Frames: {result.n_frames}")
-        logger.info(f"  <ΛF>: {np.mean(result.residue_lambda_f_mag):.3f}")
-        logger.info(f"  <ρT>: {np.mean(result.residue_rho_t):.3f}")
-        logger.info(f"  <Coupling>: {np.mean(result.residue_coupling):.3f}")
+        
+        # NaN/空配列チェック付き統計
+        def safe_mean(arr, name):
+            try:
+                if arr.size == 0:
+                    return f"{name}: N/A (empty)"
+                val = np.nanmean(arr)
+                if np.isnan(val):
+                    return f"{name}: N/A (all NaN)"
+                return f"{name}: {val:.3f}"
+            except Exception as e:
+                return f"{name}: Error ({e})"
+        
+        logger.info(f"  {safe_mean(result.residue_lambda_f_mag, '<ΛF>')}")
+        logger.info(f"  {safe_mean(result.residue_rho_t, '<ρT>')}")
+        logger.info(f"  {safe_mean(result.residue_coupling, '<Coupling>')}")
 
 # ===============================
 # Convenience Functions
@@ -458,17 +447,11 @@ def compute_residue_structures_gpu(trajectory: np.ndarray,
 
 def compute_residue_lambda_f_gpu(residue_coms: Union[np.ndarray, cp.ndarray],
                                backend: Optional[GPUBackend] = None) -> Tuple[np.ndarray, np.ndarray]:
-    """残基ΛF計算のスタンドアロン関数"""
-    if backend is None:
-        backend = GPUBackend()
-    
-    coms_gpu = backend.to_gpu(residue_coms)
-    
-    # 差分
-    lambda_f = backend.xp.diff(coms_gpu, axis=0)
-    lambda_f_mag = backend.xp.linalg.norm(lambda_f, axis=2)
-    
-    return backend.to_cpu(lambda_f), backend.to_cpu(lambda_f_mag)
+    """残基ΛF計算のスタンドアロン関数（パディング済み）"""
+    calculator = ResidueStructuresGPU() if backend is None else ResidueStructuresGPU(device=backend.device)
+    coms_gpu = calculator.to_gpu(residue_coms)
+    lambda_f, lambda_f_mag = calculator._compute_residue_lambda_f_padded(coms_gpu)
+    return calculator.to_cpu(lambda_f), calculator.to_cpu(lambda_f_mag)
 
 def compute_residue_rho_t_gpu(residue_coms: Union[np.ndarray, cp.ndarray],
                              window_size: int = 50,
@@ -492,10 +475,7 @@ def compute_residue_coupling_gpu(residue_coms: Union[np.ndarray, cp.ndarray],
 # ===============================
 
 class ResidueStructureBatchProcessor:
-    """
-    大規模トラジェクトリのバッチ処理
-    メモリに収まらない場合も処理できるよ〜！
-    """
+    """大規模トラジェクトリのバッチ処理"""
     
     def __init__(self,
                  calculator: ResidueStructuresGPU,
@@ -508,20 +488,7 @@ class ResidueStructureBatchProcessor:
                          residue_atoms: Dict[int, List[int]],
                          window_size: int = 50,
                          overlap: int = 100) -> ResidueStructureResult:
-        """
-        バッチ処理でトラジェクトリ全体を処理
-        
-        Parameters
-        ----------
-        trajectory : np.ndarray
-            全トラジェクトリ
-        residue_atoms : dict
-            残基マッピング
-        window_size : int
-            ウィンドウサイズ
-        overlap : int
-            バッチ間のオーバーラップ
-        """
+        """バッチ処理でトラジェクトリ全体を処理"""
         n_frames = trajectory.shape[0]
         
         if self.batch_size is None:
@@ -530,10 +497,7 @@ class ResidueStructureBatchProcessor:
                 trajectory.shape, dtype=np.float32
             )
         
-        # バッチ処理のロジック...
-        # (詳細は長いので省略、必要なら追加できます)
-        
         logger.info(f"Processing {n_frames} frames in batches of {self.batch_size}")
         
-        # 実装は省略（必要に応じて追加）
+        # TODO: 実装が必要
         raise NotImplementedError("Batch processing implementation needed")
