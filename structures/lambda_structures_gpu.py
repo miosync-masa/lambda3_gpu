@@ -30,7 +30,7 @@ except ImportError as e:
 
 # Local imports - 正しいパスからインポート
 from ..types import ArrayType, NDArray
-from ..core.utils import GPUBackend  # utils.pyから！
+from ..core.gpu_utils import GPUBackend  
 from ..core.gpu_memory import GPUMemoryManager
 
 # カーネルインポート（オプショナル）
