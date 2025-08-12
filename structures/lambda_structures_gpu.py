@@ -5,10 +5,9 @@ Lambda³ Structure Computation (GPU Version)
 Lambda³構造の計算をGPUで超高速化！
 NO TIME, NO PHYSICS, ONLY STRUCTURE... but FASTER! 🚀
 
-⚡ 2025/01/16 環ちゃん完全修正版
-- self.xpの初期化を確実に
-- エラーハンドリング強化
-- A100完全対応
+⚡ 2025/01/16 環ちゃん完全修正版 v2
+- GPUBackend (core/utils.py) を正しく継承
+- self.xpは親クラスで初期化されるから安心！
 """
 import numpy as np
 import logging
@@ -16,29 +15,23 @@ from typing import Dict, Optional, Tuple, Union, Any
 from dataclasses import dataclass
 
 # ===============================
-# GPU Setup (確実版)
+# GPU Setup
 # ===============================
-HAS_GPU = False
-cp = None
-cp_savgol_filter = None
-
 try:
     import cupy as cp
     from cupyx.scipy.signal import savgol_filter as cp_savgol_filter
-    # 実際に使えるか確認
-    test = cp.array([1, 2, 3])
-    cp.diff(test)
     HAS_GPU = True
-    print("✅ CuPy successfully imported and tested")
-except (ImportError, Exception) as e:
+    print("✅ CuPy successfully imported")
+except ImportError as e:
     cp = None
     cp_savgol_filter = None
     HAS_GPU = False
     print(f"⚠️ CuPy not available: {e}")
 
-# Local imports
+# Local imports - 正しいパスからインポート
 from ..types import ArrayType, NDArray
-from ..core import GPUBackend, GPUMemoryManager
+from ..core.utils import GPUBackend  # utils.pyから！
+from ..core.gpu_memory import GPUMemoryManager
 
 # カーネルインポート（オプショナル）
 tension_field_kernel = None
@@ -72,122 +65,73 @@ class LambdaStructureConfig:
 class LambdaStructuresGPU(GPUBackend):
     """
     Lambda³構造計算のGPU実装クラス
-    環ちゃんが完全修正版！✨
+    GPUBackendを正しく継承してるから大丈夫！✨
     """
     
     def __init__(self, 
                  config: Optional[LambdaStructureConfig] = None,
                  memory_manager: Optional[GPUMemoryManager] = None,
                  force_cpu: bool = False,
-                 device_id: int = 0,
+                 device: Union[str, int] = 'auto',
                  **kwargs):
         """
-        確実に初期化するコンストラクタ
-        
         Parameters
         ----------
         config : LambdaStructureConfig
             計算設定
         memory_manager : GPUMemoryManager
-            メモリ管理インスタンス
+            メモリ管理インスタンス（親クラスでも初期化される）
         force_cpu : bool
             強制的にCPUモードにする
-        device_id : int
-            使用するGPUデバイスID
+        device : str or int
+            使用するデバイス
         """
-        # 設定の初期化
+        # 設定を保存
         self.config = config or LambdaStructureConfig()
-        self.memory_manager = memory_manager or GPUMemoryManager()
+        
+        # 親クラスの初期化を呼ぶ - これでself.xpが設定される！
+        super().__init__(
+            device=device,
+            force_cpu=force_cpu,
+            mixed_precision=self.config.use_mixed_precision,
+            profile=self.config.profile,
+            memory_manager_config=None,  # 親クラスでデフォルト設定される
+            **kwargs
+        )
+        
+        # 追加の初期化
         self._cache = {} if self.config.cache_intermediates else None
-        self.force_cpu = force_cpu
-        self.device_id = device_id
         
-        # ⚡ xpとis_gpuを確実に設定（親クラスより先に！）
-        self._initialize_backend()
+        # カスタムメモリマネージャーがあれば上書き
+        if memory_manager is not None:
+            self.memory_manager = memory_manager
         
-        # 親クラス初期化（もし必要なら）
-        try:
-            super().__init__(
-                force_cpu=self.force_cpu,
-                mixed_precision=self.config.use_mixed_precision,
-                profile=self.config.profile,
-                **kwargs
-            )
-        except Exception as e:
-            logger.warning(f"Parent class initialization warning: {e}")
-            # 親クラスが失敗してもxpは既に設定済みなので続行可能
+        # ログ出力（xpが正しく設定されてるか確認）
+        logger.info(f"✅ LambdaStructuresGPU initialized:")
+        logger.info(f"   Backend: {self.xp.__name__}")
+        logger.info(f"   Device: {self.device}")
+        logger.info(f"   GPU Mode: {self.is_gpu}")
         
-        # 最終確認
+        # 安全確認
         self._verify_backend()
-    
-    def _initialize_backend(self):
-        """バックエンド（numpy/cupy）を確実に初期化"""
-        if self.force_cpu or not HAS_GPU:
-            # CPUモード
-            self.xp = np
-            self.is_gpu = False
-            self.device = None
-            logger.info(f"✅ CPU mode initialized (force_cpu={self.force_cpu}, HAS_GPU={HAS_GPU})")
-        else:
-            # GPUモードを試みる
-            try:
-                import cupy as cp
-                
-                # デバイスを設定
-                if self.device_id >= 0:
-                    cp.cuda.Device(self.device_id).use()
-                
-                # 動作テスト
-                test_array = cp.array([1.0, 2.0, 3.0])
-                test_diff = cp.diff(test_array)
-                test_norm = cp.linalg.norm(test_diff)
-                
-                self.xp = cp
-                self.is_gpu = True
-                self.device = f"gpu:{self.device_id}"
-                logger.info(f"✅ GPU mode initialized on device {self.device}")
-                
-            except Exception as e:
-                logger.warning(f"⚠️ GPU initialization failed: {e}")
-                logger.info("Falling back to CPU mode...")
-                self.xp = np
-                self.is_gpu = False
-                self.device = None
     
     def _verify_backend(self):
         """バックエンドが正しく設定されているか確認"""
-        if not hasattr(self, 'xp') or self.xp is None:
-            logger.error("❌ Backend not initialized! Setting to numpy...")
-            self.xp = np
-            self.is_gpu = False
-        
-        # テスト
         try:
+            # xpの存在確認
+            if not hasattr(self, 'xp') or self.xp is None:
+                raise RuntimeError("xp not initialized by parent class!")
+            
+            # 基本的な演算テスト
             test = self.xp.array([1, 2, 3])
-            self.xp.diff(test)
-            logger.info(f"✅ Backend verified: {self.xp.__name__} (GPU={self.is_gpu})")
+            diff = self.xp.diff(test)
+            norm = self.xp.linalg.norm(diff)
+            
+            logger.info(f"✅ Backend test passed: diff={diff}, norm={norm}")
+            
         except Exception as e:
-            logger.error(f"❌ Backend test failed: {e}")
-            raise RuntimeError("Failed to initialize computational backend")
-    
-    def to_gpu(self, array: np.ndarray) -> NDArray:
-        """配列をGPUに転送（またはそのまま返す）"""
-        if self.is_gpu and self.xp is cp:
-            return cp.asarray(array)
-        return array
-    
-    def to_cpu(self, array: NDArray) -> np.ndarray:
-        """配列をCPUに転送（またはそのまま返す）"""
-        if self.is_gpu and self.xp is cp:
-            return cp.asnumpy(array)
-        return array
-    
-    def timer(self, name: str):
-        """タイマーコンテキスト（簡易版）"""
-        class DummyTimer:
-            def __enter__(self): return self
-            def __exit__(self, *args): pass
-        return DummyTimer()
+            logger.error(f"❌ Backend verification failed: {e}")
+            raise
     
     def compute_lambda_structures(self,
                                 trajectory: np.ndarray,
@@ -214,19 +158,15 @@ class LambdaStructuresGPU(GPUBackend):
             with self.timer('compute_lambda_structures'):
                 logger.info(f"🚀 Computing Lambda³ structures (window={window_steps}, mode={'GPU' if self.is_gpu else 'CPU'})")
                 
-                # バックエンド再確認
-                if self.xp is None:
-                    self._initialize_backend()
-                
                 # 入力検証
                 if 'com_positions' not in md_features:
                     raise ValueError("com_positions not found in md_features")
                 
-                # GPU転送
+                # GPU転送（親クラスのメソッドを使用）
                 positions_gpu = self.to_gpu(md_features['com_positions'])
                 n_frames = positions_gpu.shape[0]
                 
-                logger.info(f"📊 Processing {n_frames} frames with {self.xp.__name__}")
+                logger.debug(f"Processing {n_frames} frames")
                 
                 # 1. ΛF - 構造フロー
                 with self.timer('lambda_F'):
@@ -252,7 +192,7 @@ class LambdaStructuresGPU(GPUBackend):
                 with self.timer('coherence'):
                     coherence = self._compute_coherence(lambda_F, window_steps)
                 
-                # 結果をCPUに転送
+                # 結果をCPUに転送（親クラスのメソッドを使用）
                 results = {
                     'lambda_F': self.to_cpu(lambda_F),
                     'lambda_F_mag': self.to_cpu(lambda_F_mag),
@@ -272,17 +212,14 @@ class LambdaStructuresGPU(GPUBackend):
                 
         except Exception as e:
             logger.error(f"❌ Error in compute_lambda_structures: {e}")
-            logger.error(f"   xp={self.xp}, is_gpu={self.is_gpu}")
+            logger.error(f"   xp={self.xp if hasattr(self, 'xp') else 'NOT SET'}")
+            logger.error(f"   is_gpu={self.is_gpu if hasattr(self, 'is_gpu') else 'NOT SET'}")
             if self.is_gpu and "out of memory" in str(e).lower():
                 logger.info("💡 Try reducing batch_size or use force_cpu=True")
             raise
     
     def _compute_lambda_F(self, positions: NDArray) -> Tuple[NDArray, NDArray]:
         """ΛF - 構造フロー計算"""
-        # xpの存在確認
-        if self.xp is None:
-            raise RuntimeError("xp is None! Backend not initialized.")
-        
         # フレーム間の差分ベクトル
         lambda_F = self.xp.diff(positions, axis=0)
         
@@ -293,9 +230,6 @@ class LambdaStructuresGPU(GPUBackend):
     
     def _compute_lambda_FF(self, lambda_F: NDArray) -> Tuple[NDArray, NDArray]:
         """ΛFF - 二次構造フロー計算"""
-        if self.xp is None:
-            raise RuntimeError("xp is None! Backend not initialized.")
-        
         # 二次差分（加速度的な量）
         lambda_FF = self.xp.diff(lambda_F, axis=0)
         
@@ -306,9 +240,6 @@ class LambdaStructuresGPU(GPUBackend):
     
     def _compute_rho_T(self, positions: NDArray, window_steps: int) -> NDArray:
         """ρT - テンション場計算"""
-        if self.xp is None:
-            raise RuntimeError("xp is None! Backend not initialized.")
-        
         n_frames = len(positions)
         
         # カスタムカーネルが使える場合
@@ -327,8 +258,8 @@ class LambdaStructuresGPU(GPUBackend):
             local_positions = positions[start:end]
             
             if len(local_positions) > 1:
-                # 共分散行列のトレース
-                centered = local_positions - self.xp.mean(local_positions, axis=0)
+                # 共分散行列のトレース（axis明示）
+                centered = local_positions - self.xp.mean(local_positions, axis=0, keepdims=True)
                 cov = self.xp.cov(centered.T)
                 rho_T[step] = self.xp.trace(cov)
         
@@ -338,9 +269,6 @@ class LambdaStructuresGPU(GPUBackend):
                          lambda_F: NDArray, 
                          lambda_F_mag: NDArray) -> Tuple[NDArray, NDArray]:
         """Q_Λ - トポロジカルチャージ計算"""
-        if self.xp is None:
-            raise RuntimeError("xp is None! Backend not initialized.")
-        
         n_steps = len(lambda_F_mag)
         
         # カスタムカーネルが使える場合
@@ -382,9 +310,6 @@ class LambdaStructuresGPU(GPUBackend):
                         md_features: Dict[str, np.ndarray],
                         window_steps: int) -> NDArray:
         """σₛ - 構造同期率計算"""
-        if self.xp is None:
-            raise RuntimeError("xp is None! Backend not initialized.")
-        
         # 必要な特徴量がない場合
         if 'rmsd' not in md_features or 'radius_of_gyration' not in md_features:
             n_frames = len(md_features.get('com_positions', []))
@@ -423,9 +348,6 @@ class LambdaStructuresGPU(GPUBackend):
                           lambda_F: NDArray,
                           window: int) -> NDArray:
         """構造的コヒーレンス計算"""
-        if self.xp is None:
-            raise RuntimeError("xp is None! Backend not initialized.")
-        
         n_frames = len(lambda_F)
         coherence = self.xp.zeros(n_frames)
         
@@ -433,7 +355,7 @@ class LambdaStructuresGPU(GPUBackend):
             local_F = lambda_F[i-window:i+window]
             
             # 平均方向ベクトル
-            mean_dir = self.xp.mean(local_F, axis=0)
+            mean_dir = self.xp.mean(local_F, axis=0, keepdims=True).ravel()
             mean_norm = self.xp.linalg.norm(mean_dir)
             
             if mean_norm > 1e-10:
@@ -470,9 +392,6 @@ class LambdaStructuresGPU(GPUBackend):
                                    n_frames: int,
                                    config: any) -> Dict[str, Union[int, float, dict]]:
         """適応的ウィンドウサイズ計算"""
-        if self.xp is None:
-            self._initialize_backend()
-        
         try:
             base_window = int(n_frames * config.window_scale)
             
