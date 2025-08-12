@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class LambdaStructureConfig:
     """Lambda構造計算の設定"""
-    use_mixed_precision: bool = False
+    use_mixed_precision: bool = True
     batch_size: Optional[int] = None
     cache_intermediates: bool = True
     profile: bool = False
