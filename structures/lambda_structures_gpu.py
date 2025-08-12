@@ -19,7 +19,6 @@ from dataclasses import dataclass
 # ===============================
 try:
     import cupy as cp
-    from cupyx.scipy.signal import savgol_filter as cp_savgol_filter
     HAS_GPU = True
     print("✅ CuPy successfully imported")
 except ImportError as e:
