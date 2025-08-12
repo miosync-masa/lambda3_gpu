@@ -302,7 +302,7 @@ class TwoStageAnalyzerGPU(GPUBackend):
             )
             
             # 3. ネットワーク解析
-            network_results = self.residue_network.analyze(
+            network_results = self.residue_network.analyze_network(
                 anomaly_scores,
                 structures.residue_coupling,
                 structures.residue_coms 
