@@ -544,7 +544,7 @@ class TwoStageAnalyzerGPU(GPUBackend):
         if causal_network:
             out_degree = {}
             for link in causal_network:
-                from_res = link['from']
+                from_res = link.from_res
                 if from_res not in out_degree:
                     out_degree[from_res] = 0
                 out_degree[from_res] += 1
