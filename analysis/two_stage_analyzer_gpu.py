@@ -320,10 +320,10 @@ class TwoStageAnalyzerGPU(GPUBackend):
             
             # 6. 因果連鎖
             causality_chains = [
-                (link['from'], link['to'], link['strength'])
-                for link in network_results['causal_network']
+                (link.from_res, link.to_res, link.strength)
+                for link in network_results.causal_network
             ]
-            
+
             # 7. 伝播経路
             propagation_paths = self._build_propagation_paths_gpu(
                 initiators, causality_chains
@@ -339,6 +339,14 @@ class TwoStageAnalyzerGPU(GPUBackend):
         gpu_time = time.time() - event_start_time
         
         # 結果を返す
+        network_stats = {
+            'n_causal': network_results.n_causal_links,
+            'n_sync': network_results.n_sync_links,
+            'n_async': network_results.n_async_bonds,
+            'mean_adaptive_window': np.mean(list(network_results.adaptive_windows.values())) if network_results.adaptive_windows else 100
+        }
+        
+        # 結果を返す（修正）
         return ResidueLevelAnalysis(
             event_name=event_name,
             macro_start=start_frame,
@@ -347,14 +355,9 @@ class TwoStageAnalyzerGPU(GPUBackend):
             causality_chain=causality_chains,
             initiator_residues=initiators,
             key_propagation_paths=propagation_paths[:5],
-            async_strong_bonds=network_results.get('async_strong_bonds', []),
-            sync_network=network_results.get('sync_network', []),
-            network_stats={
-                'n_causal': network_results['n_causal_links'],
-                'n_sync': network_results['n_sync_links'],
-                'n_async': network_results['n_async_bonds'],
-                'mean_adaptive_window': np.mean(list(network_results['adaptive_windows'].values()))
-            },
+            async_strong_bonds=network_results.async_strong_bonds,  # 直接アクセス
+            sync_network=network_results.sync_network,  # 直接アクセス
+            network_stats=network_stats,
             confidence_results=confidence_results,
             gpu_time=gpu_time
         )
@@ -442,32 +445,15 @@ class TwoStageAnalyzerGPU(GPUBackend):
         return anomaly
     
     def _build_residue_events_gpu(self,
-                                anomaly_scores: Dict[int, np.ndarray],
-                                residue_names: Dict[int, str],
-                                start_frame: int,
-                                network_results: Dict) -> List[ResidueEvent]:
-        """
-        残基イベントの構築（安全版）
-        
-        Parameters
-        ----------
-        anomaly_scores : Dict[int, np.ndarray]
-            残基ID -> 異常スコア時系列
-        residue_names : Dict[int, str]
-            残基ID -> 残基名
-        start_frame : int
-            イベント開始フレーム
-        network_results : Dict
-            ネットワーク解析結果
-            
-        Returns
-        -------
-        List[ResidueEvent]
-            検出された残基イベントリスト
-        """
+                            anomaly_scores: Dict[int, np.ndarray],
+                            residue_names: Dict[int, str],
+                            start_frame: int,
+                            network_results) -> List[ResidueEvent]:
+        """修正版：NetworkAnalysisResultを正しく扱う"""
+        import numpy as np  # ローカルインポート
         events = []
         
-        # find_peaksのインポート（安全版）
+        # find_peaksのインポート（既存のコード）
         find_peaks_func = None
         use_gpu_peaks = False
         
@@ -479,7 +465,6 @@ class TwoStageAnalyzerGPU(GPUBackend):
                 from scipy.signal import find_peaks as find_peaks_func
                 use_gpu_peaks = False
         except ImportError:
-            # フォールバック：簡易ピーク検出を使用
             print("  ⚠️ find_peaks not available, using simple peak detection")
             find_peaks_func = None
         
@@ -487,8 +472,8 @@ class TwoStageAnalyzerGPU(GPUBackend):
             peaks = []
             peak_heights = []
             
+            # ピーク検出（既存のコード）
             if find_peaks_func is not None:
-                # SciPy/CuPyのfind_peaksを使用
                 try:
                     if use_gpu_peaks:
                         scores_gpu = self.to_gpu(scores)
@@ -500,7 +485,6 @@ class TwoStageAnalyzerGPU(GPUBackend):
                         peaks = self.to_cpu(peaks)
                         peak_heights = self.to_cpu(properties['peak_heights'])
                     else:
-                        # CPU版
                         peaks, properties = find_peaks_func(
                             scores,
                             height=self.config.sensitivity,
@@ -508,28 +492,28 @@ class TwoStageAnalyzerGPU(GPUBackend):
                         )
                         peak_heights = properties['peak_heights']
                 except Exception as e:
-                    # find_peaksが失敗した場合のフォールバック
                     print(f"  ⚠️ find_peaks failed for residue {res_id}: {e}")
-                    find_peaks_func = None  # 次回からフォールバックを使用
+                    find_peaks_func = None
             
-            # フォールバック：簡易ピーク検出
+            # フォールバック処理（numpy修正）
             if find_peaks_func is None or len(peaks) == 0:
                 for i in range(1, len(scores)-1):
                     if scores[i] > scores[i-1] and scores[i] > scores[i+1]:
                         if scores[i] > self.config.sensitivity:
                             peaks.append(i)
                             peak_heights.append(scores[i])
-                peaks = np.array(peaks) if peaks else np.array([])
+                peaks = np.array(peaks) if peaks else np.array([])  # np定義済み！
                 peak_heights = np.array(peak_heights) if peak_heights else np.array([])
             
-            # ピークからイベントを構築
+            # イベント構築（NetworkAnalysisResult対応）
             if len(peaks) > 0:
                 first_peak = peaks[0]
                 peak_height = peak_heights[0]
                 
-                # adaptive_windowsの安全なアクセス
-                adaptive_windows = network_results.get('adaptive_windows', {})
-                adaptive_window = adaptive_windows.get(res_id, 100)
+                # NetworkAnalysisResultの属性アクセス（修正）
+                adaptive_window = 100  # デフォルト値
+                if hasattr(network_results, 'adaptive_windows'):
+                    adaptive_window = network_results.adaptive_windows.get(res_id, 100)
                 
                 event = ResidueEvent(
                     residue_id=res_id,
