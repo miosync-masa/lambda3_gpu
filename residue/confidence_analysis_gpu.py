@@ -10,7 +10,7 @@ by 環ちゃん
 
 import numpy as np
 import logging
-from typing import Dict, List, Optional, Tuple, Union, Callable
+from typing import Dict, List, Optional, Tuple, Union, Callable, Any
 from dataclasses import dataclass
 
 # GPU imports
@@ -267,6 +267,93 @@ class ConfidenceAnalyzerGPU(GPUBackend):
     
     @handle_gpu_errors
     @profile_gpu
+    def analyze(self,
+               causality_chains: List[Tuple[int, int, float]],
+               anomaly_scores: Dict[int, np.ndarray],
+               n_bootstrap: Optional[int] = None) -> List[Dict[str, Any]]:
+        """
+        因果連鎖の信頼性を解析（メインエントリーポイント）
+        
+        two_stage_analyzer_gpu.pyから呼ばれる汎用解析メソッド。
+        因果連鎖の各ペアについて相関の信頼区間を計算する。
+        
+        Parameters
+        ----------
+        causality_chains : List[Tuple[int, int, float]]
+            因果連鎖のリスト [(from_res, to_res, strength), ...]
+        anomaly_scores : Dict[int, np.ndarray]
+            残基ID -> 異常スコアの時系列
+        n_bootstrap : int, optional
+            ブートストラップ回数（高速化のため少なめのデフォルト）
+            
+        Returns
+        -------
+        List[Dict[str, Any]]
+            各因果ペアの信頼性解析結果
+        """
+        if n_bootstrap is None:
+            n_bootstrap = min(self.n_bootstrap, 50)  # 高速化のため少なめ
+        
+        results = []
+        
+        # 各因果ペアを解析
+        for pair_idx, (from_res, to_res, strength) in enumerate(causality_chains):
+            # 両方の残基のスコアが存在する場合のみ解析
+            if from_res not in anomaly_scores or to_res not in anomaly_scores:
+                logger.debug(f"Skipping pair ({from_res}, {to_res}): missing anomaly scores")
+                continue
+            
+            try:
+                # 時系列の長さを確認
+                series_x = anomaly_scores[from_res]
+                series_y = anomaly_scores[to_res]
+                
+                # 長さを合わせる（短い方に合わせる）
+                min_len = min(len(series_x), len(series_y))
+                if min_len < 10:  # 最低10点は必要
+                    logger.warning(f"Series too short for pair ({from_res}, {to_res}): {min_len} points")
+                    continue
+                
+                series_x = series_x[:min_len]
+                series_y = series_y[:min_len]
+                
+                # 相関の信頼区間を計算
+                conf_result = self.bootstrap_correlation_confidence(
+                    series_x,
+                    series_y,
+                    n_bootstrap=n_bootstrap
+                )
+                
+                # 結果を構築
+                result_dict = {
+                    'pair_index': pair_idx,
+                    'from_res': from_res,
+                    'to_res': to_res,
+                    'original_strength': float(strength),
+                    'correlation': float(conf_result.point_estimate),
+                    'ci_lower': float(conf_result.ci_lower),
+                    'ci_upper': float(conf_result.ci_upper),
+                    'is_significant': bool(conf_result.is_significant),
+                    'standard_error': float(conf_result.standard_error) if conf_result.standard_error else None,
+                    'bias': float(conf_result.bias) if conf_result.bias else None
+                }
+                
+                results.append(result_dict)
+                
+            except Exception as e:
+                logger.warning(f"Confidence analysis failed for pair ({from_res}, {to_res}): {e}")
+                continue
+        
+        # サマリー情報を追加
+        if results:
+            n_significant = sum(1 for r in results if r['is_significant'])
+            logger.info(f"Confidence analysis complete: {len(results)} pairs analyzed, "
+                       f"{n_significant} significant")
+        
+        return results
+    
+    @handle_gpu_errors
+    @profile_gpu
     def bootstrap_correlation_confidence(self,
                                        series_x: np.ndarray,
                                        series_y: np.ndarray,
@@ -297,8 +384,36 @@ class ConfidenceAnalyzerGPU(GPUBackend):
         x_gpu = self.to_gpu(series_x)
         y_gpu = self.to_gpu(series_y)
         
-        # 元の相関係数
-        original_corr = float(self.xp.corrcoef(x_gpu, y_gpu)[0, 1])
+        # 元の相関係数（エラーハンドリング付き）
+        try:
+            corr_matrix = self.xp.corrcoef(x_gpu, y_gpu)
+            original_corr = float(corr_matrix[0, 1])
+            
+            # NaNチェック
+            if self.xp.isnan(original_corr):
+                logger.warning("Original correlation is NaN, returning default result")
+                return ConfidenceResult(
+                    statistic_name='correlation',
+                    point_estimate=0.0,
+                    ci_lower=0.0,
+                    ci_upper=0.0,
+                    confidence_level=self.confidence_level,
+                    n_bootstrap=0,
+                    standard_error=0.0,
+                    bias=0.0
+                )
+        except Exception as e:
+            logger.warning(f"Failed to compute correlation: {e}")
+            return ConfidenceResult(
+                statistic_name='correlation',
+                point_estimate=0.0,
+                ci_lower=0.0,
+                ci_upper=0.0,
+                confidence_level=self.confidence_level,
+                n_bootstrap=0,
+                standard_error=0.0,
+                bias=0.0
+            )
         
         # ブートストラップ
         with self.timer('bootstrap'):
@@ -337,7 +452,7 @@ class ConfidenceAnalyzerGPU(GPUBackend):
                            y_gpu: Union[np.ndarray, cp.ndarray],
                            statistic_func: Callable,
                            n_bootstrap: int) -> Union[np.ndarray, cp.ndarray]:
-        """汎用ブートストラップ"""
+        """汎用ブートストラップ（エラーハンドリング強化）"""
         n_samples = len(x_gpu)
         bootstrap_stats = self.zeros(n_bootstrap)
         
@@ -353,9 +468,20 @@ class ConfidenceAnalyzerGPU(GPUBackend):
             
             # バッチで統計量計算
             for j in range(batch_n):
-                x_resampled = x_gpu[indices[j]]
-                y_resampled = y_gpu[indices[j]]
-                bootstrap_stats[i + j] = statistic_func(x_resampled, y_resampled)
+                try:
+                    x_resampled = x_gpu[indices[j]]
+                    y_resampled = y_gpu[indices[j]]
+                    stat_value = statistic_func(x_resampled, y_resampled)
+                    
+                    # NaNチェック
+                    if not self.xp.isnan(stat_value):
+                        bootstrap_stats[i + j] = stat_value
+                    else:
+                        bootstrap_stats[i + j] = 0.0
+                        
+                except Exception as e:
+                    logger.debug(f"Bootstrap iteration {i+j} failed: {e}")
+                    bootstrap_stats[i + j] = 0.0
         
         return bootstrap_stats
     
@@ -367,8 +493,14 @@ class ConfidenceAnalyzerGPU(GPUBackend):
         lower_percentile = (alpha / 2) * 100
         upper_percentile = (1 - alpha / 2) * 100
         
-        ci_lower = self.xp.percentile(bootstrap_stats, lower_percentile)
-        ci_upper = self.xp.percentile(bootstrap_stats, upper_percentile)
+        # NaN除去
+        valid_stats = bootstrap_stats[~self.xp.isnan(bootstrap_stats)]
+        
+        if len(valid_stats) == 0:
+            return 0.0, 0.0
+        
+        ci_lower = self.xp.percentile(valid_stats, lower_percentile)
+        ci_upper = self.xp.percentile(valid_stats, upper_percentile)
         
         return ci_lower, ci_upper
     
