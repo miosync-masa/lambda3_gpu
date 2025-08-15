@@ -315,7 +315,7 @@ class TwoStageAnalyzerGPU(GPUBackend):
             
             # 5. イニシエータ特定
             initiators = self._find_initiators_gpu(
-                residue_events, network_results['causal_network']
+                residue_events, network_results.causal_network
             )
             
             # 6. 因果連鎖
