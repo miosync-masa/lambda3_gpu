@@ -182,19 +182,42 @@ class AnomalyDetectorGPU(GPUBackend):
         # 各種異常を重み付けして加算
         if 'lambda_F_anomaly' in breaks:
             lf_anomaly = self.to_gpu(breaks['lambda_F_anomaly'])
+            # NaNチェック付き加算
+            if self.is_gpu:
+                lf_anomaly = cp.nan_to_num(lf_anomaly, nan=0.0)
+            else:
+                lf_anomaly = np.nan_to_num(lf_anomaly, nan=0.0)
             global_score[:len(lf_anomaly)] += config.w_lambda_f * lf_anomaly
             
         if 'lambda_FF_anomaly' in breaks:
             lff_anomaly = self.to_gpu(breaks['lambda_FF_anomaly'])
+            if self.is_gpu:
+                lff_anomaly = cp.nan_to_num(lff_anomaly, nan=0.0)
+            else:
+                lff_anomaly = np.nan_to_num(lff_anomaly, nan=0.0)
             global_score[:len(lff_anomaly)] += config.w_lambda_ff * lff_anomaly
             
         if 'rho_T_breaks' in breaks:
             rho_breaks = self.to_gpu(breaks['rho_T_breaks'])
+            if self.is_gpu:
+                rho_breaks = cp.nan_to_num(rho_breaks, nan=0.0)
+            else:
+                rho_breaks = np.nan_to_num(rho_breaks, nan=0.0)
             global_score[:len(rho_breaks)] += config.w_rho_t * rho_breaks
             
         if 'Q_breaks' in breaks:
             q_breaks = self.to_gpu(breaks['Q_breaks'])
+            if self.is_gpu:
+                q_breaks = cp.nan_to_num(q_breaks, nan=0.0)
+            else:
+                q_breaks = np.nan_to_num(q_breaks, nan=0.0)
             global_score[:len(q_breaks)] += config.w_topology * q_breaks
+        
+        # 最終NaNチェック
+        if self.is_gpu:
+            global_score = cp.nan_to_num(global_score, nan=0.0)
+        else:
+            global_score = np.nan_to_num(global_score, nan=0.0)
             
         return global_score
     
@@ -252,10 +275,20 @@ class AnomalyDetectorGPU(GPUBackend):
                         weight = np.exp(-0.5 * (dist / sigma) ** 2)
                         local_score[i] += weight
         
-        # boundary_scoreを加算
+        # boundary_scoreを加算（NaNチェック付き）
         if 'boundary_score' in boundaries:
             bs = self.to_gpu(boundaries['boundary_score'])
+            if self.is_gpu:
+                bs = cp.nan_to_num(bs, nan=0.0)
+            else:
+                bs = np.nan_to_num(bs, nan=0.0)
             local_score[:len(bs)] += bs
+        
+        # 最終NaNチェック
+        if self.is_gpu:
+            local_score = cp.nan_to_num(local_score, nan=0.0)
+        else:
+            local_score = np.nan_to_num(local_score, nan=0.0)
             
         return local_score
     
