@@ -315,24 +315,30 @@ class ResidueStructuresGPU(GPUBackend):
         
         return residue_coms
     
-    def _compute_residue_lambda_f(self,
-                                residue_coms: cp.ndarray) -> Tuple[cp.ndarray, cp.ndarray]:
-        """残基レベルΛF計算（自動パディング版）"""
+    def _compute_residue_lambda_f(self, residue_coms: cp.ndarray) -> Tuple[cp.ndarray, cp.ndarray]:
+        """残基レベルΛF計算（改良版）"""
         n_frames, n_residues, _ = residue_coms.shape
         
-        # フレーム間差分
+        # フレーム数が1以下の場合の特別処理
+        if n_frames <= 1:
+            # ゼロ配列を返す（差分が取れないから）
+            residue_lambda_f = self.xp.zeros((n_frames, n_residues, 3), dtype=self.xp.float32)
+            residue_lambda_f_mag = self.xp.zeros((n_frames, n_residues), dtype=self.xp.float32)
+            return residue_lambda_f, residue_lambda_f_mag
+        
+        # 通常の処理
         residue_lambda_f = self.xp.diff(residue_coms, axis=0)
         residue_lambda_f_mag = self.xp.linalg.norm(residue_lambda_f, axis=2)
         
-        # 最初にゼロパディング（差分の前に相当）
-        zero_pad_f = self.xp.zeros((1, n_residues, 3), dtype=residue_lambda_f.dtype)
-        residue_lambda_f = self.xp.concatenate([zero_pad_f, residue_lambda_f], axis=0)
+        # パディング
+        zero_frame = self.xp.zeros((1, n_residues, 3), dtype=residue_lambda_f.dtype)
+        residue_lambda_f = self.xp.concatenate([zero_frame, residue_lambda_f], axis=0)
         
-        zero_pad_mag = self.xp.zeros((1, n_residues), dtype=residue_lambda_f_mag.dtype)
-        residue_lambda_f_mag = self.xp.concatenate([zero_pad_mag, residue_lambda_f_mag], axis=0)
+        zero_mag = self.xp.zeros((1, n_residues), dtype=residue_lambda_f_mag.dtype)
+        residue_lambda_f_mag = self.xp.concatenate([zero_mag, residue_lambda_f_mag], axis=0)
         
         return residue_lambda_f, residue_lambda_f_mag
-    
+        
     def _compute_residue_rho_t(self,
                              residue_coms: cp.ndarray,
                              window_size: int) -> cp.ndarray:
