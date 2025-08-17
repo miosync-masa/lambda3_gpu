@@ -536,18 +536,34 @@ class TwoStageAnalyzerGPU(GPUBackend):
         return events
     
     def _find_initiators_gpu(self,
-                           residue_events: List[ResidueEvent],
-                           causal_network: List[Dict]) -> List[int]:
+                       residue_events: List[ResidueEvent],
+                       causal_network: List[Dict]) -> List[int]:
         """イニシエータ残基の特定"""
         initiators = []
         
-        # 早期応答残基
-        for event in residue_events:
-            if event.propagation_delay < 50:
-                initiators.append(event.residue_id)
+        # 統計的に早期応答残基を判定
+        if residue_events:
+            delays = [e.propagation_delay for e in residue_events]
+            
+            # 統計値計算
+            mean_delay = np.mean(delays)
+            std_delay = np.std(delays)
+            
+            # 閾値決定：平均-2σ、ただし最低10フレーム
+            if std_delay > 0:
+                threshold = max(10, mean_delay - 2 * std_delay)
+            else:
+                # 標準偏差が0の場合は四分位数を使用
+                q1 = np.percentile(delays, 25)
+                threshold = max(10, q1)
+            
+            # 早期応答残基を特定
+            for event in residue_events:
+                if event.propagation_delay < threshold:
+                    initiators.append(event.residue_id)
         
-        # ネットワークのハブ
-        if causal_network:
+        # ネットワークのハブ（イニシエータが少ない場合の補完）
+        if causal_network and len(initiators) < 3:
             out_degree = {}
             for link in causal_network:
                 from_res = link.from_res
@@ -555,11 +571,16 @@ class TwoStageAnalyzerGPU(GPUBackend):
                     out_degree[from_res] = 0
                 out_degree[from_res] += 1
             
-            # 上位ハブを追加
+            # 上位ハブを追加（ただし次数3以上）
             sorted_hubs = sorted(out_degree.items(), key=lambda x: x[1], reverse=True)
             for res_id, degree in sorted_hubs[:3]:
                 if res_id not in initiators and degree >= 3:
                     initiators.append(res_id)
+        
+        # それでもイニシエータがない場合は最速の3残基
+        if not initiators and residue_events:
+            sorted_events = sorted(residue_events, key=lambda e: e.propagation_delay)
+            initiators = [e.residue_id for e in sorted_events[:3]]
         
         return initiators
     
