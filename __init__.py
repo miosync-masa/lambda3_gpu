@@ -276,6 +276,7 @@ def benchmark_gpu() -> Optional[float]:
 
 def _apply_patches():
     """必要なパッチを適用"""
+    import numpy as np 
     try:
         # CuPyのfind_peaksパッチ
         from cupyx.scipy import signal
