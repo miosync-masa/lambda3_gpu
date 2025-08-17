@@ -561,21 +561,32 @@ class TopologyBreaksDetectorGPU(GPUBackend):
         for i in range(len(data)):
             start = max(0, i - window // 2)
             end = min(len(data), i + window // 2 + 1)
-
+            
             if end - start > 1:
                 if self.is_gpu:
                     local_data = data[start:end]
-                    # NaNチェック
+                    # NaNチェック（有効な値だけで計算を試みる）
                     if cp.any(cp.isnan(local_data)):
-                        std_array[i] = 0.0
+                        valid_mask = ~cp.isnan(local_data)
+                        if cp.sum(valid_mask) > 1:  # 2個以上有効値があれば
+                            std_array[i] = cp.std(local_data[valid_mask])
+                        else:
+                            std_array[i] = 0.0
                     else:
                         std_array[i] = cp.std(local_data)
                 else:
                     local_data = data[start:end]
                     if np.any(np.isnan(local_data)):
-                        std_array[i] = 0.0
+                        valid_mask = ~np.isnan(local_data)
+                        if np.sum(valid_mask) > 1:  # 2個以上有効値があれば
+                            std_array[i] = np.std(local_data[valid_mask])
+                        else:
+                            std_array[i] = 0.0
                     else:
                         std_array[i] = np.std(local_data)
+            else:
+                # データ点が1個以下の場合
+                std_array[i] = 0.0
         
         return std_array
     
