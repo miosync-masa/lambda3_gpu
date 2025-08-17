@@ -323,6 +323,7 @@ class TwoStageAnalyzerGPU(GPUBackend):
                 (link.from_res, link.to_res, link.strength)
                 for link in network_results.causal_network
             ]
+            print(f"    DEBUG: causality_chains length = {len(causality_chains)}")
 
             # 7. 伝播経路
             propagation_paths = self._build_propagation_paths_gpu(
@@ -331,10 +332,15 @@ class TwoStageAnalyzerGPU(GPUBackend):
             
             # 8. 信頼区間解析（オプション）
             confidence_results = []
+            print(f"    DEBUG: use_confidence = {self.config.use_confidence}")  # 追加！
             if self.config.use_confidence and causality_chains:
+                print(f"    DEBUG: Calling confidence analysis...")  # 追加！
                 confidence_results = self.confidence_analyzer.analyze(
                     causality_chains[:10], anomaly_scores
                 )
+                print(f"    DEBUG: Got {len(confidence_results)} confidence results")  # 追加！
+            else:
+                print(f"    DEBUG: Skipping confidence (use={self.config.use_confidence}, chains={len(causality_chains)})")  # 追加！
         
         gpu_time = time.time() - event_start_time
         
