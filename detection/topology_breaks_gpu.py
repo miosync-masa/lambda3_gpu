@@ -561,12 +561,21 @@ class TopologyBreaksDetectorGPU(GPUBackend):
         for i in range(len(data)):
             start = max(0, i - window // 2)
             end = min(len(data), i + window // 2 + 1)
-            
+
             if end - start > 1:
                 if self.is_gpu:
-                    std_array[i] = cp.std(data[start:end])
+                    local_data = data[start:end]
+                    # NaNチェック
+                    if cp.any(cp.isnan(local_data)):
+                        std_array[i] = 0.0
+                    else:
+                        std_array[i] = cp.std(local_data)
                 else:
-                    std_array[i] = np.std(data[start:end])
+                    local_data = data[start:end]
+                    if np.any(np.isnan(local_data)):
+                        std_array[i] = 0.0
+                    else:
+                        std_array[i] = np.std(local_data)
         
         return std_array
     
