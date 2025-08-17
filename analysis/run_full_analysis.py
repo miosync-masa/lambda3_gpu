@@ -265,7 +265,7 @@ def run_quantum_validation_pipeline(
         )
         
         # Lambda³結果に対する量子検証
-        quantum_events = quantum_validator.analyze_lambda_results(lambda_result)
+        quantum_events = quantum_validator.analyze_quantum_cascade(lambda_result)
         
         # 2段階解析結果があれば追加情報を付与
         if two_stage_result and hasattr(two_stage_result, 'residue_analyses'):
@@ -273,7 +273,7 @@ def run_quantum_validation_pipeline(
                 # 対応する残基解析を探す
                 for analysis_name, analysis in two_stage_result.residue_analyses.items():
                     if hasattr(analysis, 'async_strong_bonds'):
-                        qevent.async_bonds = analysis.async_strong_bonds[:3]
+                        qevent.async_bonds_used = analysis.async_strong_bonds[:3]
                         break
         
         logger.info(f"   ✅ Quantum validation complete")
