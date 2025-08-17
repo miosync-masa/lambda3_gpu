@@ -308,21 +308,39 @@ class AnomalyDetectorGPU(GPUBackend):
     def _normalize_scores_gpu(self, scores: NDArray) -> NDArray:
         """スコアの正規化"""
         if self.is_gpu:
-            mean_score = cp.mean(scores)
-            std_score = cp.std(scores)
+            # NaN値を除去して統計計算
+            valid_mask = ~cp.isnan(scores)
+            if cp.sum(valid_mask) == 0:
+                # 全部NaNの場合はゼロを返す
+                return cp.zeros_like(scores)
+            
+            valid_scores = scores[valid_mask]
+            mean_score = cp.mean(valid_scores)
+            std_score = cp.std(valid_scores)
+            
+            # NaNを平均値で埋める
+            scores_filled = cp.where(cp.isnan(scores), mean_score, scores)
         else:
-            mean_score = np.mean(scores)
-            std_score = np.std(scores)
+            # CPU版も同様に
+            valid_mask = ~np.isnan(scores)
+            if np.sum(valid_mask) == 0:
+                return np.zeros_like(scores)
+            
+            valid_scores = scores[valid_mask]
+            mean_score = np.mean(valid_scores)
+            std_score = np.std(valid_scores)
+            scores_filled = np.where(np.isnan(scores), mean_score, scores)
         
+        # 正規化（NaN処理済みのscores_filledを使用）
         if std_score > 1e-10:
-            normalized = (scores - mean_score) / std_score
+            normalized = (scores_filled - mean_score) / std_score
             # 外れ値のクリッピング
             if self.is_gpu:
                 normalized = cp.clip(normalized, -5, 5)
             else:
                 normalized = np.clip(normalized, -5, 5)
         else:
-            normalized = scores - mean_score
+            normalized = scores_filled - mean_score
         
         return normalized
     
