@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Lambda³ GPU Quantum Validation Pipeline - Two-Stage最適化版
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Lambda³ GPU Quantum Validation Pipeline - Version 3.0 Complete
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+査読耐性＆単一フレーム対応の完全版パイプライン
 タンパク質全原子を使った詳細な残基レベル解析に最適化
-正確なメタデータ構造に対応
 
-Author: Lambda³ Team
-Modified by: 環ちゃん & ご主人さま 💕
+Version: 3.0.0 - Publication Ready
+Authors: Lambda³ Team, 環ちゃん & ご主人さま 💕
 Date: 2025-08-18
 """
 
@@ -17,6 +17,7 @@ import argparse
 import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
+from collections import Counter
 import matplotlib.pyplot as plt
 import warnings
 warnings.filterwarnings('ignore')
@@ -33,7 +34,12 @@ try:
         TwoStageLambda3Result,
         ResidueAnalysisConfig
     )
-    from lambda3_gpu.quantum import QuantumValidationGPU
+    from lambda3_gpu.quantum import (
+        QuantumValidationGPU,
+        QuantumEventType,
+        ValidationCriterion,
+        generate_quantum_report
+    )
     from lambda3_gpu.visualization import Lambda3VisualizerGPU
 except ImportError as e:
     print(f"Import error: {e}")
@@ -62,7 +68,7 @@ def run_quantum_validation_pipeline(
     verbose: bool = False
 ) -> Dict:
     """
-    完全な量子検証パイプライン（Two-Stage最適化版）
+    完全な量子検証パイプライン（Version 3.0）
     
     Parameters
     ----------
@@ -92,8 +98,8 @@ def run_quantum_validation_pipeline(
     output_path.mkdir(parents=True, exist_ok=True)
     
     logger.info("="*70)
-    logger.info("🚀 LAMBDA³ GPU QUANTUM VALIDATION PIPELINE")
-    logger.info("   Two-Stage Optimized Version")
+    logger.info("🚀 LAMBDA³ GPU QUANTUM VALIDATION PIPELINE v3.0")
+    logger.info("   Publication Ready Edition")
     logger.info("="*70)
     
     # ========================================
@@ -309,72 +315,119 @@ def run_quantum_validation_pipeline(
             # 続行（量子検証は可能）
     
     # ========================================
-    # Step 4: 量子検証（詳細版）
+    # Step 4: 量子検証（Version 3.0対応版）
     # ========================================
-    logger.info("\n⚛️ Running Quantum Validation...")
+    logger.info("\n⚛️ Running Quantum Validation (v3.0)...")
     
     quantum_events = []
     
     try:
-        # 量子検証器初期化（タンパク質用に最適化）
+        # メタデータから物理パラメータ取得
+        temperature = metadata.get('temperature', 
+                                  metadata.get('simulation', {}).get('temperature_K', 310.0))
+        dt_ps = metadata.get('time_step_ps', 
+                           metadata.get('simulation', {}).get('dt_ps', 2.0))
+        
+        # 量子検証器初期化（Version 3.0パラメータ）
         quantum_validator = QuantumValidationGPU(
             trajectory=trajectory[:, protein_indices, :],  # タンパク質のみ
             metadata=metadata,
-            validation_offset=10,
-            min_samples_for_chsh=10
+            dt_ps=dt_ps,                      # タイムステップ
+            temperature_K=temperature,         # 温度
+            bootstrap_iterations=1000,         # Bootstrap反復数
+            significance_level=0.01,           # 有意水準
+            force_cpu=False                    # GPU使用
         )
         
-        logger.info("   Quantum validator initialized for protein atoms")
+        logger.info(f"   Quantum validator v3.0 initialized")
+        logger.info(f"   Temperature: {temperature:.1f} K")
+        logger.info(f"   Time step: {dt_ps:.1f} ps")
+        logger.info(f"   Thermal decoherence: {quantum_validator.thermal_decoherence_ps:.3e} ps")
         
-        # 量子カスケード解析
+        # 量子カスケード解析（Version 3.0）
+        # two_stage_resultをそのまま渡す（内部で処理される）
         quantum_events = quantum_validator.analyze_quantum_cascade(
             lambda_result,
-            residue_events=two_stage_result.residue_analyses if two_stage_result else None
+            two_stage_result  # Version 3.0: 直接渡す
         )
         
         logger.info(f"   ✅ Quantum validation complete")
         logger.info(f"   Quantum events detected: {len(quantum_events)}")
         
-        # Two-Stage結果との統合
-        if two_stage_result and hasattr(two_stage_result, 'residue_analyses'):
-            logger.info("   Integrating with Two-Stage results...")
-            
-            for qevent in quantum_events:
-                # 対応する残基解析を探す
-                for analysis_name, analysis in two_stage_result.residue_analyses.items():
-                    if hasattr(analysis, 'async_strong_bonds'):
-                        # async bondsを量子イベントに追加
-                        qevent.async_bonds_used = analysis.async_strong_bonds[:5]
-                        qevent.residue_context = {
-                            'event_name': analysis_name,
-                            'n_residues_involved': len(analysis.residue_events),
-                            'initiators': analysis.initiator_residues[:3]
-                        }
-                        break
+        # イベントタイプ別集計（Version 3.0の新機能）
+        event_types = Counter(e.event_type.value for e in quantum_events)
         
-        # Bell違反の統計
-        n_bell_violations = sum(1 for e in quantum_events 
-                               if hasattr(e, 'quantum_metrics') 
-                               and e.quantum_metrics.bell_violated)
+        logger.info("\n   📊 Event Type Distribution:")
+        for event_type, count in event_types.items():
+            logger.info(f"     {event_type}: {count}")
         
-        if len(quantum_events) > 0:
-            violation_rate = 100 * n_bell_violations / len(quantum_events)
-            logger.info(f"   Bell violations: {n_bell_violations}/{len(quantum_events)} "
+        # 量子イベントのフィルタリング
+        quantum_only = [e for e in quantum_events if e.quantum_metrics.is_quantum]
+        logger.info(f"   Confirmed quantum events: {len(quantum_only)}/{len(quantum_events)}")
+        
+        # 判定基準の統計（Version 3.0の新機能）
+        criterion_stats = {}
+        for event in quantum_events:
+            for criterion in event.quantum_metrics.criteria_passed:
+                name = criterion.criterion.value
+                if name not in criterion_stats:
+                    criterion_stats[name] = {'passed': 0, 'total': 0}
+                criterion_stats[name]['total'] += 1
+                if criterion.passed:
+                    criterion_stats[name]['passed'] += 1
+        
+        if criterion_stats:
+            logger.info("\n   📈 Validation Criteria Statistics:")
+            for name, stats in sorted(criterion_stats.items()):
+                if stats['total'] > 0:
+                    rate = stats['passed'] / stats['total'] * 100
+                    logger.info(f"     {name}: {stats['passed']}/{stats['total']} ({rate:.1f}%)")
+        
+        # 臨界イベントの特定（Version 3.0）
+        critical_quantum = [e for e in quantum_events if e.is_critical]
+        if critical_quantum:
+            logger.info(f"\n   💫 Critical quantum events: {len(critical_quantum)}")
+            for i, event in enumerate(critical_quantum[:3]):
+                qm = event.quantum_metrics
+                logger.info(f"     {i+1}. Frame {event.frame_start}-{event.frame_end}")
+                logger.info(f"        Type: {event.event_type.value}")
+                logger.info(f"        Quantum confidence: {qm.quantum_confidence:.3f}")
+                if qm.bell_violated:
+                    logger.info(f"        CHSH: {qm.chsh_value:.3f} (p={qm.chsh_p_value:.4f})")
+                logger.info(f"        Reasons: {', '.join(event.critical_reasons)}")
+        
+        # Bell違反の詳細統計
+        bell_violations = [e for e in quantum_events 
+                          if e.quantum_metrics.bell_violated]
+        
+        if bell_violations:
+            violation_rate = 100 * len(bell_violations) / len(quantum_events)
+            logger.info(f"\n   🔔 Bell violations: {len(bell_violations)}/{len(quantum_events)} "
                        f"({violation_rate:.1f}%)")
             
             # CHSH値の統計
-            chsh_values = [e.quantum_metrics.chsh_value 
-                          for e in quantum_events 
-                          if hasattr(e, 'quantum_metrics')]
-            if chsh_values:
-                logger.info(f"   CHSH values: mean={np.mean(chsh_values):.3f}, "
-                           f"max={np.max(chsh_values):.3f}")
+            chsh_values = [e.quantum_metrics.chsh_value for e in bell_violations]
+            raw_values = [e.quantum_metrics.chsh_raw_value for e in bell_violations]
+            
+            logger.info(f"   CHSH statistics:")
+            logger.info(f"     Corrected: mean={np.mean(chsh_values):.3f}, "
+                       f"max={np.max(chsh_values):.3f}")
+            logger.info(f"     Raw: mean={np.mean(raw_values):.3f}, "
+                       f"max={np.max(raw_values):.3f}")
+            logger.info(f"     Tsirelson bound: {2*np.sqrt(2):.3f}")
         
-        # サマリー表示
+        # サマリー表示（Version 3.0の拡張版）
         quantum_validator.print_validation_summary(quantum_events)
         
-        # 量子イベントの詳細保存
-        save_quantum_events(quantum_events, output_path)
+        # 量子イベントの詳細保存（Version 3.0対応）
+        save_quantum_events_v3(quantum_events, output_path, metadata)
+        
+        # 査読用レポート生成（Version 3.0の新機能）
+        report = generate_quantum_report(quantum_events)
+        
+        with open(output_path / 'quantum_validation_report.txt', 'w') as f:
+            f.write(report)
+        logger.info(f"   📄 Validation report saved")
         
     except Exception as e:
         logger.error(f"Quantum validation failed: {e}")
@@ -455,6 +508,8 @@ def run_quantum_validation_pipeline(
         logger.info(f"     - {two_stage_result.global_network_stats.get('total_causal_links', 0)} causal links")
     if quantum_events:
         logger.info(f"     - {len(quantum_events)} quantum signatures")
+        logger.info(f"     - {len(quantum_only)} confirmed quantum events")
+        logger.info(f"     - {len(bell_violations)} Bell violations")
     
     logger.info("="*70)
     
@@ -471,55 +526,131 @@ def run_quantum_validation_pipeline(
 # 補助関数群
 # ============================================
 
-def save_quantum_events(quantum_events: List, output_path: Path):
-    """量子イベントの詳細保存"""
+def save_quantum_events_v3(quantum_events: List, output_path: Path, metadata: Dict):
+    """量子イベントの詳細保存（Version 3.0対応）"""
     quantum_data = []
     
     for event in quantum_events:
         event_dict = {
-            'frame': getattr(event, 'frame', 0),
-            'type': getattr(event, 'event_type', 'unknown'),
-            'is_critical': getattr(event, 'is_critical', False)
+            'frame_start': event.frame_start,
+            'frame_end': event.frame_end,
+            'event_type': event.event_type.value,
+            'is_critical': event.is_critical,
+            'critical_reasons': event.critical_reasons,
+            'validation_window': list(event.validation_window)
         }
         
-        # 量子メトリクス
-        if hasattr(event, 'quantum_metrics'):
-            qm = event.quantum_metrics
-            event_dict['quantum_metrics'] = {
-                'bell_violated': qm.bell_violated,
-                'chsh_value': float(qm.chsh_value),
-                'chsh_raw_value': float(qm.chsh_raw_value),
-                'chsh_confidence': float(qm.chsh_confidence),
-                'quantum_score': float(qm.quantum_score),
-                'n_samples': qm.n_samples_used
+        # 量子メトリクス（Version 3.0の全フィールド）
+        qm = event.quantum_metrics
+        event_dict['quantum_metrics'] = {
+            # 基本分類
+            'event_type': qm.event_type.value,
+            'duration_frames': qm.duration_frames,
+            'duration_ps': qm.duration_ps,
+            
+            # 量子判定
+            'is_quantum': qm.is_quantum,
+            'quantum_confidence': float(qm.quantum_confidence),
+            'quantum_score': float(qm.quantum_score),
+            
+            # CHSH検証
+            'bell_violated': qm.bell_violated,
+            'chsh_value': float(qm.chsh_value),
+            'chsh_raw_value': float(qm.chsh_raw_value),
+            'chsh_confidence': float(qm.chsh_confidence),
+            'chsh_p_value': float(qm.chsh_p_value),
+            
+            # 物理指標
+            'coherence_time_ps': float(qm.coherence_time_ps),
+            'thermal_ratio': float(qm.thermal_ratio),
+            'tunneling_probability': float(qm.tunneling_probability),
+            'energy_barrier_kT': float(qm.energy_barrier_kT),
+            
+            # ネットワーク指標
+            'n_async_bonds': qm.n_async_bonds,
+            'max_causality': float(qm.max_causality),
+            'min_sync_rate': float(qm.min_sync_rate),
+            'mean_lag_frames': float(qm.mean_lag_frames),
+            
+            # 統計情報
+            'n_samples_used': qm.n_samples_used,
+            'data_quality': float(qm.data_quality),
+            'bootstrap_iterations': qm.bootstrap_iterations
+        }
+        
+        # 判定基準の詳細（Version 3.0）
+        event_dict['criteria_passed'] = []
+        for criterion in qm.criteria_passed:
+            event_dict['criteria_passed'].append({
+                'criterion': criterion.criterion.value,
+                'reference': criterion.reference,
+                'value': float(criterion.value),
+                'threshold': float(criterion.threshold),
+                'passed': criterion.passed,
+                'p_value': float(criterion.p_value) if criterion.p_value else None,
+                'description': criterion.description
+            })
+        
+        # 残基情報（対応する残基IDを記録）
+        event_dict['residue_ids'] = event.residue_ids
+        
+        # async bonds情報（ネットワーク解析から）
+        if event.async_bonds_used:
+            event_dict['async_bonds'] = []
+            for bond in event.async_bonds_used[:10]:  # 最大10個
+                bond_dict = {
+                    'residue_pair': bond.get('residue_pair', []),
+                    'strength': float(bond.get('strength', 0)),
+                    'lag': int(bond.get('lag', 0)),
+                    'sync_rate': float(bond.get('sync_rate', 0)),
+                    'type': bond.get('type', 'unknown')
+                }
+                event_dict['async_bonds'].append(bond_dict)
+        
+        # ネットワーク統計
+        if event.network_stats:
+            event_dict['network_stats'] = {
+                'n_async_bonds': len(event.network_stats.get('async_bonds', [])),
+                'n_causal_links': len(event.network_stats.get('causal_links', [])),
+                'network_type': event.network_stats.get('network_type')
             }
         
-        # async bonds情報
-        if hasattr(event, 'async_bonds_used') and event.async_bonds_used:
-            event_dict['async_bonds'] = []
-            for bond in event.async_bonds_used[:5]:
-                if isinstance(bond, dict):
-                    event_dict['async_bonds'].append({
-                        'pair': bond.get('residue_pair', []),
-                        'causality': float(bond.get('causality', 0)),
-                        'sync_rate': float(bond.get('sync_rate', 0))
-                    })
-        
-        # 残基コンテキスト
-        if hasattr(event, 'residue_context'):
-            event_dict['residue_context'] = event.residue_context
+        # 統計的検定結果（あれば）
+        if event.statistical_tests:
+            event_dict['statistical_tests'] = event.statistical_tests
         
         quantum_data.append(event_dict)
     
-    with open(output_path / 'quantum_events_detailed.json', 'w') as f:
-        json.dump(quantum_data, f, indent=2)
+    # メタデータも含めて保存
+    output_data = {
+        'metadata': {
+            'system_name': metadata.get('system_name', 'Unknown'),
+            'temperature_K': metadata.get('temperature', 310.0),
+            'dt_ps': metadata.get('time_step_ps', 2.0),
+            'n_protein_residues': metadata.get('protein', {}).get('n_residues', 0),
+            'analysis_version': '3.0.0'
+        },
+        'summary': {
+            'total_events': len(quantum_events),
+            'quantum_events': sum(1 for e in quantum_events if e.quantum_metrics.is_quantum),
+            'bell_violations': sum(1 for e in quantum_events if e.quantum_metrics.bell_violated),
+            'critical_events': sum(1 for e in quantum_events if e.is_critical),
+            'event_type_distribution': dict(Counter(e.event_type.value for e in quantum_events))
+        },
+        'events': quantum_data
+    }
+    
+    with open(output_path / 'quantum_events_v3.json', 'w') as f:
+        json.dump(output_data, f, indent=2)
+    
+    logger.info(f"   💾 Saved {len(quantum_data)} quantum events with full v3.0 metrics")
 
 
 def visualize_quantum_results(quantum_events: List, 
                              save_path: Optional[str] = None) -> plt.Figure:
-    """量子検証結果の可視化"""
+    """量子検証結果の可視化（Version 3.0対応）"""
     
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
     
     if not quantum_events:
         fig.text(0.5, 0.5, 'No Quantum Events Detected', 
@@ -529,21 +660,27 @@ def visualize_quantum_results(quantum_events: List,
         return fig
     
     # データ抽出
-    frames = [e.frame for e in quantum_events if hasattr(e, 'frame')]
-    chsh_values = [e.quantum_metrics.chsh_value 
-                  for e in quantum_events 
-                  if hasattr(e, 'quantum_metrics')]
-    quantum_scores = [e.quantum_metrics.quantum_score 
-                     for e in quantum_events 
-                     if hasattr(e, 'quantum_metrics')]
-    confidences = [e.quantum_metrics.chsh_confidence 
-                  for e in quantum_events 
-                  if hasattr(e, 'quantum_metrics')]
+    frames = []
+    chsh_values = []
+    quantum_scores = []
+    confidences = []
+    event_type_list = []
+    
+    for e in quantum_events:
+        if hasattr(e, 'frame_start'):
+            frames.append(e.frame_start)
+        if hasattr(e, 'quantum_metrics'):
+            chsh_values.append(e.quantum_metrics.chsh_value)
+            quantum_scores.append(e.quantum_metrics.quantum_score)
+            confidences.append(e.quantum_metrics.chsh_confidence)
+        if hasattr(e, 'event_type'):
+            event_type_list.append(e.event_type.value)
     
     # 1. CHSH値の時系列
     ax1 = axes[0, 0]
     if frames and chsh_values:
-        ax1.scatter(frames, chsh_values[:len(frames)], c='blue', alpha=0.6, s=50)
+        ax1.scatter(frames[:len(chsh_values)], chsh_values[:len(frames)], 
+                   c='blue', alpha=0.6, s=50)
         ax1.axhline(y=2.0, color='red', linestyle='--', label='Classical Bound')
         ax1.axhline(y=2*np.sqrt(2), color='green', linestyle='--', 
                    label=f'Tsirelson Bound ({2*np.sqrt(2):.3f})')
@@ -553,44 +690,78 @@ def visualize_quantum_results(quantum_events: List,
         ax1.legend()
         ax1.grid(True, alpha=0.3)
     
-    # 2. Bell違反の分布
+    # 2. イベントタイプ分布（Version 3.0）
     ax2 = axes[0, 1]
+    event_counts = Counter(event_type_list)
+    if event_counts:
+        ax2.pie(event_counts.values(), 
+               labels=event_counts.keys(),
+               autopct='%1.1f%%',
+               startangle=90)
+        ax2.set_title('Event Type Distribution')
+    
+    # 3. Bell違反の分布
+    ax3 = axes[0, 2]
     n_violated = sum(1 for e in quantum_events 
                     if hasattr(e, 'quantum_metrics') 
                     and e.quantum_metrics.bell_violated)
     n_classical = len(quantum_events) - n_violated
     
-    ax2.pie([n_violated, n_classical], 
+    ax3.pie([n_violated, n_classical], 
            labels=[f'Violated ({n_violated})', f'Classical ({n_classical})'],
            colors=['red', 'blue'],
            autopct='%1.1f%%',
            startangle=90)
-    ax2.set_title('Bell Violation Distribution')
+    ax3.set_title('Bell Violation Distribution')
     
-    # 3. 量子スコア分布
-    ax3 = axes[1, 0]
+    # 4. 量子スコア分布
+    ax4 = axes[1, 0]
     if quantum_scores:
-        ax3.hist(quantum_scores, bins=20, alpha=0.7, color='purple', edgecolor='black')
-        ax3.set_xlabel('Quantum Score')
-        ax3.set_ylabel('Count')
-        ax3.set_title('Quantum Score Distribution')
-        ax3.grid(True, alpha=0.3)
+        ax4.hist(quantum_scores, bins=20, alpha=0.7, color='purple', edgecolor='black')
+        ax4.set_xlabel('Quantum Score')
+        ax4.set_ylabel('Count')
+        ax4.set_title('Quantum Score Distribution')
+        ax4.grid(True, alpha=0.3)
     
-    # 4. 信頼度vs CHSH値
-    ax4 = axes[1, 1]
+    # 5. 信頼度vs CHSH値
+    ax5 = axes[1, 1]
     if confidences and chsh_values and quantum_scores:
-        scatter = ax4.scatter(confidences[:len(chsh_values)], 
+        scatter = ax5.scatter(confidences[:len(chsh_values)], 
                             chsh_values[:len(confidences)], 
                             c=quantum_scores[:min(len(confidences), len(chsh_values))], 
                             cmap='viridis',
                             s=50, alpha=0.6)
-        plt.colorbar(scatter, ax=ax4, label='Quantum Score')
-        ax4.set_xlabel('Confidence')
-        ax4.set_ylabel('CHSH Value')
-        ax4.set_title('Confidence vs CHSH Value')
-        ax4.grid(True, alpha=0.3)
+        plt.colorbar(scatter, ax=ax5, label='Quantum Score')
+        ax5.set_xlabel('Confidence')
+        ax5.set_ylabel('CHSH Value')
+        ax5.set_title('Confidence vs CHSH Value')
+        ax5.grid(True, alpha=0.3)
     
-    plt.suptitle('Quantum Validation Results', fontsize=14, fontweight='bold')
+    # 6. 判定基準通過率（Version 3.0）
+    ax6 = axes[1, 2]
+    criterion_counts = {}
+    for e in quantum_events:
+        if hasattr(e, 'quantum_metrics'):
+            for criterion in e.quantum_metrics.criteria_passed:
+                name = criterion.criterion.value
+                if name not in criterion_counts:
+                    criterion_counts[name] = {'passed': 0, 'total': 0}
+                criterion_counts[name]['total'] += 1
+                if criterion.passed:
+                    criterion_counts[name]['passed'] += 1
+    
+    if criterion_counts:
+        names = list(criterion_counts.keys())
+        pass_rates = [c['passed']/c['total']*100 if c['total'] > 0 else 0 
+                     for c in criterion_counts.values()]
+        ax6.bar(range(len(names)), pass_rates, alpha=0.7, color='steelblue')
+        ax6.set_xticks(range(len(names)))
+        ax6.set_xticklabels(names, rotation=45, ha='right')
+        ax6.set_ylabel('Pass Rate (%)')
+        ax6.set_title('Validation Criteria Pass Rates')
+        ax6.grid(True, alpha=0.3)
+    
+    plt.suptitle('Quantum Validation Results v3.0', fontsize=14, fontweight='bold')
     plt.tight_layout()
     
     if save_path:
@@ -684,16 +855,17 @@ def generate_comprehensive_report(
     metadata: Dict,
     protein_indices: np.ndarray
 ) -> str:
-    """包括的な解析レポートの生成"""
+    """包括的な解析レポートの生成（Version 3.0対応）"""
     
     # システム名の取得
     system_name = metadata.get('system_name', 'Unknown System')
     
-    report = f"""# Lambda³ GPU Analysis Report
+    report = f"""# Lambda³ GPU Analysis Report v3.0
 
 ## System Information
 - **System**: {system_name}
 - **Temperature**: {metadata.get('temperature', metadata.get('simulation', {}).get('temperature_K', 310))} K
+- **Time step**: {metadata.get('time_step_ps', metadata.get('simulation', {}).get('dt_ps', 2.0))} ps
 - **Frames analyzed**: {lambda_result.n_frames}
 - **Total atoms**: {lambda_result.n_atoms}
 - **Protein atoms**: {len(protein_indices)}
@@ -707,6 +879,7 @@ def generate_comprehensive_report(
 """
     
     report += f"""- **Computation time**: {lambda_result.computation_time:.2f} seconds
+- **Analysis version**: 3.0.0 (Publication Ready)
 
 ## Lambda³ Analysis Results
 - **Critical events**: {len(lambda_result.critical_events)}
@@ -771,22 +944,51 @@ def generate_comprehensive_report(
                 report += f"\n### Suggested Intervention Points\n"
                 report += f"Residues: {points}\n"
     
-    # 量子検証結果
+    # 量子検証結果（Version 3.0拡張）
     report += f"""
-## Quantum Validation Results
-- **Total quantum events**: {len(quantum_events)}
+## Quantum Validation Results (v3.0)
+- **Total events analyzed**: {len(quantum_events)}
 """
     
     if quantum_events:
-        n_bell = sum(1 for e in quantum_events 
-                    if hasattr(e, 'quantum_metrics') 
-                    and e.quantum_metrics.bell_violated)
-        n_critical = sum(1 for e in quantum_events 
-                        if hasattr(e, 'is_critical') and e.is_critical)
+        # 基本統計
+        n_quantum = sum(1 for e in quantum_events if e.quantum_metrics.is_quantum)
+        n_bell = sum(1 for e in quantum_events if e.quantum_metrics.bell_violated)
+        n_critical = sum(1 for e in quantum_events if e.is_critical)
         
-        report += f"""- **Bell violations**: {n_bell} ({100*n_bell/len(quantum_events):.1f}%)
+        report += f"""- **Confirmed quantum events**: {n_quantum} ({100*n_quantum/len(quantum_events):.1f}%)
+- **Bell violations**: {n_bell} ({100*n_bell/len(quantum_events):.1f}%)
 - **Critical quantum events**: {n_critical}
+
+### Event Type Distribution
 """
+        # イベントタイプ分布
+        event_types = Counter(e.event_type.value for e in quantum_events)
+        for event_type, count in sorted(event_types.items()):
+            report += f"- **{event_type}**: {count}\n"
+        
+        # 判定基準統計
+        criterion_stats = {}
+        for event in quantum_events:
+            for criterion in event.quantum_metrics.criteria_passed:
+                name = criterion.criterion.value
+                if name not in criterion_stats:
+                    criterion_stats[name] = {'passed': 0, 'total': 0, 'refs': set()}
+                criterion_stats[name]['total'] += 1
+                if criterion.passed:
+                    criterion_stats[name]['passed'] += 1
+                criterion_stats[name]['refs'].add(criterion.reference)
+        
+        if criterion_stats:
+            report += """
+### Validation Criteria Statistics
+| Criterion | Pass Rate | References |
+|-----------|-----------|------------|
+"""
+            for name, stats in sorted(criterion_stats.items()):
+                rate = stats['passed'] / stats['total'] * 100 if stats['total'] > 0 else 0
+                refs = list(stats['refs'])[0] if stats['refs'] else 'N/A'
+                report += f"| {name} | {rate:.1f}% ({stats['passed']}/{stats['total']}) | {refs} |\n"
         
         # CHSH統計
         chsh_values = [e.quantum_metrics.chsh_value 
@@ -808,12 +1010,14 @@ def generate_comprehensive_report(
                 report += "⚛️ **Quantum correlations detected**: CHSH values exceed classical bound\n"
             if np.max(chsh_values) > 2.4:
                 report += "🌟 **Strong quantum signatures**: Significant Bell inequality violations\n"
+            if n_quantum > len(quantum_events) * 0.1:
+                report += "💫 **Quantum prevalence**: >10% of events show quantum characteristics\n"
     
     # 結論
     report += f"""
 ## Conclusions
 
-The Lambda³ GPU analysis of {system_name} successfully completed with the following key findings:
+The Lambda³ GPU v3.0 analysis of {system_name} successfully completed with the following key findings:
 
 1. **Structural dynamics**: {len(lambda_result.critical_events)} critical events identified
 """
@@ -825,11 +1029,11 @@ The Lambda³ GPU analysis of {system_name} successfully completed with the follo
 """
     
     if quantum_events:
-        n_bell = sum(1 for e in quantum_events 
-                    if hasattr(e, 'quantum_metrics') 
-                    and e.quantum_metrics.bell_violated)
+        n_quantum = sum(1 for e in quantum_events if e.quantum_metrics.is_quantum)
+        n_bell = sum(1 for e in quantum_events if e.quantum_metrics.bell_violated)
         if n_bell > 0:
             report += f"""4. **Quantum signatures**: {n_bell} Bell violations confirm non-classical correlations
+5. **Quantum events**: {n_quantum} events passed quantum validation criteria
 """
     
     report += """
@@ -846,15 +1050,16 @@ Based on the analysis results:
 1. **Target residues for intervention**: Focus on residues {points} for potential drug targeting or mutation studies
 """
     
-    if quantum_events and len(quantum_events) > 0:
+    if quantum_events and n_quantum > 0:
         report += """
 2. **Quantum effects**: Consider quantum mechanical effects in protein dynamics modeling
+3. **Non-classical correlations**: Account for Bell violations in theoretical models
 """
     
     report += """
 ---
-*Generated by Lambda³ GPU Quantum Validation Pipeline*
-*Two-Stage Optimized Version*
+*Generated by Lambda³ GPU Quantum Validation Pipeline v3.0*
+*Publication Ready - Peer Review Compatible*
 *NO TIME, NO PHYSICS, ONLY STRUCTURE!*
 """
     
@@ -869,7 +1074,7 @@ def main():
     """コマンドラインインターフェース"""
     
     parser = argparse.ArgumentParser(
-        description='Lambda³ GPU Quantum Validation Pipeline - Two-Stage Optimized',
+        description='Lambda³ GPU Quantum Validation Pipeline v3.0 - Publication Ready',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
