@@ -822,30 +822,67 @@ class QuantumValidationGPU:
     # ========================================
     
     def _extract_key_events(self, lambda_result: Any) -> List[Dict]:
-        """主要イベント抽出"""
+        """主要イベント抽出（タプル形式対応版）"""
         events = []
         
-        if hasattr(lambda_result, 'events'):
+        # eventsがある場合（辞書形式）
+        if hasattr(lambda_result, 'events') and lambda_result.events:
             for event_type, event_list in lambda_result.events.items():
                 for e in event_list[:20]:  # 各タイプ最大20個
+                    # 辞書形式の場合
+                    if isinstance(e, dict):
+                        events.append({
+                            'frame': e.get('frame', e.get('start', 0)),
+                            'start': e.get('start', e.get('frame', 0)),
+                            'end': e.get('end', e.get('frame', 0)),
+                            'type': event_type,
+                            'residues': e.get('residues', [])
+                        })
+                    # タプル/リスト形式の場合
+                    elif isinstance(e, (tuple, list)) and len(e) >= 2:
+                        events.append({
+                            'frame': e[0],
+                            'start': e[0],
+                            'end': e[1],
+                            'type': event_type,
+                            'residues': []
+                        })
+        
+        # Critical eventsも追加（タプル形式対応）
+        if hasattr(lambda_result, 'critical_events') and lambda_result.critical_events:
+            for e in lambda_result.critical_events[:50]:
+                # タプル/リスト形式の場合（最も一般的）
+                if isinstance(e, (tuple, list)) and len(e) >= 2:
+                    events.append({
+                        'frame': int(e[0]),
+                        'start': int(e[0]),
+                        'end': int(e[1]),
+                        'type': 'critical',
+                        'residues': []
+                    })
+                # 辞書形式の場合
+                elif isinstance(e, dict):
                     events.append({
                         'frame': e.get('frame', e.get('start', 0)),
                         'start': e.get('start', e.get('frame', 0)),
                         'end': e.get('end', e.get('frame', 0)),
-                        'type': event_type,
+                        'type': 'critical',
                         'residues': e.get('residues', [])
                     })
-        
-        # Critical eventsも追加
-        if hasattr(lambda_result, 'critical_events'):
-            for e in lambda_result.critical_events[:50]:
-                events.append({
-                    'frame': e.get('frame', e.get('start', 0)),
-                    'start': e.get('start', e.get('frame', 0)),
-                    'end': e.get('end', e.get('frame', 0)),
-                    'type': 'critical',
-                    'residues': e.get('residues', [])
-                })
+                # オブジェクト形式の場合
+                elif hasattr(e, 'frame') or hasattr(e, 'start'):
+                    frame = getattr(e, 'frame', getattr(e, 'start', 0))
+                    start = getattr(e, 'start', frame)
+                    end = getattr(e, 'end', frame)
+                    events.append({
+                        'frame': frame,
+                        'start': start,
+                        'end': end,
+                        'type': 'critical',
+                        'residues': getattr(e, 'residues', [])
+                    })
+                else:
+                    logger.warning(f"Unknown event format: {type(e)}")
         
         return events
     
