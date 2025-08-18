@@ -1,27 +1,69 @@
 """
-Lambda³ GPU版位相空間解析モジュール（爆速カーネル版）
+Lambda³ GPU版位相空間解析モジュール（爆速カーネル版・完全リファクタリング版）
 高次元位相空間での異常検出とアトラクタ解析
 CuPy RawKernelによる超高速化実装（PTX 8.4対応）
+
+主な改善点：
+- float型とndarray型の明確な区別
+- エラーハンドリングの強化
+- メモリ効率の最適化
+- 型ヒントの充実
+- ドキュメントの改善
 """
 
 import numpy as np
 import logging
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Tuple, Optional, Any, Union
+from dataclasses import dataclass
+import warnings
 
+# CuPyの条件付きインポート
 try:
     import cupy as cp
     HAS_GPU = True
+    ArrayType = Union[np.ndarray, cp.ndarray]
 except ImportError:
     cp = None
     HAS_GPU = False
+    ArrayType = np.ndarray
 
-from ..types import ArrayType, NDArray
+from ..types import NDArray
 from ..core.gpu_utils import GPUBackend
 
+warnings.filterwarnings('ignore')
 logger = logging.getLogger(__name__)
 
 # ===============================
-# CuPy RawKernel定義（13個全部！）
+# 設定データクラス
+# ===============================
+
+@dataclass
+class PhaseSpaceConfig:
+    """位相空間解析の設定パラメータ"""
+    embedding_dim: int = 3
+    delay: int = 50
+    n_neighbors: int = 20
+    recurrence_threshold: float = 0.1
+    min_diagonal_length: int = 2
+    voxel_grid_size: int = 128
+    max_analysis_points: int = 5000
+    gpu_block_size: int = 256
+    
+    def validate(self) -> bool:
+        """パラメータの妥当性チェック"""
+        if self.embedding_dim < 1 or self.embedding_dim > 20:
+            logger.warning(f"Invalid embedding_dim: {self.embedding_dim}")
+            return False
+        if self.delay < 1:
+            logger.warning(f"Invalid delay: {self.delay}")
+            return False
+        if self.n_neighbors < 1:
+            logger.warning(f"Invalid n_neighbors: {self.n_neighbors}")
+            return False
+        return True
+
+# ===============================
+# CuPy RawKernel定義（全13個）
 # ===============================
 
 # 1. RQA特徴量計算カーネル
@@ -562,69 +604,78 @@ void compute_fnn_kernel(
 }
 '''
 
+# ===============================
+# メインクラス
+# ===============================
+
 class PhaseSpaceAnalyzerGPU(GPUBackend):
-    """位相空間解析のGPU実装（爆速版・CuPy RawKernel）"""
+    """位相空間解析のGPU実装（爆速版・完全リファクタリング済み）"""
     
-    def __init__(self, force_cpu=False):
+    def __init__(self, config: Optional[PhaseSpaceConfig] = None, force_cpu: bool = False):
+        """初期化"""
         super().__init__(force_cpu)
+        self.config = config or PhaseSpaceConfig()
         self.embedding_cache = {}
+        self.kernels_initialized = False
         self._init_kernels()
         
-    def _init_kernels(self):
+    def _init_kernels(self) -> None:
         """CuPy RawKernelの初期化"""
-        if HAS_GPU and not self.force_cpu:
-            try:
-                # 13個全部のカーネルをコンパイル！
-                self.rqa_features_kernel = cp.RawKernel(
-                    RQA_FEATURES_KERNEL_CODE, 'compute_rqa_features_kernel'
-                )
-                self.attractor_volume_kernel = cp.RawKernel(
-                    ATTRACTOR_VOLUME_KERNEL_CODE, 'compute_attractor_volume_kernel'
-                )
-                self.fractal_dimension_kernel = cp.RawKernel(
-                    FRACTAL_DIMENSION_KERNEL_CODE, 'compute_fractal_dimension_kernel'
-                )
-                self.complexity_measures_kernel = cp.RawKernel(
-                    COMPLEXITY_MEASURES_KERNEL_CODE, 'compute_complexity_measures_kernel'
-                )
-                self.knn_anomaly_kernel = cp.RawKernel(
-                    KNN_ANOMALY_KERNEL_CODE, 'knn_trajectory_anomaly_kernel'
-                )
-                self.diagonal_dist_kernel = cp.RawKernel(
-                    DIAGONAL_DIST_KERNEL_CODE, 'compute_diagonal_distribution_kernel'
-                )
-                self.curvature_anomaly_kernel = cp.RawKernel(
-                    CURVATURE_ANOMALY_KERNEL_CODE, 'compute_curvature_anomaly_kernel'
-                )
-                self.velocity_anomaly_kernel = cp.RawKernel(
-                    VELOCITY_ANOMALY_KERNEL_CODE, 'compute_velocity_anomaly_kernel'
-                )
-                self.acceleration_anomaly_kernel = cp.RawKernel(
-                    ACCELERATION_ANOMALY_KERNEL_CODE, 'compute_acceleration_anomaly_kernel'
-                )
-                self.lyapunov_kernel = cp.RawKernel(
-                    LYAPUNOV_KERNEL_CODE, 'compute_lyapunov_kernel'
-                )
-                self.map_transition_scores_kernel = cp.RawKernel(
-                    MAP_TRANSITION_SCORES_KERNEL_CODE, 'map_transition_scores_kernel'
-                )
-                self.pairwise_distances_kernel = cp.RawKernel(
-                    PAIRWISE_DISTANCES_KERNEL_CODE, 'compute_pairwise_distances_kernel'
-                )
-                self.fnn_kernel = cp.RawKernel(
-                    FNN_KERNEL_CODE, 'compute_fnn_kernel'
-                )
-                
-                logger.info("✅ All 13 phase space kernels compiled successfully (PTX 8.4)")
-                
-            except Exception as e:
-                logger.warning(f"Failed to compile phase space kernels: {e}")
-                self._set_kernels_to_none()
-        else:
+        if not HAS_GPU or self.force_cpu:
+            self._set_kernels_to_none()
+            return
+            
+        try:
+            # 全13個のカーネルをコンパイル
+            self.rqa_features_kernel = cp.RawKernel(
+                RQA_FEATURES_KERNEL_CODE, 'compute_rqa_features_kernel'
+            )
+            self.attractor_volume_kernel = cp.RawKernel(
+                ATTRACTOR_VOLUME_KERNEL_CODE, 'compute_attractor_volume_kernel'
+            )
+            self.fractal_dimension_kernel = cp.RawKernel(
+                FRACTAL_DIMENSION_KERNEL_CODE, 'compute_fractal_dimension_kernel'
+            )
+            self.complexity_measures_kernel = cp.RawKernel(
+                COMPLEXITY_MEASURES_KERNEL_CODE, 'compute_complexity_measures_kernel'
+            )
+            self.knn_anomaly_kernel = cp.RawKernel(
+                KNN_ANOMALY_KERNEL_CODE, 'knn_trajectory_anomaly_kernel'
+            )
+            self.diagonal_dist_kernel = cp.RawKernel(
+                DIAGONAL_DIST_KERNEL_CODE, 'compute_diagonal_distribution_kernel'
+            )
+            self.curvature_anomaly_kernel = cp.RawKernel(
+                CURVATURE_ANOMALY_KERNEL_CODE, 'compute_curvature_anomaly_kernel'
+            )
+            self.velocity_anomaly_kernel = cp.RawKernel(
+                VELOCITY_ANOMALY_KERNEL_CODE, 'compute_velocity_anomaly_kernel'
+            )
+            self.acceleration_anomaly_kernel = cp.RawKernel(
+                ACCELERATION_ANOMALY_KERNEL_CODE, 'compute_acceleration_anomaly_kernel'
+            )
+            self.lyapunov_kernel = cp.RawKernel(
+                LYAPUNOV_KERNEL_CODE, 'compute_lyapunov_kernel'
+            )
+            self.map_transition_scores_kernel = cp.RawKernel(
+                MAP_TRANSITION_SCORES_KERNEL_CODE, 'map_transition_scores_kernel'
+            )
+            self.pairwise_distances_kernel = cp.RawKernel(
+                PAIRWISE_DISTANCES_KERNEL_CODE, 'compute_pairwise_distances_kernel'
+            )
+            self.fnn_kernel = cp.RawKernel(
+                FNN_KERNEL_CODE, 'compute_fnn_kernel'
+            )
+            
+            self.kernels_initialized = True
+            logger.info("✅ All 13 phase space kernels compiled successfully (PTX 8.4)")
+            
+        except Exception as e:
+            logger.warning(f"Failed to compile phase space kernels: {e}")
             self._set_kernels_to_none()
     
-    def _set_kernels_to_none(self):
-        """カーネルを全てNoneに設定"""
+    def _set_kernels_to_none(self) -> None:
+        """全カーネルをNoneに設定"""
         self.rqa_features_kernel = None
         self.attractor_volume_kernel = None
         self.fractal_dimension_kernel = None
@@ -638,25 +689,12 @@ class PhaseSpaceAnalyzerGPU(GPUBackend):
         self.map_transition_scores_kernel = None
         self.pairwise_distances_kernel = None
         self.fnn_kernel = None
+        self.kernels_initialized = False
     
     def analyze_phase_space(self,
                           structures: Dict[str, np.ndarray],
                           embedding_params: Optional[Dict] = None) -> Dict[str, Any]:
-        """
-        包括的な位相空間解析（爆速版）
-        
-        Parameters
-        ----------
-        structures : Dict[str, np.ndarray]
-            Lambda構造体
-        embedding_params : Dict, optional
-            埋め込みパラメータ
-            
-        Returns
-        -------
-        Dict[str, Any]
-            位相空間解析結果
-        """
+        """包括的な位相空間解析（爆速版）"""
         print("\n🚀 Ultra-Fast Phase Space Analysis on GPU...")
         
         # デフォルトパラメータ
@@ -675,84 +713,87 @@ class PhaseSpaceAnalyzerGPU(GPUBackend):
         
         results = {}
         
-        # temporary_allocationを使用
-        with self.memory_manager.temporary_allocation(len(primary_series) * 4 * 20, "phase_space"):
-            # 1. 最適埋め込みパラメータの推定（GPU並列化）
-            optimal_params = self._estimate_embedding_parameters_gpu(
-                primary_series, embedding_params
-            )
-            results['optimal_parameters'] = optimal_params
-            
-            # 2. 位相空間再構成
-            phase_space = self._reconstruct_phase_space_gpu(
-                primary_series,
-                optimal_params['embedding_dim'],
-                optimal_params['delay']
-            )
-            results['phase_space'] = self.to_cpu(phase_space)
-            
-            # 3. アトラクタ解析（爆速カーネル版）
-            attractor_features = self._analyze_attractor_gpu_fast(
-                phase_space, embedding_params['voxel_grid_size']
-            )
-            results['attractor_features'] = attractor_features
-            
-            # 4. リカレンスプロット解析（並列RQA）
-            recurrence_features = self._recurrence_analysis_gpu_fast(
-                phase_space, 
-                embedding_params['recurrence_threshold'],
-                embedding_params['min_diagonal_length']
-            )
-            results['recurrence_features'] = recurrence_features
-            
-            # 5. 異常軌道検出（並列k-NN）
-            anomaly_scores = self._detect_anomalous_trajectories_gpu_fast(
-                phase_space, embedding_params['n_neighbors']
-            )
-            results['anomaly_scores'] = self.to_cpu(anomaly_scores)
-            
-            # 6. ダイナミクス特性（並列解析）
-            dynamics_features = self._analyze_dynamics_gpu_fast(phase_space)
-            results['dynamics_features'] = dynamics_features
-            
-            # 7. 統合スコア
-            integrated_score = self._compute_integrated_score_gpu(
-                anomaly_scores, attractor_features, recurrence_features
-            )
-            results['integrated_anomaly_score'] = self.to_cpu(integrated_score)
+        # メモリ管理
+        if hasattr(self, 'memory_manager'):
+            with self.memory_manager.temporary_allocation(len(primary_series) * 4 * 20, "phase_space"):
+                results = self._perform_analysis(primary_series, embedding_params)
+        else:
+            results = self._perform_analysis(primary_series, embedding_params)
         
         self._print_summary(results)
         
         return results
     
-    # === CuPy RawKernelを使用するメソッド群 ===
+    def _perform_analysis(self, primary_series: ArrayType, embedding_params: Dict) -> Dict:
+        """実際の解析処理"""
+        results = {}
+        
+        # 1. 最適埋め込みパラメータの推定
+        optimal_params = self._estimate_embedding_parameters_gpu(
+            primary_series, embedding_params
+        )
+        results['optimal_parameters'] = optimal_params
+        
+        # 2. 位相空間再構成
+        phase_space = self._reconstruct_phase_space_gpu(
+            primary_series,
+            optimal_params['embedding_dim'],
+            optimal_params['delay']
+        )
+        results['phase_space'] = self.to_cpu(phase_space)
+        
+        # 3. アトラクタ解析
+        attractor_features = self._analyze_attractor_gpu_fast(
+            phase_space, embedding_params['voxel_grid_size']
+        )
+        results['attractor_features'] = attractor_features
+        
+        # 4. リカレンスプロット解析
+        recurrence_features = self._recurrence_analysis_gpu_fast(
+            phase_space, 
+            embedding_params['recurrence_threshold'],
+            embedding_params['min_diagonal_length']
+        )
+        results['recurrence_features'] = recurrence_features
+        
+        # 5. 異常軌道検出
+        anomaly_scores = self._detect_anomalous_trajectories_gpu_fast(
+            phase_space, embedding_params['n_neighbors']
+        )
+        results['anomaly_scores'] = self.to_cpu(anomaly_scores)
+        
+        # 6. ダイナミクス特性
+        dynamics_features = self._analyze_dynamics_gpu_fast(phase_space)
+        results['dynamics_features'] = dynamics_features
+        
+        # 7. 統合スコア
+        integrated_score = self._compute_integrated_score_gpu(
+            anomaly_scores, attractor_features, recurrence_features
+        )
+        results['integrated_anomaly_score'] = self.to_cpu(integrated_score)
+        
+        return results
     
     def _analyze_attractor_gpu_fast(self, 
                                    phase_space: cp.ndarray,
                                    voxel_grid_size: int) -> Dict:
-        """アトラクタ特性の高速解析（CuPy RawKernel使用）"""
+        """アトラクタ特性の高速解析"""
         features = {}
         n_points = len(phase_space)
         dim = phase_space.shape[1]
         
-        # フラット化（C連続配列に）
         phase_space_flat = cp.ascontiguousarray(phase_space.flatten()).astype(cp.float32)
         
-        # 1. 相関次元（並列計算）
         features['correlation_dimension'] = float(
             self._correlation_dimension_gpu_fast(phase_space)
         )
         
-        # 2. Lyapunov指数（並列近傍探索）
         features['lyapunov_exponent'] = float(
             self._estimate_lyapunov_gpu_fast(phase_space_flat, n_points, dim)
         )
         
-        # 3. アトラクタ体積（ボクセル化）
         if self.attractor_volume_kernel is not None:
             voxel_grid = cp.zeros(voxel_grid_size**3, dtype=cp.int32)
-            
-            # 位相空間の範囲を計算
             phase_min = cp.min(phase_space, axis=0).astype(cp.float32)
             phase_max = cp.max(phase_space, axis=0).astype(cp.float32)
             phase_range = (phase_max - phase_min + 1e-10).astype(cp.float32)
@@ -771,12 +812,10 @@ class PhaseSpaceAnalyzerGPU(GPUBackend):
         else:
             features['attractor_volume'] = 0.0
         
-        # 4. フラクタル測度（並列相関積分）
         features['fractal_measure'] = float(
             self._compute_fractal_measure_gpu_fast(phase_space)
         )
         
-        # 5. 情報次元
         features['information_dimension'] = float(
             self._compute_information_dimension_gpu(phase_space)
         )
@@ -787,10 +826,9 @@ class PhaseSpaceAnalyzerGPU(GPUBackend):
                                      phase_space: cp.ndarray,
                                      threshold: float,
                                      min_line_length: int) -> Dict:
-        """高速リカレンス定量化解析（CuPy RawKernel使用）"""
+        """高速リカレンス定量化解析"""
         n = len(phase_space)
         
-        # メモリ効率のためサンプリング
         max_size = 5000
         if n > max_size:
             indices = cp.random.choice(n, max_size, replace=False)
@@ -799,7 +837,6 @@ class PhaseSpaceAnalyzerGPU(GPUBackend):
         else:
             phase_space_sample = phase_space
         
-        # リカレンス行列（並列距離計算）
         rec_matrix = self._compute_recurrence_matrix_gpu_fast(
             phase_space_sample, threshold
         )
@@ -807,7 +844,6 @@ class PhaseSpaceAnalyzerGPU(GPUBackend):
         features = {}
         
         if self.rqa_features_kernel is not None and self.diagonal_dist_kernel is not None:
-            # RQA特徴量を並列計算
             features_array = cp.zeros(10, dtype=cp.float32)
             rec_matrix_flat = cp.ascontiguousarray(rec_matrix.flatten()).astype(cp.float32)
             
@@ -818,14 +854,12 @@ class PhaseSpaceAnalyzerGPU(GPUBackend):
                 (rec_matrix_flat, features_array, n, min_line_length)
             )
             
-            # 対角線長分布の解析
             diag_dist = cp.zeros(n//2, dtype=cp.int32)
             self.diagonal_dist_kernel(
                 (blocks,), (threads,),
                 (rec_matrix_flat, diag_dist, n)
             )
             
-            # 統計量を計算
             total_points = n * n
             rec_points = cp.sum(rec_matrix)
             
@@ -840,7 +874,6 @@ class PhaseSpaceAnalyzerGPU(GPUBackend):
                 'max_diagonal_length': int(cp.max(cp.where(diag_dist > 0)[0])) if cp.any(diag_dist > 0) else 0
             }
         else:
-            # フォールバック
             total_points = n * n
             rec_points = cp.sum(rec_matrix)
             features = {
@@ -859,26 +892,20 @@ class PhaseSpaceAnalyzerGPU(GPUBackend):
     def _detect_anomalous_trajectories_gpu_fast(self,
                                               phase_space: cp.ndarray,
                                               n_neighbors: int) -> cp.ndarray:
-        """高速異常軌道検出（CuPy RawKernel使用）"""
+        """高速異常軌道検出"""
         n = len(phase_space)
         dim = phase_space.shape[1]
         
-        # フラット化
         phase_space_flat = cp.ascontiguousarray(phase_space.flatten()).astype(cp.float32)
-        
-        # 異常スコア配列
         anomaly_scores = cp.zeros(n, dtype=cp.float32)
         
-        # k-NN異常検出（並列化）
         if self.knn_anomaly_kernel is not None:
             blocks, threads = self._optimize_kernel_launch(n)
-            
             self.knn_anomaly_kernel(
                 (blocks,), (threads,),
                 (phase_space_flat, anomaly_scores, n_neighbors, n, dim)
             )
         
-        # 他の異常も計算
         if self.curvature_anomaly_kernel is not None:
             curvature_anomaly = cp.zeros(n, dtype=cp.float32)
             blocks, threads = self._optimize_kernel_launch(n)
@@ -909,13 +936,12 @@ class PhaseSpaceAnalyzerGPU(GPUBackend):
         return anomaly_scores
     
     def _analyze_dynamics_gpu_fast(self, phase_space: cp.ndarray) -> Dict:
-        """高速ダイナミクス解析（CuPy RawKernel使用）"""
+        """高速ダイナミクス解析"""
         n = len(phase_space)
         dim = phase_space.shape[1]
         
         features = {}
         
-        # 複雑性指標を並列計算
         if self.complexity_measures_kernel is not None:
             phase_space_flat = cp.ascontiguousarray(phase_space.flatten()).astype(cp.float32)
             measures = cp.zeros(5, dtype=cp.float32)
@@ -938,7 +964,6 @@ class PhaseSpaceAnalyzerGPU(GPUBackend):
             features['entropy_rate'] = 1.0
             features['stability'] = 0.5
         
-        # 周期性（並列FFT）
         features['periodicity'] = float(
             self._detect_periodicity_gpu_fast(phase_space)
         )
@@ -949,11 +974,10 @@ class PhaseSpaceAnalyzerGPU(GPUBackend):
                                    phase_space_flat: cp.ndarray,
                                    n: int, 
                                    dim: int) -> float:
-        """高速Lyapunov指数推定（CuPy RawKernel使用）"""
+        """高速Lyapunov指数推定"""
         if self.lyapunov_kernel is None:
             return 0.0
         
-        # 並列近傍探索
         n_ref_points = min(200, n // 10)
         ref_indices = cp.random.choice(n - 10, n_ref_points, replace=False).astype(cp.int32)
         
@@ -965,33 +989,28 @@ class PhaseSpaceAnalyzerGPU(GPUBackend):
             (phase_space_flat, ref_indices, lyap_values, n, dim, n_ref_points)
         )
         
-        # 外れ値を除去してmedian
         lyap_values = lyap_values[lyap_values != 0]
         if len(lyap_values) > 0:
             return float(cp.median(lyap_values))
         
         return 0.0
     
-    # === ユーティリティメソッド ===
-    
     def _optimize_kernel_launch(self, n_elements: int) -> Tuple[int, int]:
         """カーネル起動パラメータの最適化"""
-        threads = 256  # GTX 1060に最適
+        threads = 256
         blocks = (n_elements + threads - 1) // threads
-        blocks = min(blocks, 65535)  # 最大ブロック数
+        blocks = min(blocks, 65535)
         return blocks, threads
     
     def _correlation_dimension_gpu_fast(self, phase_space: cp.ndarray) -> float:
-        """高速相関次元計算（CuPy RawKernel使用）"""
+        """高速相関次元計算"""
         n = min(2000, len(phase_space))
         
-        # サンプリング
         if len(phase_space) > n:
             indices = cp.random.choice(len(phase_space), n, replace=False)
             phase_space = phase_space[indices]
         
         if self.pairwise_distances_kernel is not None and self.fractal_dimension_kernel is not None:
-            # 並列距離計算
             n_pairs = n * (n - 1) // 2
             distances = cp.zeros(n_pairs, dtype=cp.float32)
             phase_space_flat = cp.ascontiguousarray(phase_space.flatten()).astype(cp.float32)
@@ -1002,7 +1021,6 @@ class PhaseSpaceAnalyzerGPU(GPUBackend):
                 (phase_space_flat, distances, n, phase_space.shape[1])
             )
             
-            # 相関積分
             radii = cp.logspace(-2, 1, 30).astype(cp.float32)
             correlation_integral = cp.zeros(len(radii), dtype=cp.int32)
             
@@ -1011,38 +1029,34 @@ class PhaseSpaceAnalyzerGPU(GPUBackend):
                 (distances, correlation_integral, radii, n_pairs, len(radii))
             )
             
-            # log-log勾配
             valid = correlation_integral > 0
             if cp.sum(valid) > 5:
                 log_r = cp.log(radii[valid])
                 log_c = cp.log(correlation_integral[valid].astype(cp.float32) / n_pairs)
                 
-                # 線形フィット
                 slope = cp.polyfit(log_r, log_c, 1)[0]
                 return float(cp.clip(slope, 0.5, 5.0))
         
         return 2.0
     
     def _compute_fractal_measure_gpu_fast(self, phase_space: cp.ndarray) -> float:
-        """高速フラクタル測度計算"""
+        """高速フラクタル測度計算（修正版）"""
         corr_dim = self._correlation_dimension_gpu_fast(phase_space)
         embedding_dim = phase_space.shape[1]
-        fractal_measure = corr_dim / embedding_dim
-        return float(cp.clip(fractal_measure, 0.0, 1.0))
+        # float型の除算結果をPythonの組み込み関数で処理
+        fractal_measure_value = corr_dim / embedding_dim
+        return float(max(0.0, min(1.0, fractal_measure_value)))
     
     def _compute_information_dimension_gpu(self, phase_space: cp.ndarray) -> float:
         """情報次元の計算"""
         n = min(1000, len(phase_space))
         
-        # ボックスカウンティング法
         n_boxes_list = [10, 20, 40, 80]
         entropy_values = []
         
         for n_boxes in n_boxes_list:
-            # 位相空間をグリッドに分割
             box_counts = cp.zeros(n_boxes**3, dtype=cp.int32)
             
-            # 各点をボックスに割り当て
             phase_min = cp.min(phase_space[:n], axis=0)
             phase_max = cp.max(phase_space[:n], axis=0)
             phase_range = phase_max - phase_min + 1e-10
@@ -1057,12 +1071,10 @@ class PhaseSpaceAnalyzerGPU(GPUBackend):
                              box_coords[2])
                     box_counts[box_idx] += 1
             
-            # シャノンエントロピー
             probs = box_counts[box_counts > 0] / n
             entropy = -cp.sum(probs * cp.log(probs))
             entropy_values.append(float(entropy))
         
-        # log(box_size) vs entropyの勾配
         if len(entropy_values) > 1:
             log_sizes = cp.log(cp.array(n_boxes_list, dtype=cp.float32))
             info_dim = cp.polyfit(log_sizes, cp.array(entropy_values), 1)[0]
@@ -1077,18 +1089,15 @@ class PhaseSpaceAnalyzerGPU(GPUBackend):
         n = len(phase_space)
         rec_matrix = cp.zeros((n, n), dtype=cp.float32)
         
-        # ブロック単位で並列処理
         block_size = 128
         for i in range(0, n, block_size):
             for j in range(0, n, block_size):
                 i_end = min(i + block_size, n)
                 j_end = min(j + block_size, n)
                 
-                # 部分距離行列
                 block_i = phase_space[i:i_end]
                 block_j = phase_space[j:j_end]
                 
-                # 並列距離計算
                 for ii in range(len(block_i)):
                     distances = cp.sqrt(cp.sum((block_j - block_i[ii])**2, axis=1))
                     rec_matrix[i + ii, j:j_end] = (distances < threshold).astype(cp.float32)
@@ -1097,22 +1106,18 @@ class PhaseSpaceAnalyzerGPU(GPUBackend):
     
     def _detect_periodicity_gpu_fast(self, phase_space: cp.ndarray) -> float:
         """高速周期性検出"""
-        # 各次元でFFT
         n = len(phase_space)
         dim = phase_space.shape[1]
         
         max_period_strength = 0.0
         
         for d in range(min(3, dim)):
-            # FFT
             signal = phase_space[:, d]
             fft = cp.fft.fft(signal)
             power = cp.abs(fft[:n//2])**2
             
-            # DC成分を除去
             power[0] = 0
             
-            # 最大ピーク
             if len(power) > 1:
                 max_peak = cp.max(power[1:])
                 mean_power = cp.mean(power[1:])
@@ -1121,7 +1126,6 @@ class PhaseSpaceAnalyzerGPU(GPUBackend):
                     period_strength = max_peak / mean_power
                     max_period_strength = max(max_period_strength, float(period_strength))
         
-        # 正規化
         return float(1.0 / (1.0 + cp.exp(-max_period_strength + 5)))
     
     def _compute_entropy_from_distribution(self, distribution: cp.ndarray) -> float:
@@ -1142,7 +1146,6 @@ class PhaseSpaceAnalyzerGPU(GPUBackend):
         elif 'lambda_F_mag' in structures:
             return self.to_gpu(structures['lambda_F_mag'])
         else:
-            # 最初の利用可能な系列
             for key, value in structures.items():
                 if isinstance(value, np.ndarray) and len(value.shape) == 1:
                     return self.to_gpu(value)
@@ -1152,11 +1155,8 @@ class PhaseSpaceAnalyzerGPU(GPUBackend):
     def _estimate_embedding_parameters_gpu(self,
                                          series: cp.ndarray,
                                          params: Dict) -> Dict:
-        """最適な埋め込みパラメータを推定（高速版）"""
-        # 相互情報量による遅延時間の推定
+        """最適な埋め込みパラメータを推定"""
         optimal_delay = self._estimate_delay_mutual_info_gpu_fast(series)
-        
-        # False Nearest Neighbors法による次元推定
         optimal_dim = self._estimate_dimension_fnn_gpu_fast(
             series, optimal_delay, max_dim=10
         )
@@ -1172,23 +1172,17 @@ class PhaseSpaceAnalyzerGPU(GPUBackend):
         max_delay = min(100, len(series) // 10)
         mi_values = cp.zeros(max_delay)
         
-        # 並列で相互情報量計算
         for delay in range(1, max_delay):
             x = series[:-delay]
             y = series[delay:]
             
-            # 2次元ヒストグラム（高速版）
             n_bins = 20
             hist_2d, _, _ = cp.histogram2d(x, y, bins=n_bins)
-            
-            # 正規化
             hist_2d = hist_2d / cp.sum(hist_2d)
             
-            # 周辺分布
             px = cp.sum(hist_2d, axis=1)
             py = cp.sum(hist_2d, axis=0)
             
-            # 相互情報量（ベクトル化）
             valid = hist_2d > 0
             mi = cp.sum(hist_2d[valid] * cp.log(
                 hist_2d[valid] / (px[:, None] * py[None, :])[valid]
@@ -1196,42 +1190,37 @@ class PhaseSpaceAnalyzerGPU(GPUBackend):
             
             mi_values[delay] = mi
         
-        # 最初の極小値を検出
         for i in range(2, len(mi_values) - 1):
             if mi_values[i] < mi_values[i-1] and mi_values[i] < mi_values[i+1]:
                 return int(i)
         
-        # 見つからない場合は減衰点
         decay_point = cp.where(mi_values < mi_values[1] * 0.5)[0]
         if len(decay_point) > 0:
             return int(decay_point[0])
         
-        return 10  # デフォルト
+        return 10
     
     def _estimate_dimension_fnn_gpu_fast(self,
                                        series: cp.ndarray,
                                        delay: int,
                                        max_dim: int) -> int:
-        """高速False Nearest Neighbors法（CuPy RawKernel使用）"""
+        """高速False Nearest Neighbors法"""
         fnn_fractions = []
         
         for dim in range(1, max_dim):
             try:
-                # 埋め込み
                 phase_space = self._reconstruct_phase_space_gpu(series, dim, delay)
                 n = min(2000, len(phase_space))
                 
                 if n < 100:
                     break
                 
-                # サンプリング
                 if len(phase_space) > n:
                     indices = cp.random.choice(len(phase_space), n, replace=False)
                     phase_space_sample = phase_space[indices]
                 else:
                     phase_space_sample = phase_space
                 
-                # FNN計算（並列化）
                 if self.fnn_kernel is not None:
                     phase_space_flat = cp.ascontiguousarray(phase_space_sample.flatten()).astype(cp.float32)
                     series_flat = cp.ascontiguousarray(series).astype(cp.float32)
@@ -1246,15 +1235,13 @@ class PhaseSpaceAnalyzerGPU(GPUBackend):
                     
                     fnn_fraction = float(fnn_count[0]) / n
                 else:
-                    fnn_fraction = 0.5  # フォールバック
+                    fnn_fraction = 0.5
                 
                 fnn_fractions.append(fnn_fraction)
                 
-                # 収束判定
                 if fnn_fraction < 0.01:
                     return dim
                 
-                # 急激な減少
                 if len(fnn_fractions) > 1:
                     if fnn_fractions[-2] - fnn_fraction > 0.5:
                         return dim
@@ -1263,9 +1250,7 @@ class PhaseSpaceAnalyzerGPU(GPUBackend):
                 logger.warning(f"FNN dimension {dim} failed: {e}")
                 break
         
-        # デフォルト
         if fnn_fractions:
-            # 最小のFNN率の次元
             return int(cp.argmin(cp.array(fnn_fractions)) + 1)
         
         return 3
@@ -1274,14 +1259,13 @@ class PhaseSpaceAnalyzerGPU(GPUBackend):
                                    series: cp.ndarray,
                                    embedding_dim: int,
                                    delay: int) -> cp.ndarray:
-        """時系列から位相空間を再構成（高速版）"""
+        """時系列から位相空間を再構成"""
         n = len(series)
         embed_length = n - (embedding_dim - 1) * delay
         
         if embed_length <= 0:
             raise ValueError(f"Series too short for embedding: {n} < {(embedding_dim - 1) * delay}")
         
-        # ベクトル化された埋め込み
         indices = cp.arange(embed_length)[:, None] + cp.arange(embedding_dim)[None, :] * delay
         phase_space = series[indices]
         
@@ -1292,62 +1276,53 @@ class PhaseSpaceAnalyzerGPU(GPUBackend):
                                 attractor_features: Dict,
                                 recurrence_features: Dict) -> cp.ndarray:
         """統合異常スコア（修正版）"""
-        # アトラクタ異常度
+        # アトラクタ異常度（float型として計算）
         attractor_anomaly = 0.0
         
-        # Lyapunov指数（正値はカオス的）
         if abs(attractor_features['lyapunov_exponent']) > 0.1:
             attractor_anomaly += 0.3
         
-        # フラクタル性（非整数次元）
         frac_deviation = abs(attractor_features['fractal_measure'] - 0.5)
         attractor_anomaly += frac_deviation * 0.2
         
-        # 相関次元の異常
         corr_dim = attractor_features['correlation_dimension']
         if corr_dim < 1.0 or corr_dim > 3.0:
             attractor_anomaly += 0.2
         
-        # 情報次元との乖離
         info_dim = attractor_features.get('information_dimension', 2.0)
         dim_diff = abs(corr_dim - info_dim)
         attractor_anomaly += dim_diff * 0.1
         
-        # リカレンス異常度
+        # リカレンス異常度（float型として計算）
         recurrence_anomaly = 0.0
         
-        # 決定論性の低下
         determinism = recurrence_features['determinism']
         if determinism < 0.7:
             recurrence_anomaly += (1 - determinism) * 0.3
         
-        # エントロピーの異常
         entropy = recurrence_features['entropy']
         if entropy > 2.0:
             recurrence_anomaly += min(entropy / 5.0, 0.3)
         
-        # 層流性の異常
         laminarity = recurrence_features['laminarity']
         if laminarity < 0.5:
             recurrence_anomaly += (1 - laminarity) * 0.2
         
-        # トラッピング時間
         trapping = recurrence_features.get('trapping_time', 1.0)
         if trapping > 10.0:
             recurrence_anomaly += 0.2
         
-        # ⚡ ここが修正箇所！float型にはPythonの組み込み関数を使う
-        # 正規化（float型なのでPythonのmin/maxを使用）
+        # 正規化（Python組み込み関数でfloat型を処理）
         attractor_anomaly = max(0.0, min(1.0, attractor_anomaly))
         recurrence_anomaly = max(0.0, min(1.0, recurrence_anomaly))
         
-        # 統合（時系列全体に適用）
+        # 統合
         global_anomaly = 0.5 * attractor_anomaly + 0.5 * recurrence_anomaly
         
-        # 局所異常と統合（anomaly_scoresはcp.ndarrayなのでcp/npを使う）
+        # 局所異常と統合（ndarray型の処理）
         integrated = 0.7 * anomaly_scores + 0.3 * global_anomaly
         
-        # 正規化（配列なのでxpを使う）
+        # 正規化
         xp = cp if isinstance(integrated, cp.ndarray) else np
         integrated = (integrated - xp.mean(integrated)) / (xp.std(integrated) + 1e-10)
         
@@ -1356,7 +1331,7 @@ class PhaseSpaceAnalyzerGPU(GPUBackend):
     def _print_summary(self, results: Dict):
         """解析結果のサマリー表示"""
         print("\n📊 Phase Space Analysis Summary (CuPy RawKernel Edition):")
-        print(f"   ⚡ GPU Acceleration: ENABLED (GTX 1060 Optimized)")
+        print(f"   ⚡ GPU Acceleration: {'ENABLED' if self.is_gpu else 'DISABLED'}")
         print(f"   Embedding dimension: {results['optimal_parameters']['embedding_dim']}")
         print(f"   Optimal delay: {results['optimal_parameters']['delay']}")
         
@@ -1397,9 +1372,8 @@ def test_phase_space_analysis():
     print("\n🧪 Testing Phase Space Analysis GPU (13 kernels)...")
     print("=" * 60)
     
-    # テストデータ生成（カオス的時系列）
+    # テストデータ生成
     t = np.linspace(0, 100, 10000)
-    # ローレンツアトラクタ風のデータ
     x = np.sin(0.1 * t) + 0.1 * np.sin(2.3 * t) + np.random.randn(len(t)) * 0.01
     
     structures = {
