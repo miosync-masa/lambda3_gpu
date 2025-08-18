@@ -3,9 +3,9 @@ Residue Network Analysis (GPU Version)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 残基間ネットワーク解析のGPU実装！
-空間的制約とか、因果ネットワークとか、全部高速に解析するよ〜！💕
+量子もつれ（単一フレーム）から古典的ネットワークまで完全対応版！💕
 
-by 環ちゃん
+by 環ちゃん - 完全修正版
 """
 
 import numpy as np
@@ -42,7 +42,7 @@ class NetworkLink:
     lag: int = 0
     distance: Optional[float] = None
     sync_rate: Optional[float] = None
-    link_type: str = 'causal'  # 'causal', 'sync', 'async'
+    link_type: str = 'causal'  # 'causal', 'sync', 'async', 'quantum'
     confidence: float = 1.0
 
 @dataclass
@@ -68,7 +68,7 @@ class NetworkAnalysisResult:
         return len(self.async_strong_bonds)
 
 # ===============================
-# CUDA Kernels
+# CUDA Kernels（既存のまま）
 # ===============================
 
 # 適応的ウィンドウサイズ計算カーネル
@@ -171,9 +171,7 @@ void filter_by_distance_kernel(
 class ResidueNetworkGPU(GPUBackend):
     """
     残基ネットワーク解析のGPU実装
-    
-    残基間の相互作用ネットワークを高速に解析！
-    空間的制約も考慮した現実的なネットワークを構築するよ〜！
+    量子もつれから古典的ネットワークまで完全対応！
     """
     
     def __init__(self,
@@ -232,7 +230,7 @@ class ResidueNetworkGPU(GPUBackend):
                        residue_coms: Optional[np.ndarray] = None,
                        lag_window: int = 200) -> NetworkAnalysisResult:
         """
-        残基ネットワークを解析
+        残基ネットワークを解析（量子〜古典まで対応）
         
         Parameters
         ----------
@@ -253,53 +251,371 @@ class ResidueNetworkGPU(GPUBackend):
         with self.timer('analyze_network'):
             logger.info("🎯 Analyzing residue interaction network on GPU")
             
-            residue_ids = sorted(residue_anomaly_scores.keys())
-            n_residues = len(residue_ids)
+            # フレーム数を確認
+            if not residue_anomaly_scores:
+                logger.warning("No anomaly scores provided")
+                return self._create_empty_result()
             
-            # 1. 適応的ウィンドウサイズ計算
-            with self.timer('adaptive_windows'):
-                adaptive_windows = self._compute_adaptive_windows(residue_anomaly_scores)
+            first_score = next(iter(residue_anomaly_scores.values()))
+            n_frames = len(first_score)
             
-            # 2. 空間制約計算
-            with self.timer('spatial_constraints'):
-                if residue_coms is not None:
-                    spatial_constraints = self._compute_spatial_constraints(
-                        residue_ids, residue_coms
-                    )
-                else:
-                    logger.warning("No spatial information provided, analyzing all pairs")
-                    spatial_constraints = self._create_all_pairs(residue_ids)
-            
-            # 3. ネットワーク構築
-            with self.timer('build_network'):
-                networks = self._build_networks(
-                    residue_anomaly_scores,
-                    residue_coupling,
-                    spatial_constraints,
-                    adaptive_windows,
-                    lag_window
+            # ========================================
+            # フレーム数による処理分岐（新規追加！）
+            # ========================================
+            if n_frames <= 0:
+                logger.warning("No frames to analyze")
+                return self._create_empty_result()
+                
+            elif n_frames == 1:
+                logger.info("   ⚛️ Single frame detected - Quantum entanglement mode!")
+                return self._analyze_quantum_entanglement(
+                    residue_anomaly_scores, residue_coupling, residue_coms
                 )
-            
-            # 4. 統計情報計算
-            network_stats = self._compute_network_stats(networks, spatial_constraints)
-            
-            # 結果をまとめる
-            result = NetworkAnalysisResult(
-                causal_network=networks['causal'],
-                sync_network=networks['sync'],
-                async_strong_bonds=networks['async'],
-                spatial_constraints=spatial_constraints,
-                adaptive_windows=adaptive_windows,
-                network_stats=network_stats
+                
+            elif n_frames == 2:
+                logger.info("   🚇 Two frames detected - Quantum tunneling mode!")
+                return self._analyze_quantum_tunneling(
+                    residue_anomaly_scores, residue_coupling, residue_coms
+                )
+                
+            elif n_frames == 3:
+                logger.info("   ⚡ Three frames detected - Quantum jump mode!")
+                return self._analyze_quantum_jump(
+                    residue_anomaly_scores, residue_coupling, residue_coms
+                )
+                
+            elif n_frames < 10:
+                logger.info(f"   📊 Short time series ({n_frames} frames) - Simplified analysis")
+                return self._analyze_short_timeseries(
+                    residue_anomaly_scores, residue_coupling, residue_coms
+                )
+                
+            else:
+                logger.info(f"   🌐 {n_frames} frames - Classical network analysis")
+                return self._analyze_classical_network(
+                    residue_anomaly_scores, residue_coupling, residue_coms, lag_window
+                )
+    
+    # ========================================
+    # 新規追加：量子解析メソッド
+    # ========================================
+    
+    def _analyze_quantum_entanglement(self,
+                                     residue_anomaly_scores: Dict[int, np.ndarray],
+                                     residue_coupling: np.ndarray,
+                                     residue_coms: Optional[np.ndarray]) -> NetworkAnalysisResult:
+        """単一フレーム：量子もつれ解析"""
+        
+        residue_ids = sorted(residue_anomaly_scores.keys())
+        n_residues = len(residue_ids)
+        
+        # カップリング行列から量子もつれペアを検出
+        if residue_coupling.ndim == 3 and residue_coupling.shape[0] > 0:
+            coupling = residue_coupling[0]  # 最初のフレーム
+        elif residue_coupling.ndim == 2:
+            coupling = residue_coupling
+        else:
+            logger.warning("Invalid coupling matrix shape")
+            return self._create_empty_result()
+        
+        # 強いカップリング = 量子もつれ
+        mean_coupling = float(np.mean(coupling))
+        std_coupling = float(np.std(coupling))
+        threshold = mean_coupling + 2 * std_coupling
+        
+        async_bonds = []
+        
+        for i, res_i in enumerate(residue_ids):
+            for j, res_j in enumerate(residue_ids[i+1:], i+1):
+                if res_i < coupling.shape[0] and res_j < coupling.shape[1]:
+                    if coupling[res_i, res_j] > threshold:
+                        link = NetworkLink(
+                            from_res=res_i,
+                            to_res=res_j,
+                            strength=float(coupling[res_i, res_j]),
+                            lag=0,  # 瞬間的
+                            sync_rate=0.0,  # 非同期（時間ゼロ）
+                            link_type='quantum',
+                            confidence=1.0
+                        )
+                        async_bonds.append(link)
+        
+        # 空間制約（あれば）
+        spatial_constraints = {}
+        if residue_coms is not None and residue_coms.shape[0] > 0:
+            spatial_constraints = self._compute_spatial_constraints(
+                residue_ids, residue_coms
             )
-            
-            self._print_summary(result)
-            
-            return result
+        
+        return NetworkAnalysisResult(
+            causal_network=[],
+            sync_network=[],
+            async_strong_bonds=async_bonds,
+            spatial_constraints=spatial_constraints,
+            adaptive_windows={res_id: 1 for res_id in residue_ids},
+            network_stats={
+                'n_causal': 0,
+                'n_sync': 0,
+                'n_async': len(async_bonds),
+                'event_type': 'QUANTUM_ENTANGLEMENT',
+                'quantum_signature': True
+            }
+        )
+    
+    def _analyze_quantum_tunneling(self,
+                                  residue_anomaly_scores: Dict[int, np.ndarray],
+                                  residue_coupling: np.ndarray,
+                                  residue_coms: Optional[np.ndarray]) -> NetworkAnalysisResult:
+        """2フレーム：量子トンネリング解析"""
+        
+        residue_ids = sorted(residue_anomaly_scores.keys())
+        async_bonds = []
+        
+        # 始点→終点の変化を解析
+        for i, res_i in enumerate(residue_ids):
+            for j, res_j in enumerate(residue_ids[i+1:], i+1):
+                scores_i = residue_anomaly_scores[res_i]
+                scores_j = residue_anomaly_scores[res_j]
+                
+                if len(scores_i) == 2 and len(scores_j) == 2:
+                    # 差分計算
+                    delta_i = scores_i[1] - scores_i[0]
+                    delta_j = scores_j[1] - scores_j[0]
+                    
+                    # 同じ方向に大きく変化 = トンネリングペア
+                    threshold = 0.5  # 調整可能
+                    if delta_i * delta_j > 0 and abs(delta_i) > threshold and abs(delta_j) > threshold:
+                        link = NetworkLink(
+                            from_res=res_i,
+                            to_res=res_j,
+                            strength=float(np.sqrt(abs(delta_i * delta_j))),
+                            lag=1,
+                            sync_rate=0.1,
+                            link_type='quantum',
+                            confidence=0.8
+                        )
+                        async_bonds.append(link)
+        
+        spatial_constraints = {}
+        if residue_coms is not None and residue_coms.shape[0] > 0:
+            spatial_constraints = self._compute_spatial_constraints(
+                residue_ids, residue_coms
+            )
+        
+        return NetworkAnalysisResult(
+            causal_network=[],
+            sync_network=[],
+            async_strong_bonds=async_bonds,
+            spatial_constraints=spatial_constraints,
+            adaptive_windows={res_id: 2 for res_id in residue_ids},
+            network_stats={
+                'n_causal': 0,
+                'n_sync': 0,
+                'n_async': len(async_bonds),
+                'event_type': 'QUANTUM_TUNNELING',
+                'quantum_signature': True
+            }
+        )
+    
+    def _analyze_quantum_jump(self,
+                             residue_anomaly_scores: Dict[int, np.ndarray],
+                             residue_coupling: np.ndarray,
+                             residue_coms: Optional[np.ndarray]) -> NetworkAnalysisResult:
+        """3フレーム：量子ジャンプ解析"""
+        
+        residue_ids = sorted(residue_anomaly_scores.keys())
+        async_bonds = []
+        
+        # エネルギー準位変化を推定
+        for i, res_i in enumerate(residue_ids):
+            for j, res_j in enumerate(residue_ids[i+1:], i+1):
+                scores_i = residue_anomaly_scores[res_i]
+                scores_j = residue_anomaly_scores[res_j]
+                
+                if len(scores_i) == 3 and len(scores_j) == 3:
+                    # 中間点での変化
+                    jump_i = abs(scores_i[1] - scores_i[0]) + abs(scores_i[2] - scores_i[1])
+                    jump_j = abs(scores_j[1] - scores_j[0]) + abs(scores_j[2] - scores_j[1])
+                    
+                    threshold = 0.3
+                    if jump_i > threshold and jump_j > threshold:
+                        link = NetworkLink(
+                            from_res=res_i,
+                            to_res=res_j,
+                            strength=float(np.sqrt(jump_i * jump_j)),
+                            lag=2,
+                            sync_rate=0.2,
+                            link_type='quantum',
+                            confidence=0.7
+                        )
+                        async_bonds.append(link)
+        
+        spatial_constraints = {}
+        if residue_coms is not None and residue_coms.shape[0] > 0:
+            spatial_constraints = self._compute_spatial_constraints(
+                residue_ids, residue_coms
+            )
+        
+        return NetworkAnalysisResult(
+            causal_network=[],
+            sync_network=[],
+            async_strong_bonds=async_bonds,
+            spatial_constraints=spatial_constraints,
+            adaptive_windows={res_id: 3 for res_id in residue_ids},
+            network_stats={
+                'n_causal': 0,
+                'n_sync': 0,
+                'n_async': len(async_bonds),
+                'event_type': 'QUANTUM_JUMP',
+                'quantum_signature': True
+            }
+        )
+    
+    def _analyze_short_timeseries(self,
+                                 residue_anomaly_scores: Dict[int, np.ndarray],
+                                 residue_coupling: np.ndarray,
+                                 residue_coms: Optional[np.ndarray]) -> NetworkAnalysisResult:
+        """4-9フレーム：短期時系列解析（差分ベース）"""
+        
+        residue_ids = sorted(residue_anomaly_scores.keys())
+        causal_links = []
+        sync_links = []
+        async_bonds = []
+        
+        # ペアごとに差分解析
+        for i, res_i in enumerate(residue_ids):
+            for j, res_j in enumerate(residue_ids[i+1:], i+1):
+                scores_i = residue_anomaly_scores[res_i]
+                scores_j = residue_anomaly_scores[res_j]
+                
+                n_frames = len(scores_i)
+                
+                # 前半と後半の平均を比較
+                mid_point = n_frames // 2
+                first_half_i = np.mean(scores_i[:mid_point])
+                second_half_i = np.mean(scores_i[mid_point:])
+                first_half_j = np.mean(scores_j[:mid_point])
+                second_half_j = np.mean(scores_j[mid_point:])
+                
+                # 変化の向きで因果性推定
+                change_i = second_half_i - first_half_i
+                change_j = second_half_j - first_half_j
+                
+                threshold = 0.2
+                
+                if abs(change_i) > threshold and abs(change_j) > threshold:
+                    # 同期性チェック
+                    if change_i * change_j > 0:  # 同じ向き
+                        link = NetworkLink(
+                            from_res=res_i,
+                            to_res=res_j,
+                            strength=float(np.sqrt(abs(change_i * change_j))),
+                            lag=0,
+                            sync_rate=0.5,
+                            link_type='sync'
+                        )
+                        sync_links.append(link)
+                    else:  # 逆向き
+                        # どちらが先かを推定
+                        if abs(change_i) > abs(change_j):
+                            from_res, to_res = res_i, res_j
+                        else:
+                            from_res, to_res = res_j, res_i
+                        
+                        link = NetworkLink(
+                            from_res=from_res,
+                            to_res=to_res,
+                            strength=float(max(abs(change_i), abs(change_j))),
+                            lag=n_frames // 2,
+                            sync_rate=0.1,
+                            link_type='causal'
+                        )
+                        causal_links.append(link)
+                        
+                        # 非同期強結合チェック
+                        if link.strength > 0.5:
+                            async_bonds.append(link)
+        
+        spatial_constraints = {}
+        if residue_coms is not None and residue_coms.shape[0] > 0:
+            spatial_constraints = self._compute_spatial_constraints(
+                residue_ids, residue_coms
+            )
+        
+        return NetworkAnalysisResult(
+            causal_network=causal_links,
+            sync_network=sync_links,
+            async_strong_bonds=async_bonds,
+            spatial_constraints=spatial_constraints,
+            adaptive_windows={res_id: n_frames for res_id in residue_ids},
+            network_stats={
+                'n_causal': len(causal_links),
+                'n_sync': len(sync_links),
+                'n_async': len(async_bonds),
+                'event_type': 'SHORT_TIMESERIES',
+                'n_frames': n_frames
+            }
+        )
+    
+    def _analyze_classical_network(self,
+                                 residue_anomaly_scores: Dict[int, np.ndarray],
+                                 residue_coupling: np.ndarray,
+                                 residue_coms: Optional[np.ndarray],
+                                 lag_window: int) -> NetworkAnalysisResult:
+        """10フレーム以上：既存の古典的ネットワーク解析"""
+        
+        residue_ids = sorted(residue_anomaly_scores.keys())
+        n_residues = len(residue_ids)
+        
+        # 1. 適応的ウィンドウサイズ計算
+        with self.timer('adaptive_windows'):
+            adaptive_windows = self._compute_adaptive_windows(residue_anomaly_scores)
+        
+        # 2. 空間制約計算
+        with self.timer('spatial_constraints'):
+            if residue_coms is not None:
+                spatial_constraints = self._compute_spatial_constraints(
+                    residue_ids, residue_coms
+                )
+            else:
+                logger.warning("No spatial information provided, analyzing all pairs")
+                spatial_constraints = self._create_all_pairs(residue_ids)
+        
+        # 3. ネットワーク構築（既存のメソッド）
+        with self.timer('build_network'):
+            networks = self._build_networks(
+                residue_anomaly_scores,
+                residue_coupling,
+                spatial_constraints,
+                adaptive_windows,
+                lag_window
+            )
+        
+        # 4. 統計情報計算
+        network_stats = self._compute_network_stats(networks, spatial_constraints)
+        network_stats['event_type'] = 'CLASSICAL'
+        
+        # 結果をまとめる
+        result = NetworkAnalysisResult(
+            causal_network=networks['causal'],
+            sync_network=networks['sync'],
+            async_strong_bonds=networks['async'],
+            spatial_constraints=spatial_constraints,
+            adaptive_windows=adaptive_windows,
+            network_stats=network_stats
+        )
+        
+        self._print_summary(result)
+        
+        return result
+    
+    # ========================================
+    # 既存のメソッド（変更なし）
+    # ========================================
     
     def _compute_adaptive_windows(self,
                                 anomaly_scores: Dict[int, np.ndarray]) -> Dict[int, int]:
-        """適応的ウィンドウサイズ計算（GPU版）"""
+        """適応的ウィンドウサイズ計算（既存のまま）"""
         n_residues = len(anomaly_scores)
         residue_ids = sorted(anomaly_scores.keys())
         
@@ -361,7 +677,7 @@ class ResidueNetworkGPU(GPUBackend):
     def _compute_spatial_constraints(self,
                                    residue_ids: List[int],
                                    residue_coms: np.ndarray) -> Dict[Tuple[int, int], float]:
-        """空間制約計算（GPU版）"""
+        """空間制約計算（既存のまま）"""
         n_frames, n_all_residues, _ = residue_coms.shape
         
         # サンプルフレームで平均距離計算
@@ -402,7 +718,7 @@ class ResidueNetworkGPU(GPUBackend):
         return spatial_constraints
     
     def _create_all_pairs(self, residue_ids: List[int]) -> Dict[Tuple[int, int], float]:
-        """全ペアを作成（空間情報なし）"""
+        """全ペアを作成（既存のまま）"""
         pairs = {}
         for i, res_i in enumerate(residue_ids):
             for j, res_j in enumerate(residue_ids[i+1:], i+1):
@@ -415,7 +731,7 @@ class ResidueNetworkGPU(GPUBackend):
                        spatial_constraints: Dict[Tuple[int, int], float],
                        adaptive_windows: Dict[int, int],
                        lag_window: int) -> Dict[str, List[NetworkLink]]:
-        """ネットワーク構築"""
+        """ネットワーク構築（既存のまま）"""
         causal_links = []
         sync_links = []
         async_bonds = []
@@ -469,7 +785,7 @@ class ResidueNetworkGPU(GPUBackend):
                           spatial_constraints: Dict[Tuple[int, int], float],
                           adaptive_windows: Dict[int, int],
                           lag_window: int) -> List[Dict]:
-        """ペアのバッチ解析"""
+        """ペアのバッチ解析（修正版）"""
         results = []
         
         for res_i, res_j in pairs:
@@ -479,11 +795,17 @@ class ResidueNetworkGPU(GPUBackend):
             scores_i = anomaly_scores[res_i]
             scores_j = anomaly_scores[res_j]
             
+            # フレーム数チェック（新規追加！）
+            n_frames = len(scores_i)
+            if n_frames < 10:
+                # 短すぎる場合はスキップ（上位メソッドで処理済み）
+                continue
+            
             # 最適ウィンドウ
             window = (adaptive_windows.get(res_i, 100) + 
                      adaptive_windows.get(res_j, 100)) // 2
             
-            # 因果性解析（簡略版）
+            # 因果性解析（既存のまま）
             max_correlation = 0.0
             optimal_lag = 0
             
@@ -494,41 +816,51 @@ class ResidueNetworkGPU(GPUBackend):
                 
                 for lag in range(0, min(lag_window, len(scores_i)//2), 10):
                     if lag < len(scores_i):
-                        # 前方向
-                        corr = float(self.xp.corrcoef(
-                            scores_i_gpu[:-lag] if lag > 0 else scores_i_gpu,
-                            scores_j_gpu[lag:] if lag > 0 else scores_j_gpu
-                        )[0, 1])
-                        
-                        if abs(corr) > abs(max_correlation):
-                            max_correlation = corr
-                            optimal_lag = lag
-                        
-                        # 後方向
-                        if lag > 0:
+                        try:
+                            # 前方向
                             corr = float(self.xp.corrcoef(
-                                scores_i_gpu[lag:],
-                                scores_j_gpu[:-lag]
+                                scores_i_gpu[:-lag] if lag > 0 else scores_i_gpu,
+                                scores_j_gpu[lag:] if lag > 0 else scores_j_gpu
                             )[0, 1])
                             
                             if abs(corr) > abs(max_correlation):
                                 max_correlation = corr
-                                optimal_lag = -lag
+                                optimal_lag = lag
+                            
+                            # 後方向
+                            if lag > 0:
+                                corr = float(self.xp.corrcoef(
+                                    scores_i_gpu[lag:],
+                                    scores_j_gpu[:-lag]
+                                )[0, 1])
+                                
+                                if abs(corr) > abs(max_correlation):
+                                    max_correlation = corr
+                                    optimal_lag = -lag
+                        except:
+                            # NaNやエラーの場合はスキップ
+                            continue
             else:
                 # CPU版（同じロジック）
                 for lag in range(0, min(lag_window, len(scores_i)//2), 10):
                     if lag < len(scores_i):
-                        corr = np.corrcoef(
-                            scores_i[:-lag] if lag > 0 else scores_i,
-                            scores_j[lag:] if lag > 0 else scores_j
-                        )[0, 1]
-                        
-                        if abs(corr) > abs(max_correlation):
-                            max_correlation = corr
-                            optimal_lag = lag
+                        try:
+                            corr = np.corrcoef(
+                                scores_i[:-lag] if lag > 0 else scores_i,
+                                scores_j[lag:] if lag > 0 else scores_j
+                            )[0, 1]
+                            
+                            if abs(corr) > abs(max_correlation):
+                                max_correlation = corr
+                                optimal_lag = lag
+                        except:
+                            continue
             
             # 同期率
-            sync_rate = float(np.corrcoef(scores_i, scores_j)[0, 1])
+            try:
+                sync_rate = float(np.corrcoef(scores_i, scores_j)[0, 1])
+            except:
+                sync_rate = 0.0
             
             # リンク作成
             distance = spatial_constraints.get((res_i, res_j), 0.0)
@@ -580,7 +912,7 @@ class ResidueNetworkGPU(GPUBackend):
     
     def _filter_causal_network(self,
                              causal_links: List[NetworkLink]) -> List[NetworkLink]:
-        """因果ネットワークのフィルタリング"""
+        """因果ネットワークのフィルタリング（既存のまま）"""
         # 強度でソート
         causal_links.sort(key=lambda x: x.strength, reverse=True)
         
@@ -601,7 +933,7 @@ class ResidueNetworkGPU(GPUBackend):
     def _compute_network_stats(self,
                              networks: Dict[str, List[NetworkLink]],
                              spatial_constraints: Dict) -> Dict[str, Any]:
-        """ネットワーク統計計算"""
+        """ネットワーク統計計算（既存のまま）"""
         # 次数分布
         in_degree = defaultdict(int)
         out_degree = defaultdict(int)
@@ -634,20 +966,34 @@ class ResidueNetworkGPU(GPUBackend):
         }
     
     def _print_summary(self, result: NetworkAnalysisResult):
-        """結果サマリー出力"""
+        """結果サマリー出力（既存のまま）"""
         logger.info("\n🌐 Network Analysis Summary:")
         logger.info(f"   Causal links: {result.n_causal_links}")
         logger.info(f"   Synchronous links: {result.n_sync_links}")
         logger.info(f"   Async strong bonds: {result.n_async_bonds}")
         
         stats = result.network_stats
-        if stats['hub_residues']:
+        if stats.get('event_type'):
+            logger.info(f"   Event type: {stats['event_type']}")
+        
+        if stats.get('hub_residues'):
             logger.info(f"\n   Top hub residues:")
             for res_id, degree in stats['hub_residues']:
                 logger.info(f"     Residue {res_id}: {degree} outgoing links")
+    
+    def _create_empty_result(self) -> NetworkAnalysisResult:
+        """空の結果を生成"""
+        return NetworkAnalysisResult(
+            causal_network=[],
+            sync_network=[],
+            async_strong_bonds=[],
+            spatial_constraints={},
+            adaptive_windows={},
+            network_stats={'error': 'No data to analyze'}
+        )
 
 # ===============================
-# Standalone Functions
+# Standalone Functions（既存のまま）
 # ===============================
 
 def analyze_residue_network_gpu(residue_anomaly_scores: Dict[int, np.ndarray],
