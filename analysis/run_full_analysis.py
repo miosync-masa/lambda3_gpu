@@ -206,7 +206,7 @@ def run_quantum_validation_pipeline(
     # Step 3: Two-Stage詳細解析（メイン）
     # ========================================
     two_stage_result = None
-    
+
     if enable_two_stage and len(lambda_result.critical_events) > 0:
         logger.info("\n🔬 Running Two-Stage Residue-Level Analysis...")
         logger.info("   This is the main analysis for protein dynamics")
@@ -218,8 +218,8 @@ def run_quantum_validation_pipeline(
             elif 'n_protein_residues' in metadata:
                 n_protein_residues = metadata['n_protein_residues']
             else:
-                # デフォルト値（TrpCageの場合）
-                n_protein_residues = 20
+                # Chignolinのデフォルト値
+                n_protein_residues = 10  # ChignolinなのでTrpCageの20じゃなくて10！
                 logger.warning(f"   Using default n_residues: {n_protein_residues}")
             
             logger.info(f"   Protein residues: {n_protein_residues}")
@@ -228,22 +228,41 @@ def run_quantum_validation_pipeline(
             protein_trajectory = trajectory[:, protein_indices, :]
             logger.info(f"   Protein trajectory: {protein_trajectory.shape}")
             
-            # イベント窓の作成（拡張版 - 解析に十分な幅を確保）
-            events = []
-            MIN_WINDOW_SIZE = 50  # 最小ウィンドウサイズ
-            CONTEXT_FRAMES = 100  # コンテキストフレーム数
+            # ========================================
+            # 🎯 TOP50イベント選択（修正版）
+            # ========================================
+            MAX_EVENTS = 50  # 最大50イベント処理
+            MIN_WINDOW_SIZE = 50
+            CONTEXT_FRAMES = 100
             
-            for i, event in enumerate(lambda_result.critical_events[:10]):  # 最大10イベント
+            # 異常スコアでソート（高い順）
+            sorted_events = sorted(
+                lambda_result.critical_events,
+                key=lambda x: x.get('anomaly_score', x.get('score', 0)) if isinstance(x, dict) else 0,
+                reverse=True
+            )
+            
+            # TOP50（または全部）を選択
+            selected_events = sorted_events[:min(MAX_EVENTS, len(sorted_events))]
+            logger.info(f"   Selected TOP {len(selected_events)} events from {len(lambda_result.critical_events)} total")
+            
+            # イベント窓の作成
+            events = []
+            for i, event in enumerate(selected_events):
                 # イベントの中心フレームを特定
                 if isinstance(event, (tuple, list)) and len(event) >= 2:
                     center = (int(event[0]) + int(event[1])) // 2
                     event_width = int(event[1]) - int(event[0]) + 1
+                    score = event[2] if len(event) > 2 else 0
                 elif isinstance(event, dict):
                     center = event.get('frame', event.get('start', 0))
-                    event_width = event.get('end', center) - event.get('start', center) + 1
+                    end_frame = event.get('end', center)
+                    event_width = end_frame - event.get('start', center) + 1
+                    score = event.get('anomaly_score', event.get('score', 0))
                 elif hasattr(event, 'frame'):
                     center = event.frame
                     event_width = 1
+                    score = getattr(event, 'anomaly_score', getattr(event, 'score', 0))
                 else:
                     continue
                 
@@ -262,27 +281,29 @@ def run_quantum_validation_pipeline(
                     elif end == n_frames - 1:
                         start = max(0, end - MIN_WINDOW_SIZE)
                 
-                # イベント名を付与
-                event_name = f'critical_{i}'
+                # イベント名を付与（スコア付き）
+                event_name = f'top_{i:02d}_score_{score:.2f}'
                 events.append((start, end, event_name))
-                logger.info(f"     Event {event_name}: frames {start}-{end} ({end-start+1} frames)")
+                
+                # 最初の10個だけログ表示
+                if i < 10:
+                    logger.info(f"     Event {event_name}: frames {start}-{end} ({end-start+1} frames)")
             
             if events:
                 logger.info(f"   Processing {len(events)} events for residue analysis")
                 logger.info(f"   Average window size: {np.mean([e[1]-e[0]+1 for e in events]):.1f} frames")
                 
-                # 残基解析設定（感度を上げて詳細に解析）
+                # 残基解析設定（最適化版）
                 residue_config = ResidueAnalysisConfig()
-                residue_config.sensitivity = 1.5  # 感度を適度に
-                residue_config.correlation_threshold = 0.10  # 閾値を下げる
+                residue_config.sensitivity = 1.5
+                residue_config.correlation_threshold = 0.10
                 residue_config.use_confidence = True
                 residue_config.n_bootstrap = 100
                 residue_config.parallel_events = True
-                residue_config.min_window_size = 20  # 最小ウィンドウ
-                residue_config.max_window_size = 200  # 最大ウィンドウ
+                residue_config.min_window_size = 20
+                residue_config.max_window_size = 200
                 residue_config.adaptive_window = True
                 
-                # デバッグ情報
                 logger.info(f"   Config: sensitivity={residue_config.sensitivity}, "
                           f"threshold={residue_config.correlation_threshold}")
                 
@@ -290,34 +311,23 @@ def run_quantum_validation_pipeline(
                 analyzer = TwoStageAnalyzerGPU(residue_config)
                 logger.info("   Two-stage analyzer initialized")
                 
-                # Anomaly scoresを準備（Lambda³結果から）
-                anomaly_scores = None
-                if hasattr(lambda_result, 'anomaly_scores'):
-                    # 各イベントのanomaly scoresを抽出
-                    anomaly_scores = {}
-                    for start, end, name in events:
-                        if 'structural' in lambda_result.anomaly_scores:
-                            scores = lambda_result.anomaly_scores['structural'][start:end+1]
-                            anomaly_scores[name] = scores
-                        elif 'combined' in lambda_result.anomaly_scores:
-                            scores = lambda_result.anomaly_scores['combined'][start:end+1]
-                            anomaly_scores[name] = scores
-                    
-                    if anomaly_scores:
-                        logger.info(f"   Anomaly scores prepared for {len(anomaly_scores)} events")
-                
-                # タンパク質のみのトラジェクトリで解析
+                # ========================================
+                # 🔧 analyze_trajectory呼び出し（修正版）
+                # ========================================
+                # anomaly_scores引数を削除！
                 two_stage_result = analyzer.analyze_trajectory(
                     protein_trajectory,      # タンパク質のみ
                     lambda_result,          # マクロ結果（anomaly_scores含む）
-                    events,                 # イベントリスト（拡張済み）
-                    n_protein_residues,     # タンパク質残基数
-                    anomaly_scores=anomaly_scores  # 明示的に渡す
+                    events,                 # イベントリスト（TOP50）
+                    n_protein_residues      # タンパク質残基数
+                    # anomaly_scores=anomaly_scores  ← 削除！
                 )
                 
                 logger.info("   ✅ Two-stage analysis complete")
                 
-                # ネットワーク統計を表示
+                # ========================================
+                # 結果の表示（既存のまま）
+                # ========================================
                 if hasattr(two_stage_result, 'global_network_stats'):
                     stats = two_stage_result.global_network_stats
                     logger.info("\n   🌐 Global Network Statistics:")
@@ -325,22 +335,9 @@ def run_quantum_validation_pipeline(
                     logger.info(f"     Total sync links: {stats.get('total_sync_links', 0)}")
                     logger.info(f"     Total async bonds: {stats.get('total_async_bonds', 0)}")
                     
-                    # 結果が0の場合の診断
                     if stats.get('total_causal_links', 0) == 0:
-                        logger.warning("   ⚠️ No causal links detected. Possible causes:")
-                        logger.warning("     - Correlation threshold too high")
-                        logger.warning("     - Window size too small")
-                        logger.warning("     - Insufficient anomaly in the data")
-                        
-                        # 再試行の提案
-                        logger.info("\n   🔄 Attempting re-analysis with adjusted parameters...")
-                        residue_config.correlation_threshold = 0.05  # さらに下げる
-                        residue_config.sensitivity = 1.0
-                        residue_config.min_lag = 1
-                        residue_config.max_lag = 20
-                        
-                        # 再解析（オプション）
-                        # two_stage_result = analyzer.analyze_trajectory(...)
+                        logger.warning("   ⚠️ No causal links detected")
+                        logger.info("   Consider adjusting parameters for re-analysis")
                     else:
                         logger.info(f"     Async/Causal ratio: {stats.get('async_to_causal_ratio', 0):.2%}")
                         logger.info(f"     Mean adaptive window: {stats.get('mean_adaptive_window', 0):.1f} frames")
@@ -358,39 +355,8 @@ def run_quantum_validation_pipeline(
                         if top_residues:
                             logger.info("\n   🎯 Top Important Residues:")
                             for res_id, score in top_residues:
-                                if 'protein' in metadata and 'residue_mapping' in metadata['protein']:
-                                    res_name = metadata['protein']['residue_mapping'].get(
-                                        str(res_id), {}
-                                    ).get('name', f'RES{res_id+1}')
-                                else:
-                                    res_name = f'RES{res_id+1}'
+                                res_name = f'RES{res_id+1}'
                                 logger.info(f"     {res_name}: {score:.3f}")
-                    else:
-                        logger.warning("   No residue importance scores calculated")
-                
-                # 介入ポイントの提案
-                if hasattr(two_stage_result, 'suggested_intervention_points'):
-                    points = two_stage_result.suggested_intervention_points[:3]
-                    if points:
-                        logger.info(f"\n   💡 Suggested intervention points: {points}")
-                    else:
-                        logger.info("\n   💡 No specific intervention points identified")
-                        
-                # 詳細診断情報
-                if verbose:
-                    logger.info("\n   📊 Detailed Diagnostics:")
-                    if hasattr(two_stage_result, 'residue_analyses'):
-                        for event_name, analysis in two_stage_result.residue_analyses.items():
-                            logger.info(f"     {event_name}:")
-                            if hasattr(analysis, 'residue_events'):
-                                logger.info(f"       - Residue events: {len(analysis.residue_events)}")
-                            if hasattr(analysis, 'network_result'):
-                                network = analysis.network_result
-                                if hasattr(network, 'causal_network'):
-                                    logger.info(f"       - Causal links: {len(network.causal_network)}")
-                                if hasattr(network, 'async_strong_bonds'):
-                                    logger.info(f"       - Async bonds: {len(network.async_strong_bonds)}")
-                    
             else:
                 logger.warning("   No events suitable for Two-Stage analysis")
                 
