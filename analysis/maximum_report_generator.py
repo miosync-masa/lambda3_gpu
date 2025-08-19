@@ -197,7 +197,6 @@ def generate_maximum_report_from_results_v4(
     if hasattr(lambda_result, 'lambda_structures'):
         structures = lambda_result.lambda_structures
         report += "\n### Lambda Structure Components\n"
-        structures = lambda_result.structures
         
         if 'lambda_f' in structures:
             lambda_vals = structures['lambda_f']
