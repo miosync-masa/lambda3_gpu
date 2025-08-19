@@ -219,8 +219,8 @@ def run_quantum_validation_pipeline(
             
             # TOP50イベント選択
             MAX_EVENTS = 50
-            MIN_WINDOW_SIZE = 50
-            CONTEXT_FRAMES = 100
+            MIN_WINDOW_SIZE = 10
+            CONTEXT_FRAMES = 20
             
             sorted_events = sorted(
                 lambda_result.critical_events,
@@ -235,19 +235,23 @@ def run_quantum_validation_pipeline(
             events = []
             for i, event in enumerate(selected_events):
                 if isinstance(event, (tuple, list)) and len(event) >= 2:
-                    center = (int(event[0]) + int(event[1])) // 2
-                    score = event[2] if len(event) > 2 else 0
-                elif isinstance(event, dict):
-                    center = event.get('frame', event.get('start', 0))
-                    score = event.get('anomaly_score', 0)
-                else:
-                    continue
-                
-                window_size = max(MIN_WINDOW_SIZE, CONTEXT_FRAMES)
-                half_window = window_size // 2
-                
-                start = max(0, center - half_window)
-                end = min(n_frames - 1, center + half_window)
+                    original_start = int(event[0])
+                    original_end = int(event[1])
+                    duration = original_end - original_start
+                    
+                    # イベントサイズに応じて適応的に！
+                    if duration == 0:  # 0フレーム問題
+                        window_size = 30
+                    elif duration < 10:  # 短いイベント
+                        window_size = max(MIN_WINDOW_SIZE, duration * 2)
+                    else:  # 十分長いイベント
+                        window_size = duration + 10  # 少しだけ余裕
+                    
+                    center = (original_start + original_end) // 2
+                    half_window = window_size // 2
+                    
+                    start = max(0, center - half_window)
+                    end = min(n_frames - 1, center + half_window)
                 
                 event_name = f'top_{i:02d}_score_{score:.2f}'
                 events.append((start, end, event_name))
