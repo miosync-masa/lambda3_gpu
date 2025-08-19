@@ -1,6 +1,7 @@
 """
 Lambda³ GPU版解析モジュール
 MD軌道の完全GPU化解析パイプライン
+Version 4.0対応版
 """
 
 from .md_lambda3_detector_gpu import (
@@ -30,9 +31,9 @@ from .run_full_analysis import (
     run_quantum_validation_pipeline,
 )
 
-# 🆕🆕 最強レポート生成機能！
+# 🆕🆕 最強レポート生成機能！（v4.0対応）
 from .maximum_report_generator import (
-    generate_maximum_report_from_results,
+    generate_maximum_report_from_results_v4,
 )
 
 __all__ = [
@@ -58,11 +59,11 @@ __all__ = [
     # フル解析パイプライン
     'run_quantum_validation_pipeline',
     
-    # 🆕 最強レポート生成
-    'generate_maximum_report_from_results',
+    # 🆕 最強レポート生成（v4.0）
+    'generate_maximum_report_from_results_v4',
 ]
 
-__version__ = '1.2.0'  # バージョンアップ！
+__version__ = '1.3.0'  # v4.0対応メジャーアップデート！
 
 # ========================================
 # 便利な一括実行関数
@@ -89,7 +90,7 @@ def run_full_analysis(trajectory_path: str,
     Returns
     -------
     dict
-        解析結果
+        解析結果（v4.0形式）
         
     Examples
     --------
@@ -115,12 +116,12 @@ def run_full_analysis(trajectory_path: str,
     )
 
 # ========================================
-# 最強レポート生成の便利関数
+# 最強レポート生成の便利関数（v4.0対応）
 # ========================================
 
 def generate_max_report(results_or_path, **kwargs):
     """
-    最強レポートを生成する超便利関数！
+    最強レポートを生成する超便利関数！（v4.0対応版）
     
     Parameters
     ----------
@@ -137,11 +138,11 @@ def generate_max_report(results_or_path, **kwargs):
     >>> report = generate_max_report('traj.npy', metadata_path='meta.json')
     """
     if isinstance(results_or_path, dict):
-        # 既存の結果から
-        return generate_maximum_report_from_results(
+        # 既存の結果から（v4.0形式）
+        return generate_maximum_report_from_results_v4(
             lambda_result=results_or_path.get('lambda_result'),
             two_stage_result=results_or_path.get('two_stage_result'),
-            quantum_events=results_or_path.get('quantum_events'),
+            quantum_assessments=results_or_path.get('quantum_assessments'),  # v4.0: assessments使用
             **kwargs
         )
     else:
@@ -151,10 +152,10 @@ def generate_max_report(results_or_path, **kwargs):
             kwargs.pop('metadata_path', None),
             **kwargs
         )
-        return generate_maximum_report_from_results(
+        return generate_maximum_report_from_results_v4(
             lambda_result=results['lambda_result'],
             two_stage_result=results.get('two_stage_result'),
-            quantum_events=results.get('quantum_events'),
+            quantum_assessments=results.get('quantum_assessments'),  # v4.0: assessments使用
             **kwargs
         )
 
@@ -175,7 +176,7 @@ def analyze(trajectory_path: str, metadata_path: str, **kwargs):
 
 def max_report(results):
     """
-    超簡単な最強レポート生成！
+    超簡単な最強レポート生成！（v4.0対応版）
     
     Examples
     --------
@@ -183,8 +184,8 @@ def max_report(results):
     >>> results = analyze('traj.npy', 'meta.json')
     >>> report = max_report(results)  # これだけ！
     """
-    return generate_maximum_report_from_results(
+    return generate_maximum_report_from_results_v4(
         lambda_result=results.get('lambda_result'),
         two_stage_result=results.get('two_stage_result'),
-        quantum_events=results.get('quantum_events')
+        quantum_assessments=results.get('quantum_assessments')  # v4.0: assessments使用
     )
