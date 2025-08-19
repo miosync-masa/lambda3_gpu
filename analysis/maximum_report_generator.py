@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
 """
-Maximum Report Generator from Lambda³ GPU Results - Version 4.0
-================================================================
+Maximum Report Generator from Lambda³ GPU Results - Version 4.0.2 (FIXED)
+==========================================================================
 
 既存の解析結果から最大限の情報を抽出してレポート生成！
 Version 4.0の新機能（Lambda異常性、原子レベル証拠、3パターン分類）完全対応版
+
+【修正内容 v4.0.2】
+- ResidueEvent.anomaly_score → event_score に修正
+- エラーハンドリング追加
+- より安全なアトリビュートアクセス
+- Bootstrap信頼区間の完全統合
+- イベントごとのPropagation Pathway解析を追加
 
 環ちゃんが全部の情報を絞り出すよ〜💕
 """
@@ -44,7 +51,7 @@ def generate_maximum_report_from_results_v4(
     verbose=True
 ) -> str:
     """
-    Version 4.0対応の最強レポート生成！
+    Version 4.0.2対応の最強レポート生成！（修正版）
     
     Parameters
     ----------
@@ -65,6 +72,12 @@ def generate_maximum_report_from_results_v4(
     -------
     str
         生成されたレポート（Markdown形式）
+    
+    Version History
+    ---------------
+    4.0.0 : 初期リリース
+    4.0.1 : ResidueEvent修正、Bootstrap統合
+    4.0.2 : Propagation Pathway解析追加
     """
     
     output_path = Path(output_dir)
@@ -72,10 +85,10 @@ def generate_maximum_report_from_results_v4(
     
     if verbose:
         print("\n" + "="*80)
-        print("🌟 GENERATING MAXIMUM REPORT v4.0 - Lambda³ Integrated Edition")
+        print("🌟 GENERATING MAXIMUM REPORT v4.0.2 - Lambda³ Integrated Edition")
         print("="*80)
     
-    report = """# 🌟 Lambda³ GPU Complete Analysis Report - VERSION 4.0
+    report = """# 🌟 Lambda³ GPU Complete Analysis Report - VERSION 4.0.2
 
 ## Executive Summary
 """
@@ -92,7 +105,7 @@ def generate_maximum_report_from_results_v4(
 - **Frames analyzed**: {lambda_result.n_frames}
 - **Atoms**: {lambda_result.n_atoms}
 - **Computation time**: {lambda_result.computation_time:.2f}s
-- **Analysis version**: 4.0.0 (Lambda³ Integrated)
+- **Analysis version**: 4.0.2 (Lambda³ Integrated - FIXED + Bootstrap + Pathways)
 """
     
     # GPU情報
@@ -193,22 +206,25 @@ def generate_maximum_report_from_results_v4(
                     'duration': event[1] - event[0]
                 })
     
-    # Lambda構造の詳細（structures）
+    # 【修正】Lambda構造の詳細（正しいキー名で）
     if hasattr(lambda_result, 'lambda_structures'):
         structures = lambda_result.lambda_structures
         report += "\n### Lambda Structure Components\n"
         
-        if 'lambda_f' in structures:
-            lambda_vals = structures['lambda_f']
-            report += f"- Lambda_F: mean={np.mean(lambda_vals):.3f}, "
+        # lambda_F_mag（修正）
+        if 'lambda_F_mag' in structures:
+            lambda_vals = structures['lambda_F_mag']
+            report += f"- Lambda_F_mag: mean={np.mean(lambda_vals):.3f}, "
             report += f"std={np.std(lambda_vals):.3f}, "
             report += f"max={np.max(lambda_vals):.3f}\n"
         
-        if 'rho_t' in structures:
-            rho_vals = structures['rho_t']
+        # rho_T（修正）
+        if 'rho_T' in structures:
+            rho_vals = structures['rho_T']
             report += f"- Rho_T (tension): mean={np.mean(rho_vals):.3f}, "
             report += f"max={np.max(rho_vals):.3f}\n"
         
+        # sigma_s（これは小文字で正しい）
         if 'sigma_s' in structures:
             sigma_vals = structures['sigma_s']
             report += f"- Sigma_S (sync): mean={np.mean(sigma_vals):.3f}, "
@@ -221,7 +237,87 @@ def generate_maximum_report_from_results_v4(
         report += f"- {etype}: {count}\n"
     
     # ========================================
-    # 2. Two-Stage結果の完全解析（既存機能維持）
+    # 2.5. イベントごとのPathway解析（新規追加）
+    # ========================================
+    if lambda_result.critical_events and two_stage_result and hasattr(two_stage_result, 'residue_analyses'):
+        if verbose:
+            print("\n🔬 Extracting event pathways...")
+        
+        report += "\n## 🔬 Structural Events with Propagation Pathways\n"
+        
+        # タイムライン
+        report += "\n### 📅 Events Timeline:\n"
+        for i, event in enumerate(lambda_result.critical_events):
+            if isinstance(event, tuple) and len(event) >= 2:
+                start, end = event[0], event[1]
+                duration = end - start
+                report += f"- **Event {i+1}**: frames {start:6d}-{end:6d} ({duration:5d} frames)\n"
+        
+        # 各イベントの詳細解析
+        report += "\n### 🧬 Detailed Event Analysis:\n"
+        
+        for i, event in enumerate(lambda_result.critical_events):
+            if isinstance(event, tuple) and len(event) >= 2:
+                start, end = event[0], event[1]
+                event_key = f"event_{i}"
+                
+                report += f"\n#### Event {i+1} (frames {start}-{end}):\n"
+                
+                # 対応する残基解析を取得
+                if event_key in two_stage_result.residue_analyses:
+                    analysis = two_stage_result.residue_analyses[event_key]
+                    
+                    # Initiator residues
+                    initiators = []
+                    if hasattr(analysis, 'initiator_residues'):
+                        initiators = analysis.initiator_residues[:5]  # Top 5
+                        initiators_str = ', '.join([f"R{r+1}" for r in initiators])
+                        report += f"- **🎯 Initiator residues**: {initiators_str}\n"
+                    
+                    # Propagation Pathways
+                    if hasattr(analysis, 'network_result') and analysis.network_result:
+                        network = analysis.network_result
+                        if hasattr(network, 'causal_network') and network.causal_network:
+                            # パスウェイの構築
+                            pathways = _build_propagation_paths(
+                                network.causal_network,
+                                initiators
+                            )
+                            
+                            if pathways:
+                                report += f"- **🔄 Propagation Pathways**:\n"
+                                for j, path in enumerate(pathways[:3], 1):  # Top 3 paths
+                                    path_str = ' → '.join([f"R{r+1}" for r in path])
+                                    report += f"  - Path {j}: {path_str}\n"
+                    
+                    # 統計情報
+                    n_residues = len(analysis.residue_events) if hasattr(analysis, 'residue_events') else 0
+                    n_causal = len(network.causal_network) if hasattr(network, 'causal_network') else 0
+                    n_sync = len(network.sync_network) if hasattr(network, 'sync_network') else 0
+                    n_async = len(network.async_strong_bonds) if hasattr(network, 'async_strong_bonds') else 0
+                    
+                    report += f"- **📊 Statistics**:\n"
+                    report += f"  - Residues involved: {n_residues}\n"
+                    report += f"  - Causal links: {n_causal}\n"
+                    report += f"  - Sync links: {n_sync}\n"
+                    report += f"  - Async bonds: {n_async}\n"
+                    
+                    # Lambda変化の統計（あれば）
+                    if 'lambda_F_mag' in lambda_result.lambda_structures:
+                        lambda_vals = lambda_result.lambda_structures['lambda_F_mag'][start:min(end, len(lambda_result.lambda_structures['lambda_F_mag']))]
+                        if len(lambda_vals) > 0:
+                            mean_lambda = np.mean(lambda_vals)
+                            max_lambda = np.max(lambda_vals)
+                            report += f"  - Mean Λ: {mean_lambda:.3f}\n"
+                            report += f"  - Max Λ: {max_lambda:.3f}\n"
+                else:
+                    report += f"- *Residue analysis not available for this event*\n"
+    
+    # ========================================
+    # 3. Two-Stage結果の完全解析（既存、位置調整）
+    # ========================================
+    # ========================================
+    # 3. Two-Stage結果の完全解析（既存、位置調整）
     # ========================================
     if two_stage_result:
         if verbose:
@@ -266,7 +362,7 @@ def generate_maximum_report_from_results_v4(
                     
                     report += f"| {rank} | R{res_id+1} | {score:.4f} | {category} |\n"
         
-        # 各イベントの超詳細解析
+        # 各イベントの超詳細解析（修正版）
         if hasattr(two_stage_result, 'residue_analyses'):
             report += "\n### Event-by-Event Detailed Analysis\n"
             
@@ -281,21 +377,76 @@ def generate_maximum_report_from_results_v4(
                 if hasattr(analysis, 'residue_events'):
                     report += f"- **Residues involved**: {len(analysis.residue_events)}\n"
                     
-                    all_scores = [(re.residue_id, re.anomaly_score) 
-                                 for re in analysis.residue_events]
+                    # 【修正】event_scoreを使用（anomaly_scoreではなく）
+                    all_scores = []
+                    for re in analysis.residue_events:
+                        # ResidueEventの属性を安全にチェック
+                        if hasattr(re, 'residue_id'):
+                            res_id = re.residue_id
+                        elif hasattr(re, 'residues_involved') and re.residues_involved:
+                            res_id = re.residues_involved[0]
+                        else:
+                            continue
+                        
+                        # スコアの取得（event_scoreを優先）
+                        if hasattr(re, 'event_score'):
+                            score = re.event_score
+                        elif hasattr(re, 'anomaly_score'):  # 念のため互換性
+                            score = re.anomaly_score
+                        else:
+                            score = 0.0
+                        
+                        all_scores.append((res_id, score))
+                    
                     all_scores.sort(key=lambda x: x[1], reverse=True)
                     
-                    report += "  - Top 10 anomalous residues:\n"
-                    for res_id, score in all_scores[:10]:
-                        report += f"    - R{res_id+1}: {score:.3f}\n"
+                    if all_scores:
+                        report += "  - Top 10 anomalous residues:\n"
+                        for res_id, score in all_scores[:10]:
+                            report += f"    - R{res_id+1}: {score:.3f}\n"
                 
                 if hasattr(analysis, 'network_result'):
                     network = analysis.network_result
                     if hasattr(network, 'async_strong_bonds'):
                         report += f"- **Async bonds**: {len(network.async_strong_bonds)}\n"
+                
+                # 【追加】Bootstrap信頼区間の結果
+                if hasattr(analysis, 'confidence_results') and analysis.confidence_results:
+                    report += "\n##### Bootstrap Confidence Intervals\n"
+                    report += f"- **Total pairs analyzed**: {len(analysis.confidence_results)}\n"
+                    
+                    # 有意なペアのみ抽出
+                    significant_results = [r for r in analysis.confidence_results 
+                                         if r.get('is_significant', False)]
+                    
+                    if significant_results:
+                        report += f"- **Significant pairs**: {len(significant_results)} "
+                        report += f"({len(significant_results)/len(analysis.confidence_results)*100:.1f}%)\n"
+                        
+                        # Top 10有意なペア
+                        report += "\n###### Top Significant Correlations (95% CI):\n"
+                        for i, conf in enumerate(significant_results[:10], 1):
+                            from_res = conf.get('from_res', 0)
+                            to_res = conf.get('to_res', 0)
+                            corr = conf.get('correlation', 0)
+                            ci_lower = conf.get('ci_lower', 0)
+                            ci_upper = conf.get('ci_upper', 0)
+                            
+                            report += f"{i}. **R{from_res+1} ↔ R{to_res+1}**: "
+                            report += f"r={corr:.3f} [{ci_lower:.3f}, {ci_upper:.3f}]"
+                            
+                            # 標準誤差とバイアス
+                            if conf.get('standard_error'):
+                                report += f" (SE={conf['standard_error']:.3f}"
+                                if conf.get('bias'):
+                                    report += f", bias={conf['bias']:.3f}"
+                                report += ")"
+                            report += "\n"
+                    else:
+                        report += "- No statistically significant pairs found\n"
     
     # ========================================
-    # 3. 量子評価の完全解析（Version 4.0新機能）
+    # 4. 量子評価の完全解析（Version 4.0新機能）
     # ========================================
     if quantum_assessments:
         if verbose:
@@ -309,7 +460,7 @@ def generate_maximum_report_from_results_v4(
         report += f"""
 ### Overview
 - **Total events analyzed**: {total}
-- **Quantum events confirmed**: {quantum_count} ({quantum_count/total*100:.1f}%)
+- **Quantum events confirmed**: {quantum_count} ({quantum_count/total*100:.1f}% if total > 0 else 0%)
 """
         
         # パターン分布（Version 4.0の3パターン分類）
@@ -319,7 +470,7 @@ def generate_maximum_report_from_results_v4(
             quantum_in_pattern = sum(1 for a in quantum_assessments 
                                     if a.pattern.value == pattern and a.is_quantum)
             report += f"- **{pattern}**: {count} events, "
-            report += f"{quantum_in_pattern} quantum ({quantum_in_pattern/count*100:.1f}%)\n"
+            report += f"{quantum_in_pattern} quantum ({quantum_in_pattern/count*100:.1f}% if count > 0 else 0%)\n"
         
         # シグネチャー分布（Version 4.0）
         sig_counts = Counter(a.signature.value for a in quantum_assessments 
@@ -430,7 +581,91 @@ def generate_maximum_report_from_results_v4(
                 report += f"- **Bell inequality**: S={assessment.bell_inequality:.3f}\n"
     
     # ========================================
-    # 4. 統合的洞察（Version 4.0強化版）
+    # 4.5. Bootstrap統計の総合解析（既存）
+    # ========================================
+    all_confidence_results = []
+    ci_widths = []  # 事前に定義
+    
+    if two_stage_result and hasattr(two_stage_result, 'residue_analyses'):
+        for analysis in two_stage_result.residue_analyses.values():
+            if hasattr(analysis, 'confidence_results') and analysis.confidence_results:
+                all_confidence_results.extend(analysis.confidence_results)
+    
+    if all_confidence_results:
+        if verbose:
+            print("\n📊 Extracting bootstrap statistics...")
+        
+        report += "\n## 📊 Bootstrap Statistical Analysis (Complete)\n"
+        
+        # 全体統計
+        n_total = len(all_confidence_results)
+        n_significant = sum(1 for r in all_confidence_results if r.get('is_significant', False))
+        
+        report += f"""
+### Overall Bootstrap Statistics
+- **Total correlations tested**: {n_total}
+- **Statistically significant**: {n_significant} ({n_significant/n_total*100:.1f}% if n_total > 0 else 0%)
+- **Bootstrap iterations**: {all_confidence_results[0].get('n_bootstrap', 1000) if all_confidence_results else 'N/A'}
+- **Confidence level**: 95%
+"""
+        
+        # 相関係数の分布
+        correlations = [r.get('correlation', 0) for r in all_confidence_results]
+        if correlations:
+            report += f"""
+### Correlation Distribution
+- **Mean correlation**: {np.mean(correlations):.3f}
+- **Max correlation**: {np.max(correlations):.3f}
+- **Min correlation**: {np.min(correlations):.3f}
+- **Std deviation**: {np.std(correlations):.3f}
+"""
+        
+        # 信頼区間の幅の分析
+        ci_widths = [r.get('ci_upper', 0) - r.get('ci_lower', 0) 
+                    for r in all_confidence_results if 'ci_upper' in r and 'ci_lower' in r]
+        if ci_widths:
+            report += f"""
+### Confidence Interval Analysis
+- **Mean CI width**: {np.mean(ci_widths):.3f}
+- **Min CI width**: {np.min(ci_widths):.3f} (most precise)
+- **Max CI width**: {np.max(ci_widths):.3f} (least precise)
+"""
+        
+        # 最も強い相関のトップ10
+        sorted_results = sorted(all_confidence_results, 
+                              key=lambda x: abs(x.get('correlation', 0)), 
+                              reverse=True)
+        
+        report += "\n### Strongest Correlations (All Events)\n"
+        report += "| Rank | Pair | Correlation | 95% CI | Significant | SE |\n"
+        report += "|------|------|-------------|---------|-------------|----|\n"
+        
+        for i, conf in enumerate(sorted_results[:15], 1):
+            from_res = conf.get('from_res', 0)
+            to_res = conf.get('to_res', 0)
+            corr = conf.get('correlation', 0)
+            ci_lower = conf.get('ci_lower', 0)
+            ci_upper = conf.get('ci_upper', 0)
+            is_sig = "✓" if conf.get('is_significant', False) else "✗"
+            se = conf.get('standard_error', 0)
+            
+            report += f"| {i} | R{from_res+1}-R{to_res+1} | {corr:.3f} | "
+            report += f"[{ci_lower:.3f}, {ci_upper:.3f}] | {is_sig} | {se:.3f} |\n"
+        
+        # バイアス分析
+        biases = [abs(r.get('bias', 0)) for r in all_confidence_results if 'bias' in r]
+        if biases:
+            report += f"\n### Bootstrap Bias Analysis\n"
+            report += f"- **Mean absolute bias**: {np.mean(biases):.4f}\n"
+            report += f"- **Max absolute bias**: {np.max(biases):.4f}\n"
+            
+            high_bias = [r for r in all_confidence_results 
+                        if 'bias' in r and abs(r['bias']) > 0.05]
+            if high_bias:
+                report += f"- **High bias pairs (|bias| > 0.05)**: {len(high_bias)}\n"
+    
+    # ========================================
+    # 5. 統合的洞察（Version 4.0強化版）
     # ========================================
     if verbose:
         print("\n💡 Generating integrated insights (v4.0)...")
@@ -444,6 +679,11 @@ def generate_maximum_report_from_results_v4(
         total_unique = len(set(e['frame'] for e in all_events))
         insights.append(f"✓ {total_unique} unique frames with structural anomalies")
         insights.append(f"✓ {len(all_events)} total structural events detected")
+    
+    # イベントパスウェイ
+    if lambda_result.critical_events:
+        n_events = len(lambda_result.critical_events)
+        insights.append(f"✓ {n_events} critical events with propagation pathways analyzed")
     
     # 量子性の分析（Version 4.0）
     if quantum_assessments:
@@ -486,11 +726,28 @@ def generate_maximum_report_from_results_v4(
             if stats.get('async_to_causal_ratio', 0) > 0.5:
                 insights.append(f"✓ High async/causal ratio ({stats['async_to_causal_ratio']:.1%})")
     
+    # 【追加】ブートストラップ統計の洞察
+    if all_confidence_results:
+        n_sig = sum(1 for r in all_confidence_results if r.get('is_significant', False))
+        if n_sig > 0:
+            insights.append(f"✓ {n_sig}/{len(all_confidence_results)} correlations statistically significant (95% CI)")
+        
+        # 高相関ペア
+        high_corr = [r for r in all_confidence_results if abs(r.get('correlation', 0)) > 0.8]
+        if high_corr:
+            insights.append(f"✓ {len(high_corr)} pairs with |r| > 0.8 (strong correlation)")
+        
+        # 狭い信頼区間（精度の高い推定）
+        if ci_widths:
+            narrow_ci = sum(1 for w in ci_widths if w < 0.2)
+            if narrow_ci > 0:
+                insights.append(f"✓ {narrow_ci} pairs with narrow CI (width < 0.2, high precision)")
+    
     for insight in insights:
         report += f"\n{insight}"
     
     # ========================================
-    # 5. 創薬ターゲット提案（既存機能維持）
+    # 6. 創薬ターゲット提案（既存機能維持）
     # ========================================
     all_hub_residues = []
     if two_stage_result and hasattr(two_stage_result, 'residue_analyses'):
@@ -520,14 +777,16 @@ def generate_maximum_report_from_results_v4(
                 report += f"   - Priority: Secondary target\n"
     
     # ========================================
-    # 6. 推奨事項（Version 4.0強化版）
+    # 7. 推奨事項（Version 4.0強化版）
     # ========================================
     report += "\n## 📋 Recommendations v4.0\n"
     
     recommendations = []
     
     # ハブ残基ベース
-    if hub_counts:
+    hub_counts = None  # 初期化
+    if all_hub_residues:
+        hub_counts = Counter(all_hub_residues)
         top3 = [f"R{r+1}" for r, _ in hub_counts.most_common(3)]
         recommendations.append(f"Focus on residues {', '.join(top3)} for drug targeting")
     
@@ -557,22 +816,49 @@ def generate_maximum_report_from_results_v4(
         if stats.get('total_async_bonds', 0) > 100:
             recommendations.append("Strong async bonds indicate allosteric mechanisms")
     
+    # 【追加】ブートストラップベースの推奨
+    if all_confidence_results:
+        # 統計的に有意な強い相関
+        strong_sig = [r for r in all_confidence_results 
+                     if r.get('is_significant', False) and abs(r.get('correlation', 0)) > 0.7]
+        if strong_sig:
+            top_pairs = [(r['from_res'], r['to_res']) for r in strong_sig[:3]]
+            pair_str = ', '.join([f"R{f+1}-R{t+1}" for f, t in top_pairs])
+            recommendations.append(f"Statistically validated correlations at {pair_str} - potential allosteric pathway")
+        
+        # 信頼区間が狭い（精度の高い）ペア
+        if ci_widths:
+            precise_pairs = [r for r in all_confidence_results 
+                           if 'ci_upper' in r and 'ci_lower' in r 
+                           and (r['ci_upper'] - r['ci_lower']) < 0.15]
+            if precise_pairs:
+                recommendations.append(f"High-precision estimates for {len(precise_pairs)} residue pairs - reliable targets")
+    
+    # 【追加】イベントパスウェイベースの推奨
+    if lambda_result.critical_events and len(lambda_result.critical_events) > 3:
+        recommendations.append(f"Multiple critical events ({len(lambda_result.critical_events)}) detected - consider multi-state drug design")
+    
     for i, rec in enumerate(recommendations, 1):
         report += f"\n{i}. {rec}"
     
     # Version 4.0の新しい洞察
-    report += "\n\n### Version 4.0 Improvements\n"
+    report += "\n\n### Version 4.0.2 Improvements (FIXED + Bootstrap + Pathways)\n"
     report += "- Lambda structure anomaly as primary quantum indicator\n"
     report += "- 3-pattern classification (instantaneous/transition/cascade)\n"
     report += "- Atomic-level evidence integration\n"
-    report += "- No automatic classical assignment for long events\n"
+    report += "- Fixed ResidueEvent attribute access (event_score)\n"
+    report += "- Corrected Lambda structure key names (lambda_F_mag, rho_T)\n"
+    report += "- **NEW: Bootstrap confidence intervals for all correlations**\n"
+    report += "- **NEW: Statistical significance testing (95% CI)**\n"
+    report += "- **NEW: Bias and standard error estimation**\n"
+    report += "- **NEW: Event-based propagation pathway analysis**\n"
     
     # フッター
     report += f"""
 
 ---
 *Analysis Complete!*
-*Version: 4.0.0 - Lambda³ Integrated Edition*
+*Version: 4.0.1 - Lambda³ Integrated Edition (FIXED)*
 *Total report length: {len(report):,} characters*
 *NO TIME, NO PHYSICS, ONLY STRUCTURE!*
 *Generated by 環ちゃん with love 💕*
@@ -589,7 +875,7 @@ def generate_maximum_report_from_results_v4(
     
     # JSON形式でも保存（データ解析用）
     json_data = {
-        'version': '4.0.0',
+        'version': '4.0.2',
         'summary': {
             'n_frames': lambda_result.n_frames,
             'n_atoms': lambda_result.n_atoms,
@@ -611,6 +897,23 @@ def generate_maximum_report_from_results_v4(
             'mean_confidence': np.mean(confidences) if confidences else 0
         }
     
+    # 【追加】ブートストラップ統計サマリー
+    if all_confidence_results:
+        json_data['bootstrap_statistics'] = {
+            'total_pairs': len(all_confidence_results),
+            'significant_pairs': sum(1 for r in all_confidence_results if r.get('is_significant', False)),
+            'mean_correlation': float(np.mean([r.get('correlation', 0) for r in all_confidence_results])),
+            'mean_ci_width': float(np.mean(ci_widths)) if ci_widths else None,
+            'n_bootstrap': all_confidence_results[0].get('n_bootstrap', 1000) if all_confidence_results else None
+        }
+    
+    # 【追加】イベントパスウェイサマリー
+    if lambda_result.critical_events:
+        json_data['event_pathways'] = {
+            'n_events': len(lambda_result.critical_events),
+            'event_frames': [(int(e[0]), int(e[1])) for e in lambda_result.critical_events if isinstance(e, tuple)]
+        }
+    
     if two_stage_result and hasattr(two_stage_result, 'global_network_stats'):
         json_data['network_stats'] = two_stage_result.global_network_stats
     
@@ -619,15 +922,94 @@ def generate_maximum_report_from_results_v4(
         json.dump(json_data, f, indent=2, default=float)
     
     if verbose:
-        print(f"\n✨ COMPLETE! (Version 4.0)")
+        print(f"\n✨ COMPLETE! (Version 4.0.2 - FIXED + Bootstrap + Pathways)")
         print(f"   📄 Report saved to: {report_path}")
         print(f"   📊 Data saved to: {json_path}")
         print(f"   📏 Report length: {len(report):,} characters")
         print(f"   🎯 Lambda events: {len(all_events)}")
         if quantum_assessments:
             print(f"   ⚛️ Quantum events: {quantum_count}/{total}")
-        if hub_counts:
+        if all_confidence_results:
+            n_sig = sum(1 for r in all_confidence_results if r.get('is_significant', False))
+            print(f"   📊 Bootstrap: {n_sig}/{len(all_confidence_results)} significant correlations")
+        if lambda_result.critical_events:
+            print(f"   🔬 Event pathways: {len(lambda_result.critical_events)} events analyzed")
+        if all_hub_residues:
+            hub_counts = Counter(all_hub_residues)  # ここで定義
             print(f"   💊 Drug targets: {len(hub_counts)}")
-        print(f"\n   All information extracted with v4.0 enhancements!")
+        print(f"\n   All information extracted with v4.0.2 enhancements!")
     
     return report
+
+
+# ========================================
+# ヘルパー関数
+# ========================================
+
+def _build_propagation_paths(causal_network, initiators, max_paths=3, max_hops=6):
+    """
+    因果ネットワークからPropagation Pathwaysを構築
+    
+    Parameters
+    ----------
+    causal_network : list
+        NetworkLinkのリスト
+    initiators : list
+        開始残基のリスト
+    max_paths : int
+        最大パス数
+    max_hops : int
+        最大ホップ数
+        
+    Returns
+    -------
+    list
+        パスのリスト（各パスは残基IDのリスト）
+    """
+    paths = []
+    
+    for init_res in initiators[:max_paths]:
+        # BFSでパスを探索
+        path = [init_res]
+        current = init_res
+        visited = {init_res}
+        
+        for _ in range(max_hops - 1):
+            # currentから出ているリンクを探す
+            next_links = []
+            for link in causal_network:
+                # NetworkLinkオブジェクトの属性を安全にチェック
+                if hasattr(link, 'from_res') and hasattr(link, 'to_res'):
+                    if link.from_res == current and link.to_res not in visited:
+                        next_links.append(link)
+            
+            if not next_links:
+                break
+            
+            # 最強のリンクを選択
+            if hasattr(next_links[0], 'strength'):
+                strongest = max(next_links, key=lambda l: l.strength)
+            else:
+                strongest = next_links[0]  # strengthがない場合は最初のリンク
+            
+            path.append(strongest.to_res)
+            visited.add(strongest.to_res)
+            current = strongest.to_res
+        
+        if len(path) > 1:
+            paths.append(path)
+    
+    return paths
+
+
+# ========================================
+# V3互換性のための関数（簡略版）
+# ========================================
+
+def _generate_v3_report(lambda_result, two_stage_result, quantum_events, 
+                       metadata, output_dir, verbose):
+    """Version 3.0互換レポート生成（簡略実装）"""
+    # 実際のV3実装は省略（必要に応じて実装）
+    if verbose:
+        print("Generating V3 compatible report...")
+    return "V3 Report (simplified)"
