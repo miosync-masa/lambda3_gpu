@@ -319,16 +319,49 @@ class Lambda3VisualizerGPU:
             else:
                 ax.text(0.5, 0.5, 0.5, '3D Data\nNot Available',
                        ha='center', va='center')
-    
+
     def _plot_detected_patterns(self, ax: plt.Axes, result: MDLambda3Result):
         """検出されたパターン"""
         if result.detected_structures:
             patterns = sorted(result.detected_structures,
-                            key=lambda x: x.get('strength', 0), reverse=True)[:8]
+                            key=lambda x: x.get('strength', x.get('duration', 0)), reverse=True)[:8]
             
-            names = [p['name'] for p in patterns]
-            periods = [p.get('period', 0) for p in patterns]
-            strengths = [p.get('strength', 0) for p in patterns]
+            # nameキーがない場合の対処
+            names = []
+            for p in patterns:
+                if 'name' in p:
+                    names.append(p['name'])
+                elif 'type' in p:
+                    # typeから表示名を生成
+                    type_name = p['type'].replace('_', ' ').title()
+                    if 'start' in p and 'end' in p:
+                        type_name += f" ({p['start']}-{p['end']})"
+                    names.append(type_name)
+                else:
+                    # デフォルト名
+                    names.append(f"Pattern {len(names)+1}")
+            
+            # periodキーの処理も同様に
+            periods = []
+            for p in patterns:
+                if 'period' in p:
+                    periods.append(p['period'])
+                elif 'duration' in p:
+                    periods.append(p['duration'])
+                else:
+                    periods.append(0)
+            
+            # strengthキーの処理
+            strengths = []
+            for p in patterns:
+                if 'strength' in p:
+                    strengths.append(p['strength'])
+                elif 'snr' in p:  # SNR比を強度として使用
+                    strengths.append(min(1.0, p['snr'] / 10.0))  # 正規化
+                elif 'amplitude' in p:  # 振幅を強度として使用
+                    strengths.append(min(1.0, p['amplitude']))
+                else:
+                    strengths.append(0.5)  # デフォルト値
             
             # 棒グラフ
             y_pos = np.arange(len(names))
@@ -341,7 +374,7 @@ class Lambda3VisualizerGPU:
             
             ax.set_yticks(y_pos)
             ax.set_yticklabels(names)
-            ax.set_xlabel('Period (frames)')
+            ax.set_xlabel('Period/Duration (frames)')
             ax.set_title('Detected Patterns', fontsize=12)
             
             # カラーバー
@@ -353,36 +386,6 @@ class Lambda3VisualizerGPU:
         else:
             ax.text(0.5, 0.5, 'No Patterns\nDetected',
                    ha='center', va='center', transform=ax.transAxes)
-    
-    def _plot_gpu_performance(self, ax: plt.Axes, result: MDLambda3Result):
-        """GPU性能統計"""
-        if result.gpu_info:
-            # パフォーマンスメトリクス
-            metrics = {
-                'Frames/sec': result.n_frames / result.computation_time,
-                'Memory (GB)': result.gpu_info.get('memory_used', 0),
-                'Atoms/frame': result.n_atoms,
-                'Window size': result.window_steps
-            }
-            
-            # テキスト表示
-            text = "GPU Performance\n" + "-"*20 + "\n"
-            for key, value in metrics.items():
-                if isinstance(value, float):
-                    text += f"{key}: {value:.2f}\n"
-                else:
-                    text += f"{key}: {value}\n"
-            
-            text += f"\nDevice: {result.gpu_info.get('device_name', 'Unknown')}"
-            text += f"\nMode: {result.gpu_info.get('computation_mode', 'Unknown')}"
-            
-            ax.text(0.1, 0.9, text, transform=ax.transAxes,
-                   fontsize=11, verticalalignment='top',
-                   fontfamily='monospace',
-                   bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
-        
-        ax.axis('off')
-        ax.set_title('GPU Performance', fontsize=12)
     
     def _plot_summary_stats(self, ax: plt.Axes, result: MDLambda3Result):
         """サマリー統計"""
