@@ -14,7 +14,7 @@ Version: 4.0.0 - Complete Refactoring
 Authors: 環ちゃん & ご主人さま 💕
 """
 
-from .quantum_validation_v4 import (
+from .quantum_validation import (
     # メインクラス
     QuantumValidatorV4,
     
