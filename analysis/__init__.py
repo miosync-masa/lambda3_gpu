@@ -27,9 +27,12 @@ from .evaluation_gpu import (
 
 # 🆕 フル解析パイプライン
 from .run_full_analysis import (
-    run_quantum_validation_pipeline,  # 関数名はそのままでもOK
-    # または rename して
-    # run_full_analysis_pipeline,
+    run_quantum_validation_pipeline,
+)
+
+# 🆕🆕 最強レポート生成機能！
+from .maximum_report_generator import (
+    generate_maximum_report_from_results,
 )
 
 __all__ = [
@@ -52,13 +55,19 @@ __all__ = [
     'EventDetectionResult',
     'evaluate_two_stage_performance',
     
-    # 🆕 フル解析パイプライン
-    'run_quantum_validation_pipeline',  # または 'run_full_analysis_pipeline'
+    # フル解析パイプライン
+    'run_quantum_validation_pipeline',
+    
+    # 🆕 最強レポート生成
+    'generate_maximum_report_from_results',
 ]
 
-__version__ = '1.1.0'  # バージョンアップ！
+__version__ = '1.2.0'  # バージョンアップ！
 
-# 便利な一括実行関数も追加
+# ========================================
+# 便利な一括実行関数
+# ========================================
+
 def run_full_analysis(trajectory_path: str, 
                       metadata_path: str,
                       enable_quantum: bool = True,
@@ -105,7 +114,54 @@ def run_full_analysis(trajectory_path: str,
         **kwargs
     )
 
+# ========================================
+# 最強レポート生成の便利関数
+# ========================================
+
+def generate_max_report(results_or_path, **kwargs):
+    """
+    最強レポートを生成する超便利関数！
+    
+    Parameters
+    ----------
+    results_or_path : dict or str
+        解析結果の辞書、またはトラジェクトリパス
+    
+    Examples
+    --------
+    # パターン1: 既存の結果から
+    >>> results = run_full_analysis('traj.npy', 'meta.json')
+    >>> report = generate_max_report(results)
+    
+    # パターン2: ファイルから一気に
+    >>> report = generate_max_report('traj.npy', metadata_path='meta.json')
+    """
+    if isinstance(results_or_path, dict):
+        # 既存の結果から
+        return generate_maximum_report_from_results(
+            lambda_result=results_or_path.get('lambda_result'),
+            two_stage_result=results_or_path.get('two_stage_result'),
+            quantum_events=results_or_path.get('quantum_events'),
+            **kwargs
+        )
+    else:
+        # ファイルから解析して最強レポート
+        results = run_full_analysis(
+            results_or_path,
+            kwargs.pop('metadata_path', None),
+            **kwargs
+        )
+        return generate_maximum_report_from_results(
+            lambda_result=results['lambda_result'],
+            two_stage_result=results.get('two_stage_result'),
+            quantum_events=results.get('quantum_events'),
+            **kwargs
+        )
+
+# ========================================
 # ショートカット（さらに便利に）
+# ========================================
+
 def analyze(trajectory_path: str, metadata_path: str, **kwargs):
     """
     最も簡単な実行方法
@@ -116,3 +172,19 @@ def analyze(trajectory_path: str, metadata_path: str, **kwargs):
     >>> results = analyze('traj.npy', 'meta.json')
     """
     return run_full_analysis(trajectory_path, metadata_path, **kwargs)
+
+def max_report(results):
+    """
+    超簡単な最強レポート生成！
+    
+    Examples
+    --------
+    >>> from lambda3_gpu.analysis import analyze, max_report
+    >>> results = analyze('traj.npy', 'meta.json')
+    >>> report = max_report(results)  # これだけ！
+    """
+    return generate_maximum_report_from_results(
+        lambda_result=results.get('lambda_result'),
+        two_stage_result=results.get('two_stage_result'),
+        quantum_events=results.get('quantum_events')
+    )
