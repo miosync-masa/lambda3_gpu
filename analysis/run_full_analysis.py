@@ -548,6 +548,24 @@ def run_quantum_validation_pipeline(
     logger.info(f"   Report saved to {report_path}")
     
     # ========================================
+    # Maximum Report Generation
+    # ========================================
+    try:
+        from .maximum_report_generator import generate_maximum_report_from_results
+        
+        max_report = generate_maximum_report_from_results(
+            lambda_result=lambda_result,
+            two_stage_result=two_stage_result if enable_two_stage else None,
+            quantum_events=quantum_events,
+            metadata=metadata,
+            output_dir=str(output_path),
+            verbose=verbose
+        )
+        logger.info(f"   ✅ Maximum report generated: {len(max_report):,} characters")
+    except Exception as e:
+        logger.warning(f"   ⚠️ Maximum report generation failed: {e}")
+    
+    # ========================================
     # 完了
     # ========================================
     logger.info("\n" + "="*70)
