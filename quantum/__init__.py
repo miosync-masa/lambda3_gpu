@@ -1,79 +1,71 @@
 """
-Quantum Validation Module for Lambda³ GPU - Enhanced Production Version
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Quantum Validation Module for Lambda³ - Version 4.0
+====================================================
 
-査読耐性＆単一フレーム対応の完全版！
-- フレーム数適応型処理
-- 複数の量子判定基準（文献準拠）
-- 統計的検証
-- 完全なエラーハンドリング
+Lambda³統合型量子起源判定モジュール
 
-Version: 3.0.0 - Publication Ready
+主な特徴：
+- Lambda³が検出した構造変化の量子性を判定
+- 3パターン（瞬間/遷移/カスケード）の明確な分類
+- 原子レベル証拠の活用
+- 現実的かつ調整可能な判定基準
+
+Version: 4.0.0 - Complete Refactoring
 Authors: 環ちゃん & ご主人さま 💕
 """
 
-from .quantum_validation_gpu import (
+from .quantum_validation_v4 import (
     # メインクラス
-    QuantumValidationGPU,
+    QuantumValidatorV4,
     
     # データクラス
-    QuantumMetrics,
-    QuantumCascadeEvent,
-    QuantumCriterion,
+    LambdaAnomaly,
+    AtomicEvidence,
+    QuantumAssessment,
     
-    # Enumクラス（新規追加）
-    QuantumEventType,
-    ValidationCriterion,
+    # Enumクラス
+    StructuralEventPattern,
+    QuantumSignature,
     
-    # 型定義（必要なら）
-    ArrayType,
-    
-    # 便利関数（新規追加）
-    validate_quantum_events,
-    generate_quantum_report,
+    # 便利関数
+    validate_lambda_events,
 )
 
-# バージョン情報（3.0にアップ！）
-__version__ = '3.0.0'
+# バージョン情報（4.0.0！）
+__version__ = '4.0.0'
 
-# 公開するAPI（拡張版）
+# 公開するAPI
 __all__ = [
     # Main class
-    'QuantumValidationGPU',
+    'QuantumValidatorV4',
     
     # Data classes
-    'QuantumMetrics', 
-    'QuantumCascadeEvent',
-    'QuantumCriterion',
+    'LambdaAnomaly',
+    'AtomicEvidence', 
+    'QuantumAssessment',
     
     # Enums
-    'QuantumEventType',
-    'ValidationCriterion',
+    'StructuralEventPattern',
+    'QuantumSignature',
     
     # Convenience functions
-    'validate_quantum_events',
-    'generate_quantum_report',
-    'validate_with_lambda3',
+    'validate_lambda_events',
+    'quick_validate',
+    'batch_validate',
     
-    # Test & utilities
+    # Utilities
     'check_dependencies',
     'test_quantum_module',
+    'create_assessment_report',
 ]
 
-# 依存関係チェック（オプション）
+# ============================================
+# Dependency Checking
+# ============================================
+
 def check_dependencies():
     """依存関係のチェックとステータス表示"""
     import_status = {}
-    
-    # CuPy（GPU計算）
-    try:
-        import cupy as cp
-        if cp.cuda.is_available():
-            import_status['cupy'] = f"✅ Available (CUDA {cp.cuda.runtime.runtimeGetVersion()})"
-        else:
-            import_status['cupy'] = "⚠️ Installed but no GPU detected"
-    except ImportError:
-        import_status['cupy'] = "❌ Not installed (will use CPU mode)"
     
     # NumPy（必須）
     try:
@@ -82,153 +74,328 @@ def check_dependencies():
     except ImportError:
         import_status['numpy'] = "❌ Not installed (REQUIRED)"
     
-    # SciPy（統計検定用 - v3.0で必須）
+    # SciPy（統計・信号処理）
     try:
         import scipy
         import_status['scipy'] = f"✅ {scipy.__version__}"
     except ImportError:
-        import_status['scipy'] = "❌ Not installed (REQUIRED for v3.0)"
+        import_status['scipy'] = "❌ Not installed (REQUIRED)"
     
-    # Matplotlib（可視化用）
+    # CuPy（GPU - オプション）
     try:
-        import matplotlib
-        import_status['matplotlib'] = f"✅ {matplotlib.__version__}"
+        import cupy as cp
+        if cp.cuda.is_available():
+            import_status['cupy'] = f"✅ Available (CUDA {cp.cuda.runtime.runtimeGetVersion()})"
+        else:
+            import_status['cupy'] = "⚠️ Installed but no GPU detected"
     except ImportError:
-        import_status['matplotlib'] = "⚠️ Not installed (optional, for visualization)"
+        import_status['cupy'] = "ℹ️ Not installed (optional for GPU acceleration)"
+    
+    # MDAnalysis（トポロジー処理 - オプション）
+    try:
+        import MDAnalysis
+        import_status['MDAnalysis'] = f"✅ {MDAnalysis.__version__}"
+    except ImportError:
+        import_status['MDAnalysis'] = "⚠️ Not installed (optional for topology)"
     
     # Lambda³ GPU本体
     try:
         from ..analysis import MDLambda3AnalyzerGPU
         import_status['lambda3_gpu'] = "✅ Available"
     except ImportError:
-        import_status['lambda3_gpu'] = "❌ Lambda³ GPU not properly installed"
+        import_status['lambda3_gpu'] = "⚠️ Lambda³ GPU not found (standalone mode)"
+    
+    # Matplotlib（可視化）
+    try:
+        import matplotlib
+        import_status['matplotlib'] = f"✅ {matplotlib.__version__}"
+    except ImportError:
+        import_status['matplotlib'] = "⚠️ Not installed (optional for plots)"
     
     return import_status
 
-# 初期化時の情報表示（デバッグモード）
-def _print_init_info():
-    """初期化情報の表示（デバッグ用）"""
-    print("🌌 Quantum Validation Module v3.0 Loaded")
-    print("   査読耐性＆単一フレーム対応版")
-    print(f"   Version: {__version__}")
-    
-    status = check_dependencies()
-    for lib, stat in status.items():
-        print(f"   {lib}: {stat}")
+# ============================================
+# Quick Validation Functions
+# ============================================
 
-# 環境変数でデバッグモード制御
-import os
-if os.environ.get('QUANTUM_DEBUG', '').lower() == 'true':
-    _print_init_info()
-
-# 便利な統合関数
-def validate_with_lambda3(trajectory, metadata, lambda_result=None, 
-                         two_stage_result=None, **kwargs):
+def quick_validate(event, lambda_result, trajectory=None, **kwargs):
     """
-    Lambda³結果に対する量子検証の便利関数（v3.0拡張版）
+    単一イベントのクイック検証
     
     Parameters
     ----------
-    trajectory : np.ndarray
-        トラジェクトリデータ
-    metadata : dict
-        メタデータ
-    lambda_result : MDLambda3Result, optional
-        既存のLambda³結果（なければ新規実行）
-    two_stage_result : TwoStageLambda3Result, optional
-        Two-stage解析結果（ネットワーク情報）
+    event : dict
+        構造変化イベント
+    lambda_result : Any
+        Lambda³解析結果
+    trajectory : np.ndarray, optional
+        原子座標トラジェクトリ
     **kwargs
-        追加オプション
+        追加設定
+        
+    Returns
+    -------
+    QuantumAssessment
+        量子性評価結果
+        
+    Examples
+    --------
+    >>> assessment = quick_validate(event, lambda_result, trajectory)
+    >>> print(f"Quantum: {assessment.is_quantum}")
+    >>> print(f"Signature: {assessment.signature.value}")
+    """
+    validator = QuantumValidatorV4(trajectory=trajectory, **kwargs)
+    return validator.validate_event(event, lambda_result)
+
+def batch_validate(lambda_result, trajectory=None, max_events=100, **kwargs):
+    """
+    Lambda³結果の一括検証
+    
+    Parameters
+    ----------
+    lambda_result : Any
+        Lambda³解析結果
+    trajectory : np.ndarray, optional
+        原子座標トラジェクトリ
+    max_events : int
+        処理する最大イベント数
+    **kwargs
+        追加設定
         
     Returns
     -------
     dict
-        量子検証結果
-        
-    Examples
-    --------
-    >>> from lambda3_gpu.quantum import validate_with_lambda3
-    >>> results = validate_with_lambda3(traj, meta, lambda_result)
+        検証結果サマリー
     """
-    # Lambda³結果がなければ実行
-    if lambda_result is None:
-        from ..analysis import MDLambda3DetectorGPU, MDConfig
-        config = MDConfig()
-        detector = MDLambda3DetectorGPU(config)
-        lambda_result = detector.analyze(trajectory)
+    # イベント抽出
+    events = []
     
-    # 量子検証（v3.0: two_stage_resultも渡せる）
-    validator = QuantumValidationGPU(trajectory, metadata, **kwargs)
-    quantum_events = validator.analyze_quantum_cascade(lambda_result, two_stage_result)
+    # critical_eventsから抽出
+    if hasattr(lambda_result, 'critical_events'):
+        for e in lambda_result.critical_events[:max_events]:
+            if isinstance(e, (tuple, list)) and len(e) >= 2:
+                events.append({
+                    'frame_start': int(e[0]),
+                    'frame_end': int(e[1]),
+                    'type': 'critical'
+                })
+    
+    # eventsディクショナリから抽出
+    if hasattr(lambda_result, 'events') and isinstance(lambda_result.events, dict):
+        for event_type, event_list in lambda_result.events.items():
+            for e in event_list[:10]:  # 各タイプ最大10個
+                if len(events) >= max_events:
+                    break
+                    
+                if isinstance(e, dict):
+                    events.append({
+                        'frame_start': e.get('frame', e.get('start', 0)),
+                        'frame_end': e.get('end', e.get('frame', 0)),
+                        'type': event_type
+                    })
+    
+    if not events:
+        print("⚠️ No events found in lambda_result")
+        return {'error': 'No events found'}
+    
+    # バリデーター作成と実行
+    validator = QuantumValidatorV4(trajectory=trajectory, **kwargs)
+    assessments = validator.validate_events(events, lambda_result)
+    
+    # サマリー生成
+    summary = validator.generate_summary(assessments)
+    
+    # 詳細追加
+    summary['assessments'] = assessments
+    summary['validator'] = validator
     
     # サマリー表示
-    validator.print_validation_summary(quantum_events)
+    validator.print_summary(assessments)
     
-    return {
-        'quantum_events': quantum_events,
-        'n_bell_violations': sum(1 for e in quantum_events 
-                                if e.quantum_metrics.bell_violated),
-        'n_critical': sum(1 for e in quantum_events if e.is_critical),
-        'validator': validator,
-        'event_types': _count_event_types(quantum_events),
-        'quantum_ratio': _calculate_quantum_ratio(quantum_events)
-    }
+    return summary
 
-def _count_event_types(events):
-    """イベントタイプ別カウント"""
-    from collections import Counter
-    return Counter(e.event_type.value for e in events)
+# ============================================
+# Report Generation
+# ============================================
 
-def _calculate_quantum_ratio(events):
-    """量子イベント比率計算"""
-    if not events:
-        return 0.0
-    quantum_count = sum(1 for e in events if e.quantum_metrics.is_quantum)
-    return quantum_count / len(events)
+def create_assessment_report(assessments, output_file='quantum_assessment_v4.txt'):
+    """
+    量子性評価レポートの生成
+    
+    Parameters
+    ----------
+    assessments : List[QuantumAssessment]
+        評価結果リスト
+    output_file : str
+        出力ファイル名
+        
+    Returns
+    -------
+    str
+        レポート内容
+    """
+    report = []
+    report.append("="*70)
+    report.append("Quantum Assessment Report - Version 4.0")
+    report.append("Lambda³ Integrated Quantum Origin Validation")
+    report.append("="*70)
+    report.append("")
+    
+    # 統計サマリー
+    total = len(assessments)
+    quantum = sum(1 for a in assessments if a.is_quantum)
+    
+    report.append(f"Total Events Analyzed: {total}")
+    report.append(f"Quantum Events: {quantum} ({quantum/total*100:.1f}%)")
+    report.append("")
+    
+    # パターン別統計
+    report.append("Pattern Distribution:")
+    for pattern in StructuralEventPattern:
+        count = sum(1 for a in assessments if a.pattern == pattern)
+        if count > 0:
+            quantum_count = sum(1 for a in assessments 
+                              if a.pattern == pattern and a.is_quantum)
+            report.append(f"  {pattern.value}: {count} events, "
+                         f"{quantum_count} quantum ({quantum_count/count*100:.1f}%)")
+    report.append("")
+    
+    # シグネチャー分布
+    report.append("Quantum Signatures Detected:")
+    for sig in QuantumSignature:
+        if sig == QuantumSignature.NONE:
+            continue
+        count = sum(1 for a in assessments if a.signature == sig)
+        if count > 0:
+            report.append(f"  {sig.value}: {count}")
+    report.append("")
+    
+    # 個別イベント詳細（最初の10個）
+    report.append("-"*70)
+    report.append("Individual Event Details (First 10 Quantum Events):")
+    report.append("")
+    
+    quantum_events = [a for a in assessments if a.is_quantum][:10]
+    for i, assessment in enumerate(quantum_events, 1):
+        report.append(f"Event {i}:")
+        report.append(f"  Pattern: {assessment.pattern.value}")
+        report.append(f"  Signature: {assessment.signature.value}")
+        report.append(f"  Confidence: {assessment.confidence:.1%}")
+        report.append(f"  Explanation: {assessment.explanation}")
+        
+        if assessment.criteria_met:
+            report.append(f"  Criteria met:")
+            for criterion in assessment.criteria_met[:3]:  # 最初の3個
+                report.append(f"    - {criterion}")
+        
+        if assessment.bell_inequality is not None:
+            report.append(f"  Bell inequality: S = {assessment.bell_inequality:.3f}")
+        
+        report.append("")
+    
+    # レポート文字列作成
+    report_text = "\n".join(report)
+    
+    # ファイル保存
+    with open(output_file, 'w') as f:
+        f.write(report_text)
+    
+    print(f"📄 Report saved to {output_file}")
+    return report_text
 
-# クイックテスト関数（v3.0対応版）
+# ============================================
+# Module Testing
+# ============================================
+
 def test_quantum_module():
-    """モジュールの簡易テスト（v3.0版）"""
+    """モジュールの簡易テスト（v4.0版）"""
     import numpy as np
     
-    print("\n🧪 Testing Quantum Validation Module v3.0...")
+    print("\n🧪 Testing Quantum Validation Module v4.0...")
     
-    # ダミーデータ
-    trajectory = np.random.randn(100, 900, 3)  # 100 frames, 900 atoms, 3D
-    metadata = {
-        'temperature': 310.0,
-        'time_step_ps': 2.0,  # v3.0: dt_psパラメータ
-        'n_molecules': 10,
-        'n_atoms_per_molecule': 90,
-        'atom_masses': np.ones(900) * 12.0  # 炭素原子想定
-    }
+    # ダミーデータ作成
+    np.random.seed(42)  # 再現性のため
+    trajectory = np.random.randn(100, 100, 3) * 10  # 100 frames, 100 atoms
+    
+    # ダミーLambda結果
+    class DummyLambdaResult:
+        def __init__(self):
+            self.structures = {
+                'lambda_f': np.random.randn(100) * 0.1 + np.sin(np.linspace(0, 10, 100)),
+                'rho_t': np.abs(np.random.randn(100)),
+                'sigma_s': np.random.rand(100)
+            }
+            self.critical_events = [
+                (10, 10),  # 瞬間的
+                (20, 25),  # 遷移
+                (30, 35),  # 遷移
+                (50, 50),  # 瞬間的
+            ]
     
     try:
-        # 初期化テスト
-        validator = QuantumValidationGPU(
-            trajectory, 
-            metadata, 
-            force_cpu=True,
-            bootstrap_iterations=100,  # v3.0: Bootstrap検定
-            significance_level=0.01     # v3.0: 有意水準
+        # 1. インポートテスト
+        print("   Testing imports...")
+        from .quantum_validation_v4 import (
+            QuantumValidatorV4,
+            QuantumAssessment,
+            StructuralEventPattern,
+            QuantumSignature
         )
-        print("   ✅ Module initialization successful")
+        print("   ✅ Imports successful")
         
-        # 物理定数チェック
-        print(f"   Thermal de Broglie wavelength: {validator.lambda_thermal_A:.3e} Å")
-        print(f"   Thermal decoherence time: {validator.thermal_decoherence_ps:.3e} ps")
+        # 2. バリデーター初期化
+        print("   Testing validator initialization...")
+        validator = QuantumValidatorV4(
+            trajectory=trajectory,
+            dt_ps=100.0,
+            temperature_K=300.0
+        )
+        print("   ✅ Validator initialized")
         
-        # イベントタイプ分類テスト
-        from .quantum_validation_gpu import QuantumEventType
-        print("\n   Testing event type classification:")
-        for event_type in QuantumEventType:
-            print(f"   - {event_type.value}: OK")
+        # 3. イベント検証
+        print("   Testing event validation...")
+        test_event = {
+            'frame_start': 10,
+            'frame_end': 10,
+            'type': 'test'
+        }
         
-        # 判定基準テスト
-        from .quantum_validation_gpu import ValidationCriterion
-        print("\n   Testing validation criteria:")
-        for criterion in ValidationCriterion:
-            print(f"   - {criterion.value}: {criterion.name}")
+        assessment = validator.validate_event(
+            test_event,
+            DummyLambdaResult()
+        )
+        
+        print(f"   ✅ Validation completed")
+        print(f"      Pattern: {assessment.pattern.value}")
+        print(f"      Quantum: {assessment.is_quantum}")
+        print(f"      Confidence: {assessment.confidence:.1%}")
+        
+        # 4. バッチ処理
+        print("   Testing batch processing...")
+        events = [
+            {'frame_start': 10, 'frame_end': 10, 'type': 'test1'},
+            {'frame_start': 20, 'frame_end': 25, 'type': 'test2'},
+            {'frame_start': 50, 'frame_end': 50, 'type': 'test3'},
+        ]
+        
+        assessments = validator.validate_events(
+            events,
+            DummyLambdaResult()
+        )
+        
+        print(f"   ✅ Batch processing completed")
+        print(f"      Processed: {len(assessments)} events")
+        print(f"      Quantum: {sum(1 for a in assessments if a.is_quantum)}")
+        
+        # 5. パターン分類テスト
+        print("   Testing pattern classification...")
+        patterns_found = set(a.pattern for a in assessments)
+        print(f"   ✅ Patterns detected: {[p.value for p in patterns_found]}")
+        
+        # 6. サマリー生成
+        print("   Testing summary generation...")
+        summary = validator.generate_summary(assessments)
+        print(f"   ✅ Summary generated with {len(summary)} fields")
         
         return True
         
@@ -238,42 +405,39 @@ def test_quantum_module():
         traceback.print_exc()
         return False
 
-# レポート生成の簡易ラッパー
-def create_publication_report(quantum_events, output_file='quantum_report.txt'):
-    """
-    査読用レポート生成（v3.0新機能）
-    
-    Parameters
-    ----------
-    quantum_events : List[QuantumCascadeEvent]
-        量子イベントリスト
-    output_file : str
-        出力ファイル名
-    """
-    from .quantum_validation_gpu import generate_quantum_report
-    
-    report = generate_quantum_report(quantum_events)
-    
-    # 統計情報追加
-    report += "\n\nStatistical Summary\n"
-    report += "-------------------\n"
-    report += f"Total events analyzed: {len(quantum_events)}\n"
-    report += f"Quantum events: {sum(1 for e in quantum_events if e.quantum_metrics.is_quantum)}\n"
-    report += f"Critical events: {sum(1 for e in quantum_events if e.is_critical)}\n"
-    
-    # ファイル保存
-    with open(output_file, 'w') as f:
-        f.write(report)
-    
-    print(f"📄 Report saved to {output_file}")
-    return report
+# ============================================
+# Initialization Info
+# ============================================
 
-# メイン実行（テスト用）
+def _print_init_info():
+    """初期化情報の表示"""
+    print("🌌 Quantum Validation Module v4.0 Loaded")
+    print("   Lambda³ Integrated Edition")
+    print(f"   Version: {__version__}")
+    print("   Key Features:")
+    print("   - Lambda structure anomaly evaluation")
+    print("   - 3-pattern classification (instant/transition/cascade)")
+    print("   - Atomic-level evidence gathering")
+    print("   - Adjustable quantum criteria")
+
+# 環境変数でデバッグモード制御
+import os
+if os.environ.get('QUANTUM_DEBUG', '').lower() == 'true':
+    _print_init_info()
+    print("\n📋 Dependencies:")
+    status = check_dependencies()
+    for lib, stat in status.items():
+        print(f"   {lib}: {stat}")
+
+# ============================================
+# Main Execution (for testing)
+# ============================================
+
 if __name__ == "__main__":
-    print("\n" + "="*60)
-    print("Quantum Validation Module for Lambda³ GPU v3.0")
-    print("査読耐性＆単一フレーム対応版")
-    print("="*60)
+    print("\n" + "="*70)
+    print("Quantum Validation Module for Lambda³ - Version 4.0")
+    print("Complete Refactoring with Lambda³ Integration")
+    print("="*70)
     
     # 依存関係チェック
     print("\n📋 Checking dependencies...")
@@ -290,17 +454,21 @@ if __name__ == "__main__":
     else:
         # テスト実行
         if test_quantum_module():
-            print("\n✨ Module v3.0 is ready for publication-quality analysis!")
-            print("\nUsage:")
-            print("  from lambda3_gpu.quantum import QuantumValidationGPU")
-            print("  from lambda3_gpu.quantum import validate_quantum_events")
-            print("  validator = QuantumValidationGPU(trajectory, metadata)")
-            print("  events = validator.analyze_quantum_cascade(lambda_result)")
-            
-            print("\n新機能:")
-            print("  - 単一フレーム量子もつれ検証")
-            print("  - フレーム数適応型処理") 
-            print("  - 査読対応の統計的検証")
-            print("  - Bonferroni補正")
+            print("\n✨ Module v4.0 is ready for production!")
+            print("\nUsage Examples:")
+            print("  from lambda3_gpu.quantum import QuantumValidatorV4")
+            print("  validator = QuantumValidatorV4(trajectory=traj)")
+            print("  assessment = validator.validate_event(event, lambda_result)")
+            print("")
+            print("  # Or use convenience functions:")
+            print("  from lambda3_gpu.quantum import quick_validate")
+            print("  assessment = quick_validate(event, lambda_result, trajectory)")
+            print("")
+            print("New in v4.0:")
+            print("  ✅ Lambda³ structure anomaly as primary input")
+            print("  ✅ Clear 3-pattern classification")
+            print("  ✅ Trajectory-based atomic evidence")
+            print("  ✅ Realistic and adjustable criteria")
+            print("  ✅ No more forced classical for 10+ frames!")
         else:
             print("\n⚠️ Module test failed. Please check installation.")
