@@ -12,7 +12,7 @@ from .causality_viz_gpu import (
     create_network_comparison
 )
 
-__all__ = [
+__all__ = [  # ← ダブルアンダースコア！
     # メイン可視化
     'Lambda3VisualizerGPU',
     'visualize_residue_analysis',
@@ -22,4 +22,4 @@ __all__ = [
     'create_network_comparison'
 ]
 
-__version__ = '1.0.0'
+__version__ = '1.0.0'  # ← ダブルアンダースコア！
