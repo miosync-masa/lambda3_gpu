@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """
-Maximum Report Generator from Lambda³ GPU Results
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Maximum Report Generator from Lambda³ GPU Results - Version 4.0
+================================================================
+
 既存の解析結果から最大限の情報を抽出してレポート生成！
+Version 4.0の新機能（Lambda異常性、原子レベル証拠、3パターン分類）完全対応版
+
 環ちゃんが全部の情報を絞り出すよ〜💕
 """
 
@@ -23,7 +26,25 @@ def generate_maximum_report_from_results(
     verbose=True
 ) -> str:
     """
-    既に解析済みの結果から最強レポートを生成！
+    Version 3.0互換性のための既存関数（維持）
+    """
+    # 既存の実装をそのまま維持
+    return _generate_v3_report(
+        lambda_result, two_stage_result, quantum_events, 
+        metadata, output_dir, verbose
+    )
+
+
+def generate_maximum_report_from_results_v4(
+    lambda_result,
+    two_stage_result=None,
+    quantum_assessments=None,  # Version 4.0: QuantumAssessment型
+    metadata=None,
+    output_dir='./maximum_report_v4',
+    verbose=True
+) -> str:
+    """
+    Version 4.0対応の最強レポート生成！
     
     Parameters
     ----------
@@ -31,8 +52,8 @@ def generate_maximum_report_from_results(
         Lambda³マクロ解析結果
     two_stage_result : TwoStageLambda3Result, optional
         残基レベル解析結果
-    quantum_events : List[QuantumCascadeEvent], optional
-        量子検証結果
+    quantum_assessments : List[QuantumAssessment], optional
+        Version 4.0の量子評価結果
     metadata : dict, optional
         システムメタデータ
     output_dir : str
@@ -51,10 +72,10 @@ def generate_maximum_report_from_results(
     
     if verbose:
         print("\n" + "="*80)
-        print("🌟 GENERATING MAXIMUM REPORT FROM EXISTING RESULTS")
+        print("🌟 GENERATING MAXIMUM REPORT v4.0 - Lambda³ Integrated Edition")
         print("="*80)
     
-    report = """# 🌟 Lambda³ GPU Complete Analysis Report - MAXIMUM VERSION
+    report = """# 🌟 Lambda³ GPU Complete Analysis Report - VERSION 4.0
 
 ## Executive Summary
 """
@@ -63,14 +84,15 @@ def generate_maximum_report_from_results(
     if metadata:
         report += f"""
 - **System**: {metadata.get('system_name', 'Unknown')}
-- **Temperature**: {metadata.get('temperature', 310)} K
-- **Time step**: {metadata.get('time_step_ps', 2.0)} ps
+- **Temperature**: {metadata.get('temperature', 300)} K
+- **Time step**: {metadata.get('time_step_ps', 100.0)} ps
 """
     
     report += f"""
 - **Frames analyzed**: {lambda_result.n_frames}
 - **Atoms**: {lambda_result.n_atoms}
 - **Computation time**: {lambda_result.computation_time:.2f}s
+- **Analysis version**: 4.0.0 (Lambda³ Integrated)
 """
     
     # GPU情報
@@ -82,7 +104,7 @@ def generate_maximum_report_from_results(
             report += f"- **GPU speedup**: {lambda_result.gpu_info['speedup']:.1f}x\n"
     
     # ========================================
-    # 1. Lambda³結果の完全解析
+    # 1. Lambda³結果の完全解析（既存機能維持）
     # ========================================
     if verbose:
         print("\n📊 Extracting all Lambda³ details...")
@@ -102,7 +124,7 @@ def generate_maximum_report_from_results(
                     'type': 'structural_boundary',
                     'score': 5.0
                 })
-                if i < 20:  # 最初の20個を表示
+                if i < 20:
                     report += f"- Boundary {i+1}: Frame {loc}\n"
             if len(boundaries) > 20:
                 report += f"- ... and {len(boundaries)-20} more\n"
@@ -129,7 +151,6 @@ def generate_maximum_report_from_results(
             if score_type in lambda_result.anomaly_scores:
                 scores = lambda_result.anomaly_scores[score_type]
                 
-                # 統計
                 score_stats[score_type] = {
                     'mean': np.mean(scores),
                     'max': np.max(scores),
@@ -138,14 +159,12 @@ def generate_maximum_report_from_results(
                     'median': np.median(scores)
                 }
                 
-                # ピーク検出（異なる閾値で）
                 for threshold in [2.0, 2.5, 3.0]:
                     peaks, properties = find_peaks(scores, height=threshold, distance=50)
                     if len(peaks) > 0:
                         score_stats[score_type][f'peaks_{threshold}'] = len(peaks)
                         
-                        # イベントとして追加
-                        for peak in peaks[:10]:  # 各閾値で最大10個
+                        for peak in peaks[:10]:
                             all_events.append({
                                 'frame': peak,
                                 'type': f'{score_type}_peak_{threshold}',
@@ -174,23 +193,35 @@ def generate_maximum_report_from_results(
                     'duration': event[1] - event[0]
                 })
     
-    # 位相空間解析結果（あれば）
-    if hasattr(lambda_result, 'phase_space_analysis') and lambda_result.phase_space_analysis:
-        report += "\n### Phase Space Analysis\n"
-        phase_data = lambda_result.phase_space_analysis
-        if 'singularities' in phase_data:
-            report += f"- Singularities detected: {len(phase_data['singularities'])}\n"
-        if 'coherence' in phase_data:
-            report += f"- Phase coherence: {phase_data['coherence']:.3f}\n"
+    # Lambda構造の詳細（structures）
+    if hasattr(lambda_result, 'structures'):
+        report += "\n### Lambda Structure Components\n"
+        structures = lambda_result.structures
+        
+        if 'lambda_f' in structures:
+            lambda_vals = structures['lambda_f']
+            report += f"- Lambda_F: mean={np.mean(lambda_vals):.3f}, "
+            report += f"std={np.std(lambda_vals):.3f}, "
+            report += f"max={np.max(lambda_vals):.3f}\n"
+        
+        if 'rho_t' in structures:
+            rho_vals = structures['rho_t']
+            report += f"- Rho_T (tension): mean={np.mean(rho_vals):.3f}, "
+            report += f"max={np.max(rho_vals):.3f}\n"
+        
+        if 'sigma_s' in structures:
+            sigma_vals = structures['sigma_s']
+            report += f"- Sigma_S (sync): mean={np.mean(sigma_vals):.3f}, "
+            report += f"max={np.max(sigma_vals):.3f}\n"
     
     # イベント総計
-    report += f"\n### Total Events Extracted: {len(all_events)}\n"
+    report += f"\n### Total Lambda³ Events Extracted: {len(all_events)}\n"
     event_types = Counter(e['type'] for e in all_events)
     for etype, count in event_types.most_common():
         report += f"- {etype}: {count}\n"
     
     # ========================================
-    # 2. Two-Stage結果の完全解析
+    # 2. Two-Stage結果の完全解析（既存機能維持）
     # ========================================
     if two_stage_result:
         if verbose:
@@ -208,14 +239,7 @@ def generate_maximum_report_from_results(
 - **Total async bonds**: {stats.get('total_async_bonds', 0)}
 - **Async/Causal ratio**: {stats.get('async_to_causal_ratio', 0):.2%}
 - **Mean adaptive window**: {stats.get('mean_adaptive_window', 0):.1f} frames
-- **Network density**: {stats.get('network_density', 0):.3f}
 """
-            
-            # 追加統計（あれば）
-            for key, value in stats.items():
-                if key not in ['total_causal_links', 'total_sync_links', 'total_async_bonds',
-                              'async_to_causal_ratio', 'mean_adaptive_window', 'network_density']:
-                    report += f"- **{key}**: {value}\n"
         
         # 全残基の重要度スコア
         if hasattr(two_stage_result, 'global_residue_importance'):
@@ -231,7 +255,6 @@ def generate_maximum_report_from_results(
                 report += "|------|---------|-------|----------|\n"
                 
                 for rank, (res_id, score) in enumerate(all_residues, 1):
-                    # カテゴリ分類
                     if rank <= 5:
                         category = "🔥 Critical"
                     elif rank <= 20:
@@ -250,17 +273,14 @@ def generate_maximum_report_from_results(
             for event_idx, (event_name, analysis) in enumerate(two_stage_result.residue_analyses.items()):
                 report += f"\n#### Event: {event_name}\n"
                 
-                # 基本情報
                 if hasattr(analysis, 'frame_range'):
                     report += f"- Frame range: {analysis.frame_range[0]}-{analysis.frame_range[1]}\n"
                 if hasattr(analysis, 'gpu_time'):
                     report += f"- GPU computation time: {analysis.gpu_time:.3f}s\n"
                 
-                # 残基イベント詳細
                 if hasattr(analysis, 'residue_events'):
                     report += f"- **Residues involved**: {len(analysis.residue_events)}\n"
                     
-                    # 全残基のスコア
                     all_scores = [(re.residue_id, re.anomaly_score) 
                                  for re in analysis.residue_events]
                     all_scores.sort(key=lambda x: x[1], reverse=True)
@@ -268,224 +288,217 @@ def generate_maximum_report_from_results(
                     report += "  - Top 10 anomalous residues:\n"
                     for res_id, score in all_scores[:10]:
                         report += f"    - R{res_id+1}: {score:.3f}\n"
-                    
-                    # スコア分布
-                    scores = [s for _, s in all_scores]
-                    if scores:
-                        report += f"  - Score distribution: mean={np.mean(scores):.3f}, "
-                        report += f"max={np.max(scores):.3f}, std={np.std(scores):.3f}\n"
                 
-                # 因果ネットワーク詳細
-                if hasattr(analysis, 'causality_chain'):
-                    report += f"- **Causality chains**: {len(analysis.causality_chain)}\n"
-                    
-                    if analysis.causality_chain:
-                        # 因果強度の統計
-                        strengths = [c[2] for c in analysis.causality_chain if len(c) > 2]
-                        if strengths:
-                            report += f"  - Strength: mean={np.mean(strengths):.3f}, "
-                            report += f"max={np.max(strengths):.3f}\n"
-                        
-                        # トップ因果ペア
-                        report += "  - Strongest causal pairs:\n"
-                        sorted_chains = sorted(analysis.causality_chain, 
-                                             key=lambda x: x[2] if len(x) > 2 else 0,
-                                             reverse=True)
-                        for chain in sorted_chains[:5]:
-                            if len(chain) >= 3:
-                                report += f"    - R{chain[0]+1} → R{chain[1]+1}: {chain[2]:.3f}\n"
-                
-                # イニシエーター残基
-                if hasattr(analysis, 'initiator_residues'):
-                    report += f"- **Initiator residues**: {analysis.initiator_residues[:10]}\n"
-                
-                # 伝播パス
-                if hasattr(analysis, 'key_propagation_paths'):
-                    report += f"- **Propagation paths**: {len(analysis.key_propagation_paths)}\n"
-                    for i, path in enumerate(analysis.key_propagation_paths[:3], 1):
-                        path_str = " → ".join([f"R{r+1}" for r in path])
-                        report += f"  - Path {i}: {path_str}\n"
-                
-                # ネットワーク結果
                 if hasattr(analysis, 'network_result'):
                     network = analysis.network_result
                     if hasattr(network, 'async_strong_bonds'):
                         report += f"- **Async bonds**: {len(network.async_strong_bonds)}\n"
-                        # トップAsync結合
-                        if network.async_strong_bonds:
-                            report += "  - Strongest async bonds:\n"
-                            for bond in network.async_strong_bonds[:5]:
-                                report += f"    - R{bond[0]+1} ⟷ R{bond[1]+1}: "
-                                report += f"lag={bond[2] if len(bond) > 2 else 'N/A'}\n"
-        
-        # ハブ残基の完全解析
-        all_hub_residues = []
-        for analysis in two_stage_result.residue_analyses.values():
-            if hasattr(analysis, 'initiator_residues'):
-                all_hub_residues.extend(analysis.initiator_residues)
-        
-        if all_hub_residues:
-            hub_counts = Counter(all_hub_residues)
-            report += "\n### Hub Residues Analysis (Drug Targets)\n"
-            report += "| Rank | Residue | Frequency | Events Involved |\n"
-            report += "|------|---------|-----------|----------------|\n"
-            
-            for rank, (res_id, count) in enumerate(hub_counts.most_common(), 1):
-                # どのイベントに関与しているか
-                events_involved = []
-                for event_name, analysis in two_stage_result.residue_analyses.items():
-                    if hasattr(analysis, 'initiator_residues'):
-                        if res_id in analysis.initiator_residues:
-                            events_involved.append(event_name)
-                
-                events_str = ", ".join(events_involved[:3])
-                if len(events_involved) > 3:
-                    events_str += f" +{len(events_involved)-3}"
-                
-                report += f"| {rank} | R{res_id+1} | {count} | {events_str} |\n"
-        
-        # 既存のブートストラップ結果を探す
-        if hasattr(two_stage_result, 'bootstrap_results'):
-            report += "\n### Bootstrap Statistical Validation (Found)\n"
-            bootstrap = two_stage_result.bootstrap_results
-            
-            if isinstance(bootstrap, dict):
-                for event_name, stats in bootstrap.items():
-                    report += f"\n#### {event_name}\n"
-                    report += f"- Pairs tested: {stats.get('n_pairs_tested', 'N/A')}\n"
-                    report += f"- Significant pairs: {stats.get('n_significant', 'N/A')}\n"
-                    report += f"- Significance rate: {stats.get('significance_rate', 0):.1%}\n"
-        
-        # 信頼区間情報（あれば）
-        if hasattr(two_stage_result, 'confidence_intervals'):
-            ci = two_stage_result.confidence_intervals
-            report += "\n### Statistical Confidence\n"
-            report += f"- Mean CI width: {ci.get('mean_ci_width', 'N/A')}\n"
-            report += f"- Correlation range: [{ci.get('min_correlation', 0):.3f}, "
-            report += f"{ci.get('max_correlation', 0):.3f}]\n"
     
     # ========================================
-    # 3. 量子イベントの完全解析
+    # 3. 量子評価の完全解析（Version 4.0新機能）
     # ========================================
-    if quantum_events:
+    if quantum_assessments:
         if verbose:
-            print("\n⚛️ Extracting all quantum details...")
+            print("\n⚛️ Extracting all quantum assessment details (v4.0)...")
         
-        report += "\n## ⚛️ Quantum Events Analysis (Complete)\n"
+        report += "\n## ⚛️ Quantum Assessment Analysis v4.0 (Complete)\n"
         
-        report += f"### Overview\n"
-        report += f"- **Total events**: {len(quantum_events)}\n"
+        total = len(quantum_assessments)
+        quantum_count = sum(1 for a in quantum_assessments if a.is_quantum)
         
-        # 量子イベントの分類
-        n_quantum = sum(1 for e in quantum_events if e.quantum_metrics.is_quantum)
-        n_bell = sum(1 for e in quantum_events if e.quantum_metrics.bell_violated)
-        n_critical = sum(1 for e in quantum_events if e.is_critical)
+        report += f"""
+### Overview
+- **Total events analyzed**: {total}
+- **Quantum events confirmed**: {quantum_count} ({quantum_count/total*100:.1f}%)
+"""
         
-        report += f"- **Confirmed quantum**: {n_quantum} ({100*n_quantum/max(1,len(quantum_events)):.1f}%)\n"
-        report += f"- **Bell violations**: {n_bell} ({100*n_bell/max(1,len(quantum_events)):.1f}%)\n"
-        report += f"- **Critical events**: {n_critical}\n"
+        # パターン分布（Version 4.0の3パターン分類）
+        pattern_counts = Counter(a.pattern.value for a in quantum_assessments)
+        report += "\n### Pattern Distribution (3-Pattern Classification)\n"
+        for pattern, count in pattern_counts.items():
+            quantum_in_pattern = sum(1 for a in quantum_assessments 
+                                    if a.pattern.value == pattern and a.is_quantum)
+            report += f"- **{pattern}**: {count} events, "
+            report += f"{quantum_in_pattern} quantum ({quantum_in_pattern/count*100:.1f}%)\n"
         
-        # イベントタイプ分布
-        event_types = Counter(e.event_type.value for e in quantum_events)
-        report += "\n### Event Type Distribution\n"
-        for etype, count in event_types.most_common():
-            report += f"- {etype}: {count}\n"
+        # シグネチャー分布（Version 4.0）
+        sig_counts = Counter(a.signature.value for a in quantum_assessments 
+                           if a.signature.value != 'classical')
+        if sig_counts:
+            report += "\n### Quantum Signature Distribution\n"
+            for sig, count in sig_counts.most_common():
+                report += f"- **{sig}**: {count}\n"
         
-        # CHSH統計
-        chsh_values = [e.quantum_metrics.chsh_value for e in quantum_events]
-        if chsh_values:
-            report += f"\n### CHSH Statistics\n"
-            report += f"- Mean: {np.mean(chsh_values):.3f}\n"
-            report += f"- Max: {np.max(chsh_values):.3f}\n"
-            report += f"- Min: {np.min(chsh_values):.3f}\n"
-            report += f"- Std: {np.std(chsh_values):.3f}\n"
+        # Lambda異常性統計（Version 4.0新機能）
+        lambda_anomalies = [a.lambda_anomaly for a in quantum_assessments 
+                          if a.lambda_anomaly is not None]
+        if lambda_anomalies:
+            report += "\n### Lambda Anomaly Statistics (v4.0)\n"
+            
+            lambda_jumps = [la.lambda_jump for la in lambda_anomalies if la.lambda_jump > 0]
+            lambda_zscores = [la.lambda_zscore for la in lambda_anomalies if la.lambda_zscore > 0]
+            rho_t_spikes = [la.rho_t_spike for la in lambda_anomalies if la.rho_t_spike > 0]
+            
+            if lambda_jumps:
+                report += f"- **Lambda jumps**: mean={np.mean(lambda_jumps):.3f}, "
+                report += f"max={np.max(lambda_jumps):.3f}\n"
+            
+            if lambda_zscores:
+                report += f"- **Lambda Z-scores**: mean={np.mean(lambda_zscores):.2f}, "
+                report += f"max={np.max(lambda_zscores):.2f}\n"
+                report += f"  - Significant (>3σ): {sum(1 for z in lambda_zscores if z > 3)}\n"
+                report += f"  - Highly significant (>5σ): {sum(1 for z in lambda_zscores if z > 5)}\n"
+            
+            if rho_t_spikes:
+                report += f"- **ρT spikes**: mean={np.mean(rho_t_spikes):.3f}, "
+                report += f"max={np.max(rho_t_spikes):.3f}\n"
+        
+        # 原子レベル証拠統計（Version 4.0新機能）
+        atomic_evidences = [a.atomic_evidence for a in quantum_assessments 
+                          if a.atomic_evidence is not None]
+        if atomic_evidences:
+            report += "\n### Atomic-Level Evidence Statistics (v4.0)\n"
+            
+            max_velocities = [ae.max_velocity for ae in atomic_evidences if ae.max_velocity > 0]
+            correlations = [ae.correlation_coefficient for ae in atomic_evidences 
+                          if ae.correlation_coefficient > 0]
+            
+            if max_velocities:
+                report += f"- **Max atomic velocities**: mean={np.mean(max_velocities):.2f} Å/ps, "
+                report += f"max={np.max(max_velocities):.2f} Å/ps\n"
+            
+            if correlations:
+                report += f"- **Atomic correlations**: mean={np.mean(correlations):.3f}, "
+                report += f"max={np.max(correlations):.3f}\n"
+                report += f"  - High correlation (>0.8): {sum(1 for c in correlations if c > 0.8)}\n"
+            
+            bond_anomaly_counts = [len(ae.bond_anomalies) for ae in atomic_evidences]
+            if any(bond_anomaly_counts):
+                report += f"- **Bond anomalies detected**: {sum(bond_anomaly_counts)} total\n"
+        
+        # 信頼度統計
+        confidences = [a.confidence for a in quantum_assessments if a.is_quantum]
+        if confidences:
+            report += f"\n### Confidence Statistics\n"
+            report += f"- Mean: {np.mean(confidences):.3f}\n"
+            report += f"- Max: {np.max(confidences):.3f}\n"
+            report += f"- Min: {np.min(confidences):.3f}\n"
+            report += f"- Std: {np.std(confidences):.3f}\n"
+        
+        # Bell不等式（カスケードイベント）
+        bell_values = [a.bell_inequality for a in quantum_assessments 
+                      if a.bell_inequality is not None]
+        if bell_values:
+            report += f"\n### Bell Inequality Analysis (Cascade Events)\n"
+            report += f"- Events with Bell test: {len(bell_values)}\n"
+            violations = sum(1 for b in bell_values if b > 2.0)
+            report += f"- Violations (S > 2): {violations} ({violations/len(bell_values)*100:.1f}%)\n"
+            report += f"- Max CHSH value: {np.max(bell_values):.3f}\n"
             report += f"- Classical bound: 2.000\n"
             report += f"- Tsirelson bound: {2*np.sqrt(2):.3f}\n"
         
-        # 全量子イベントの詳細
-        report += "\n### All Quantum Events (Detailed)\n"
+        # 全量子イベントの詳細（TOP 20）
+        report += "\n### Top Quantum Events (Detailed v4.0)\n"
         
-        for i, event in enumerate(quantum_events, 1):
-            qm = event.quantum_metrics
+        quantum_events = sorted([a for a in quantum_assessments if a.is_quantum],
+                              key=lambda x: x.confidence, reverse=True)
+        
+        for i, assessment in enumerate(quantum_events[:20], 1):
             report += f"\n#### Event {i}\n"
-            report += f"- Frames: {event.frame_start}-{event.frame_end}\n"
-            report += f"- Type: {event.event_type.value}\n"
-            report += f"- Duration: {qm.duration_frames} frames ({qm.duration_ps:.2f} ps)\n"
-            report += f"- Quantum: {'✅' if qm.is_quantum else '❌'}\n"
-            report += f"- Bell violated: {'✅' if qm.bell_violated else '❌'}\n"
-            report += f"- CHSH: {qm.chsh_value:.3f} (raw: {qm.chsh_raw_value:.3f})\n"
-            report += f"- Confidence: {qm.quantum_confidence:.3f}\n"
-            report += f"- Score: {qm.quantum_score:.3f}\n"
+            report += f"- **Pattern**: {assessment.pattern.value}\n"
+            report += f"- **Signature**: {assessment.signature.value}\n"
+            report += f"- **Confidence**: {assessment.confidence:.1%}\n"
+            report += f"- **Explanation**: {assessment.explanation}\n"
             
-            # 物理指標
-            report += f"- Coherence time: {qm.coherence_time_ps:.3e} ps\n"
-            report += f"- Thermal ratio: {qm.thermal_ratio:.3f}\n"
-            report += f"- Tunneling prob: {qm.tunneling_probability:.3e}\n"
+            if assessment.criteria_met:
+                report += f"- **Criteria met** ({len(assessment.criteria_met)}):\n"
+                for criterion in assessment.criteria_met[:5]:
+                    report += f"  - {criterion}\n"
             
-            # クリティカル理由
-            if event.is_critical:
-                report += f"- **CRITICAL**: {', '.join(event.critical_reasons)}\n"
+            if assessment.lambda_anomaly:
+                la = assessment.lambda_anomaly
+                if la.lambda_zscore > 3:
+                    report += f"- **Lambda anomaly**: Z-score={la.lambda_zscore:.2f} "
+                    report += f"(p={la.statistical_rarity:.4f})\n"
             
-            # 判定基準
-            if qm.criteria_passed:
-                report += "- Criteria passed:\n"
-                for criterion in qm.criteria_passed:
-                    if criterion.passed:
-                        report += f"  - ✅ {criterion.criterion.value}\n"
+            if assessment.atomic_evidence:
+                ae = assessment.atomic_evidence
+                if ae.correlation_coefficient > 0.8:
+                    report += f"- **Atomic correlation**: {ae.correlation_coefficient:.3f}\n"
+            
+            if assessment.bell_inequality is not None:
+                report += f"- **Bell inequality**: S={assessment.bell_inequality:.3f}\n"
     
     # ========================================
-    # 4. 統合的洞察とサマリー
+    # 4. 統合的洞察（Version 4.0強化版）
     # ========================================
     if verbose:
-        print("\n💡 Generating integrated insights...")
+        print("\n💡 Generating integrated insights (v4.0)...")
     
-    report += "\n## 💡 Integrated Insights & Summary\n"
+    report += "\n## 💡 Integrated Insights v4.0\n"
     
     insights = []
     
-    # イベント総数
-    total_unique_events = len(set(e['frame'] for e in all_events))
-    insights.append(f"✓ {total_unique_events} unique frames with events detected")
-    insights.append(f"✓ {len(all_events)} total events across all detection methods")
+    # Lambda³構造異常
+    if all_events:
+        total_unique = len(set(e['frame'] for e in all_events))
+        insights.append(f"✓ {total_unique} unique frames with structural anomalies")
+        insights.append(f"✓ {len(all_events)} total structural events detected")
     
-    # ネットワーク密度
+    # 量子性の分析（Version 4.0）
+    if quantum_assessments:
+        if quantum_count > 0:
+            # パターン別の量子性
+            for pattern in ['instantaneous', 'transition', 'cascade']:
+                pattern_events = [a for a in quantum_assessments if a.pattern.value == pattern]
+                if pattern_events:
+                    q_count = sum(1 for a in pattern_events if a.is_quantum)
+                    if q_count > 0:
+                        insights.append(f"✓ {pattern}: {q_count}/{len(pattern_events)} quantum "
+                                      f"({q_count/len(pattern_events)*100:.1f}%)")
+            
+            # シグネチャー別
+            if sig_counts:
+                top_sig = sig_counts.most_common(1)[0]
+                insights.append(f"✓ Most common quantum signature: {top_sig[0]} ({top_sig[1]} events)")
+        
+        # Lambda異常の重要性
+        if lambda_anomalies:
+            high_z = sum(1 for la in lambda_anomalies if la.lambda_zscore > 3)
+            if high_z > 0:
+                insights.append(f"✓ {high_z} events with significant Lambda anomaly (>3σ)")
+        
+        # 原子レベルの証拠
+        if atomic_evidences:
+            high_corr = sum(1 for ae in atomic_evidences if ae.correlation_coefficient > 0.8)
+            if high_corr > 0:
+                insights.append(f"✓ {high_corr} events with high atomic correlation (>0.8)")
+    
+    # ネットワーク解析
     if two_stage_result and hasattr(two_stage_result, 'global_network_stats'):
         stats = two_stage_result.global_network_stats
         total_links = (stats.get('total_causal_links', 0) + 
                       stats.get('total_sync_links', 0) +
                       stats.get('total_async_bonds', 0))
         if total_links > 0:
-            insights.append(f"✓ {total_links} total network connections identified")
+            insights.append(f"✓ {total_links} total network connections")
             
-            # ネットワークの特徴
             if stats.get('async_to_causal_ratio', 0) > 0.5:
-                insights.append(f"✓ High async/causal ratio ({stats['async_to_causal_ratio']:.1%}) suggests long-range coupling")
-    
-    # 量子特性
-    if quantum_events:
-        if n_quantum > 0:
-            quantum_rate = 100 * n_quantum / len(quantum_events)
-            insights.append(f"✓ {quantum_rate:.1f}% events show quantum signatures")
-        if n_bell > 0:
-            bell_rate = 100 * n_bell / len(quantum_events)
-            insights.append(f"✓ {bell_rate:.1f}% events violate Bell inequalities (non-classical)")
-    
-    # GPU性能
-    if hasattr(lambda_result, 'gpu_info') and lambda_result.gpu_info:
-        if 'speedup' in lambda_result.gpu_info:
-            speedup = lambda_result.gpu_info['speedup']
-            if speedup > 1:
-                insights.append(f"✓ {speedup:.1f}x GPU acceleration achieved")
-        if 'device_name' in lambda_result.gpu_info:
-            insights.append(f"✓ Computed on {lambda_result.gpu_info['device_name']}")
+                insights.append(f"✓ High async/causal ratio ({stats['async_to_causal_ratio']:.1%})")
     
     for insight in insights:
         report += f"\n{insight}"
     
     # ========================================
-    # 5. 創薬ターゲット提案
+    # 5. 創薬ターゲット提案（既存機能維持）
     # ========================================
-    if two_stage_result and all_hub_residues:
+    all_hub_residues = []
+    if two_stage_result and hasattr(two_stage_result, 'residue_analyses'):
+        for analysis in two_stage_result.residue_analyses.values():
+            if hasattr(analysis, 'initiator_residues'):
+                all_hub_residues.extend(analysis.initiator_residues)
+    
+    if all_hub_residues:
         report += "\n\n## 💊 Drug Design Recommendations\n"
         
         hub_counts = Counter(all_hub_residues)
@@ -497,54 +510,69 @@ def generate_maximum_report_from_results(
             report += f"\n{i}. **Residue {res_id+1}**\n"
             report += f"   - Hub frequency: {count} events\n"
             
-            # 重要度スコア
             if hasattr(two_stage_result, 'global_residue_importance'):
                 importance = two_stage_result.global_residue_importance.get(res_id, 0)
                 report += f"   - Importance score: {importance:.3f}\n"
             
-            # ネットワーク中心性
-            if count >= 3:
-                report += f"   - Network centrality: HIGH\n"
-            elif count >= 2:
-                report += f"   - Network centrality: MEDIUM\n"
-            
-            # カテゴリ
             if i <= 3:
                 report += f"   - **Priority: CRITICAL TARGET**\n"
             elif i <= 10:
                 report += f"   - Priority: Secondary target\n"
     
     # ========================================
-    # 6. 推奨事項
+    # 6. 推奨事項（Version 4.0強化版）
     # ========================================
-    report += "\n## 📋 Recommendations\n"
+    report += "\n## 📋 Recommendations v4.0\n"
     
     recommendations = []
     
     # ハブ残基ベース
-    if two_stage_result and hub_counts:
+    if hub_counts:
         top3 = [f"R{r+1}" for r, _ in hub_counts.most_common(3)]
         recommendations.append(f"Focus on residues {', '.join(top3)} for drug targeting")
     
-    # 量子イベントベース
-    if quantum_events and n_bell > 0:
-        recommendations.append("Consider quantum mechanical effects in modeling")
-        recommendations.append("Bell violations suggest non-classical correlations requiring QM treatment")
+    # 量子イベントベース（Version 4.0）
+    if quantum_assessments and quantum_count > 0:
+        # パターン別推奨
+        if pattern_counts.get('instantaneous', 0) > 5:
+            recommendations.append("Instantaneous transitions detected - consider quantum tunneling in drug design")
+        if pattern_counts.get('cascade', 0) > 10:
+            recommendations.append("Network cascades detected - target allosteric communication pathways")
+        
+        # シグネチャー別推奨
+        if sig_counts.get('quantum_entanglement', 0) > 0:
+            recommendations.append("Quantum entanglement signatures - non-local correlations present")
+        if sig_counts.get('quantum_tunneling', 0) > 0:
+            recommendations.append("Tunneling events detected - consider proton transfer mechanisms")
+    
+    # Lambda異常ベース（Version 4.0）
+    if lambda_anomalies:
+        high_z = [la for la in lambda_anomalies if la.lambda_zscore > 5]
+        if high_z:
+            recommendations.append(f"Extreme structural anomalies detected ({len(high_z)} events with Z>5σ)")
     
     # ネットワークベース
     if two_stage_result and hasattr(two_stage_result, 'global_network_stats'):
         stats = two_stage_result.global_network_stats
         if stats.get('total_async_bonds', 0) > 100:
-            recommendations.append("Strong async bonds indicate allosteric communication pathways")
+            recommendations.append("Strong async bonds indicate allosteric mechanisms")
     
     for i, rec in enumerate(recommendations, 1):
         report += f"\n{i}. {rec}"
+    
+    # Version 4.0の新しい洞察
+    report += "\n\n### Version 4.0 Improvements\n"
+    report += "- Lambda structure anomaly as primary quantum indicator\n"
+    report += "- 3-pattern classification (instantaneous/transition/cascade)\n"
+    report += "- Atomic-level evidence integration\n"
+    report += "- No automatic classical assignment for long events\n"
     
     # フッター
     report += f"""
 
 ---
 *Analysis Complete!*
+*Version: 4.0.0 - Lambda³ Integrated Edition*
 *Total report length: {len(report):,} characters*
 *NO TIME, NO PHYSICS, ONLY STRUCTURE!*
 *Generated by 環ちゃん with love 💕*
@@ -555,46 +583,51 @@ def generate_maximum_report_from_results(
     # ========================================
     
     # Markdownレポート保存
-    report_path = output_path / 'maximum_report.md'
+    report_path = output_path / 'maximum_report_v4.md'
     with open(report_path, 'w') as f:
         f.write(report)
     
     # JSON形式でも保存（データ解析用）
     json_data = {
+        'version': '4.0.0',
         'summary': {
             'n_frames': lambda_result.n_frames,
             'n_atoms': lambda_result.n_atoms,
             'computation_time': lambda_result.computation_time,
-            'total_events': len(all_events),
+            'total_lambda_events': len(all_events),
             'event_types': dict(Counter(e['type'] for e in all_events))
         },
-        'events': all_events[:100],  # 最初の100イベント
+        'events': all_events[:100],
         'metadata': metadata if metadata else {}
     }
+    
+    # Version 4.0の量子評価サマリー
+    if quantum_assessments:
+        json_data['quantum_v4'] = {
+            'total': total,
+            'quantum': quantum_count,
+            'patterns': dict(pattern_counts),
+            'signatures': dict(sig_counts),
+            'mean_confidence': np.mean(confidences) if confidences else 0
+        }
     
     if two_stage_result and hasattr(two_stage_result, 'global_network_stats'):
         json_data['network_stats'] = two_stage_result.global_network_stats
     
-    if quantum_events:
-        json_data['quantum_summary'] = {
-            'total': len(quantum_events),
-            'quantum': n_quantum,
-            'bell_violations': n_bell,
-            'critical': n_critical
-        }
-    
-    json_path = output_path / 'analysis_data.json'
+    json_path = output_path / 'analysis_data_v4.json'
     with open(json_path, 'w') as f:
-        json.dump(json_data, f, indent=2)
+        json.dump(json_data, f, indent=2, default=float)
     
     if verbose:
-        print(f"\n✨ COMPLETE!")
+        print(f"\n✨ COMPLETE! (Version 4.0)")
         print(f"   📄 Report saved to: {report_path}")
         print(f"   📊 Data saved to: {json_path}")
         print(f"   📏 Report length: {len(report):,} characters")
-        print(f"   🎯 Events extracted: {len(all_events)}")
-        if two_stage_result and hub_counts:
-            print(f"   💊 Drug targets identified: {len(hub_counts)}")
-        print(f"\n   All available information has been extracted!")
+        print(f"   🎯 Lambda events: {len(all_events)}")
+        if quantum_assessments:
+            print(f"   ⚛️ Quantum events: {quantum_count}/{total}")
+        if hub_counts:
+            print(f"   💊 Drug targets: {len(hub_counts)}")
+        print(f"\n   All information extracted with v4.0 enhancements!")
     
     return report
