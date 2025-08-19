@@ -116,7 +116,7 @@ def generate_maximum_report_from_results_v4(
     # 構造境界の詳細
     if hasattr(lambda_result, 'structural_boundaries'):
         boundaries = lambda_result.structural_boundaries.get('boundary_locations', [])
-        if boundaries:
+        if len(boundaries) > 0:
             report += f"\n### Structural Boundaries ({len(boundaries)} detected)\n"
             for i, loc in enumerate(boundaries):
                 all_events.append({
@@ -132,7 +132,7 @@ def generate_maximum_report_from_results_v4(
     # トポロジカル破れ
     if hasattr(lambda_result, 'topological_breaks'):
         breaks = lambda_result.topological_breaks.get('break_points', [])
-        if breaks:
+        if len(breaks) > 0:
             report += f"\n### Topological Breaks ({len(breaks)} detected)\n"
             for i, point in enumerate(breaks[:10]):
                 report += f"- Break {i+1}: Frame {point}\n"
@@ -194,7 +194,8 @@ def generate_maximum_report_from_results_v4(
                 })
     
     # Lambda構造の詳細（structures）
-    if hasattr(lambda_result, 'structures'):
+    if hasattr(lambda_result, 'lambda_structures'):
+        structures = lambda_result.lambda_structures
         report += "\n### Lambda Structure Components\n"
         structures = lambda_result.structures
         
