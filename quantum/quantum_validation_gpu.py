@@ -249,56 +249,56 @@ class QuantumValidatorV4:
     
     def _evaluate_lambda_anomaly(self, event: Dict, lambda_result: Any) -> LambdaAnomaly:
         """Lambda構造の異常性を評価"""
-            anomaly = LambdaAnomaly()
-            
-            # ここを修正！
-            if not hasattr(lambda_result, 'lambda_structures'):  # structures → lambda_structures
-                return anomaly
-            
-            structures = lambda_result.lambda_structures  # ← ここも！
-            frame = event.get('frame_start', event.get('frame', 0))
-                
-            # Lambda値の変化
-            if 'lambda_f' in structures and frame < len(structures['lambda_f']):
-                lambda_vals = structures['lambda_f']
-                
-                # 前後との差分
-                if frame > 0 and frame < len(lambda_vals) - 1:
-                    prev_val = lambda_vals[frame - 1]
-                    curr_val = lambda_vals[frame]
-                    next_val = lambda_vals[frame + 1]
-                    
-                    anomaly.lambda_jump = abs(curr_val - prev_val)
-                    
-                    # Z-score計算
-                    if len(lambda_vals) > 10:
-                        mean = np.mean(lambda_vals)
-                        std = np.std(lambda_vals)
-                        if std > 0:
-                            anomaly.lambda_zscore = abs(curr_val - mean) / std
-            
-            # rho_t（テンション）
-            if 'rho_t' in structures and frame < len(structures['rho_t']):
-                anomaly.rho_t_spike = structures['rho_t'][frame]
-            
-            # sigma_s（構造同期）
-            if 'sigma_s' in structures and frame < len(structures['sigma_s']):
-                anomaly.sigma_s_value = structures['sigma_s'][frame]
-            
-            # 協調性（レプリカ解析の場合）
-            if hasattr(lambda_result, 'coordination') and frame < len(lambda_result.coordination):
-                anomaly.coordination = lambda_result.coordination[frame]
-            
-            # 統計的稀少性
-            if anomaly.lambda_zscore > 0:
-                anomaly.statistical_rarity = 2 * (1 - stats.norm.cdf(anomaly.lambda_zscore))
-            
-            # 熱的比較
-            thermal_energy = self.k_B_T
-            if anomaly.lambda_jump > 0:
-                anomaly.thermal_comparison = anomaly.lambda_jump / thermal_energy
-            
+        anomaly = LambdaAnomaly()
+        
+        # Lambda構造の存在確認
+        if not hasattr(lambda_result, 'lambda_structures'):
             return anomaly
+        
+        structures = lambda_result.lambda_structures
+        frame = event.get('frame_start', event.get('frame', 0))
+        
+        # Lambda値の変化
+        if 'lambda_f' in structures and frame < len(structures['lambda_f']):
+            lambda_vals = structures['lambda_f']
+            
+            # 前後との差分
+            if frame > 0 and frame < len(lambda_vals) - 1:
+                prev_val = lambda_vals[frame - 1]
+                curr_val = lambda_vals[frame]
+                next_val = lambda_vals[frame + 1]
+                
+                anomaly.lambda_jump = abs(curr_val - prev_val)
+                
+                # Z-score計算
+                if len(lambda_vals) > 10:
+                    mean = np.mean(lambda_vals)
+                    std = np.std(lambda_vals)
+                    if std > 0:
+                        anomaly.lambda_zscore = abs(curr_val - mean) / std
+        
+        # rho_t（テンション）
+        if 'rho_t' in structures and frame < len(structures['rho_t']):
+            anomaly.rho_t_spike = structures['rho_t'][frame]
+        
+        # sigma_s（構造同期）
+        if 'sigma_s' in structures and frame < len(structures['sigma_s']):
+            anomaly.sigma_s_value = structures['sigma_s'][frame]
+        
+        # 協調性（レプリカ解析の場合）
+        if hasattr(lambda_result, 'coordination') and frame < len(lambda_result.coordination):
+            anomaly.coordination = lambda_result.coordination[frame]
+        
+        # 統計的稀少性
+        if anomaly.lambda_zscore > 0:
+            anomaly.statistical_rarity = 2 * (1 - stats.norm.cdf(anomaly.lambda_zscore))
+        
+        # 熱的比較
+        thermal_energy = self.k_B_T
+        if anomaly.lambda_jump > 0:
+            anomaly.thermal_comparison = anomaly.lambda_jump / thermal_energy
+        
+        return anomaly
         
     # ========================================
     # Atomic Evidence Gathering
