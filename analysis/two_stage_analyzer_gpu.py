@@ -345,13 +345,14 @@ class TwoStageAnalyzerGPU(GPUBackend):
         gpu_time = time.time() - event_start_time
         
         # 結果を返す
-        network_stats = {
+        network_stats = network_results.network_stats.copy()  # 元のstatsをコピー
+        # 追加の統計情報を上書き/追加
+        network_stats.update({
             'n_causal': network_results.n_causal_links,
             'n_sync': network_results.n_sync_links,
             'n_async': network_results.n_async_bonds,
             'mean_adaptive_window': np.mean(list(network_results.adaptive_windows.values())) if network_results.adaptive_windows else 100
-        }
-        
+        })
         # 結果を返す（修正）
         return ResidueLevelAnalysis(
             event_name=event_name,
