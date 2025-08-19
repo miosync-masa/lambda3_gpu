@@ -248,15 +248,16 @@ class QuantumValidatorV4:
     # ========================================
     
     def _evaluate_lambda_anomaly(self, event: Dict, lambda_result: Any) -> LambdaAnomaly:
-        """Lambda構造の異常性を評価"""
+    """Lambda構造の異常性を評価"""
         anomaly = LambdaAnomaly()
         
-        if not hasattr(lambda_result, 'structures'):
+        # ここを修正！
+        if not hasattr(lambda_result, 'lambda_structures'):  # structures → lambda_structures
             return anomaly
         
-        structures = lambda_result.structures
+        structures = lambda_result.lambda_structures  # ← ここも！
         frame = event.get('frame_start', event.get('frame', 0))
-        
+            
         # Lambda値の変化
         if 'lambda_f' in structures and frame < len(structures['lambda_f']):
             lambda_vals = structures['lambda_f']
