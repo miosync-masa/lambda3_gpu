@@ -1,5 +1,5 @@
 """
-Lambda³ GPU処理結果の可視化モジュール
+Lambda³ GPU処理結果の可視化モジュール（完全版）
 GPU解析結果を効率的に可視化
 """
 
@@ -10,14 +10,27 @@ from matplotlib.animation import FuncAnimation
 from typing import Dict, List, Optional, Any, Tuple
 import seaborn as sns
 from mpl_toolkits.mplot3d import Axes3D
+import os
+import logging
 
-from ..analysis.md_lambda3_detector_gpu import MDLambda3Result
-from ..analysis.two_stage_analyzer_gpu import TwoStageLambda3Result, ResidueLevelAnalysis
-from ..types import ArrayType, NDArray
+# Lambda3モジュールのインポート（相対インポート）
+try:
+    from ..analysis.md_lambda3_detector_gpu import MDLambda3Result
+    from ..analysis.two_stage_analyzer_gpu import TwoStageLambda3Result, ResidueLevelAnalysis
+    from ..types import ArrayType, NDArray
+except ImportError:
+    # スタンドアロンでも動作するように
+    MDLambda3Result = Dict[str, Any]
+    TwoStageLambda3Result = Dict[str, Any]
+    ResidueLevelAnalysis = Dict[str, Any]
+    ArrayType = np.ndarray
+    NDArray = np.ndarray
+
+logger = logging.getLogger(__name__)
 
 
 class Lambda3VisualizerGPU:
-    """GPU解析結果の可視化クラス"""
+    """GPU解析結果の可視化クラス（完全版）"""
     
     def __init__(self, style: str = 'seaborn-v0_8-darkgrid'):
         """
@@ -29,7 +42,11 @@ class Lambda3VisualizerGPU:
         try:
             plt.style.use(style)
         except:
-            plt.style.use('seaborn-v0_8')
+            try:
+                plt.style.use('seaborn-v0_8')
+            except:
+                plt.style.use('default')
+                logger.warning("Using default matplotlib style")
         
         self.color_palette = sns.color_palette("husl", 8)
         self.figure_cache = {}
@@ -60,7 +77,6 @@ class Lambda3VisualizerGPU:
         """
         # figsizeの決定
         if figsize is not None:
-            # ユーザー指定のサイズ
             fig_width, fig_height = figsize
         else:
             # デフォルトサイズ
@@ -78,7 +94,6 @@ class Lambda3VisualizerGPU:
         else:
             gs = gridspec.GridSpec(4, 3, figure=fig, hspace=0.3, wspace=0.25)
         
-        # 以下、各プロットの追加（既存のコードと同じ）
         # 1. マルチスケール異常スコア
         ax1 = fig.add_subplot(gs[0, :])
         self._plot_multiscale_anomalies(ax1, result)
@@ -131,6 +146,7 @@ class Lambda3VisualizerGPU:
         # 保存
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            logger.info(f"Figure saved to {save_path}")
         
         return fig
     
@@ -319,7 +335,7 @@ class Lambda3VisualizerGPU:
             else:
                 ax.text(0.5, 0.5, 0.5, '3D Data\nNot Available',
                        ha='center', va='center')
-
+    
     def _plot_detected_patterns(self, ax: plt.Axes, result: MDLambda3Result):
         """検出されたパターン"""
         if result.detected_structures:
@@ -332,16 +348,14 @@ class Lambda3VisualizerGPU:
                 if 'name' in p:
                     names.append(p['name'])
                 elif 'type' in p:
-                    # typeから表示名を生成
                     type_name = p['type'].replace('_', ' ').title()
                     if 'start' in p and 'end' in p:
                         type_name += f" ({p['start']}-{p['end']})"
                     names.append(type_name)
                 else:
-                    # デフォルト名
                     names.append(f"Pattern {len(names)+1}")
             
-            # periodキーの処理も同様に
+            # periodキーの処理
             periods = []
             for p in patterns:
                 if 'period' in p:
@@ -356,12 +370,12 @@ class Lambda3VisualizerGPU:
             for p in patterns:
                 if 'strength' in p:
                     strengths.append(p['strength'])
-                elif 'snr' in p:  # SNR比を強度として使用
-                    strengths.append(min(1.0, p['snr'] / 10.0))  # 正規化
-                elif 'amplitude' in p:  # 振幅を強度として使用
+                elif 'snr' in p:
+                    strengths.append(min(1.0, p['snr'] / 10.0))
+                elif 'amplitude' in p:
                     strengths.append(min(1.0, p['amplitude']))
                 else:
-                    strengths.append(0.5)  # デフォルト値
+                    strengths.append(0.5)
             
             # 棒グラフ
             y_pos = np.arange(len(names))
@@ -387,6 +401,94 @@ class Lambda3VisualizerGPU:
             ax.text(0.5, 0.5, 'No Patterns\nDetected',
                    ha='center', va='center', transform=ax.transAxes)
     
+    def _plot_gpu_performance(self, ax: plt.Axes, result: MDLambda3Result):
+        """GPU性能メトリクスのプロット"""
+        ax.set_title('GPU Performance Metrics', fontsize=12)
+        
+        # GPU性能データの収集
+        metrics = {}
+        
+        # 計算時間
+        if hasattr(result, 'computation_time'):
+            metrics['Total Time'] = result.computation_time
+            metrics['Frames/sec'] = result.n_frames / result.computation_time
+        
+        # GPUメモリ使用量（あれば）
+        if hasattr(result, 'gpu_memory_used'):
+            metrics['GPU Memory (GB)'] = result.gpu_memory_used / 1e9
+        
+        # バッチ処理統計（あれば）
+        if hasattr(result, 'n_batches'):
+            metrics['Batches'] = result.n_batches
+            if hasattr(result, 'batch_size'):
+                metrics['Batch Size'] = result.batch_size
+        
+        # カーネル実行時間（あれば）
+        if hasattr(result, 'kernel_times'):
+            for kernel_name, kernel_time in result.kernel_times.items():
+                metrics[f'{kernel_name[:10]}...'] = kernel_time
+        
+        if metrics:
+            # バーチャート作成
+            labels = list(metrics.keys())
+            values = list(metrics.values())
+            
+            # 値を正規化（表示のため）
+            max_val = max(values) if values else 1
+            normalized_values = [v/max_val for v in values]
+            
+            y_pos = np.arange(len(labels))
+            bars = ax.barh(y_pos, normalized_values)
+            
+            # 色分け
+            for i, bar in enumerate(bars):
+                if 'Time' in labels[i]:
+                    bar.set_color('red')
+                elif 'Memory' in labels[i]:
+                    bar.set_color('blue')
+                elif 'Frames' in labels[i]:
+                    bar.set_color('green')
+                else:
+                    bar.set_color('gray')
+            
+            ax.set_yticks(y_pos)
+            ax.set_yticklabels(labels)
+            
+            # 実際の値を表示
+            for i, (label, value) in enumerate(zip(labels, values)):
+                if 'Time' in label:
+                    text = f'{value:.2f}s'
+                elif 'Memory' in label:
+                    text = f'{value:.2f}GB'
+                elif 'Frames' in label:
+                    text = f'{value:.1f}'
+                else:
+                    text = f'{value:.0f}'
+                ax.text(normalized_values[i] + 0.01, i, text, va='center')
+            
+            ax.set_xlabel('Normalized Value')
+            ax.set_xlim([0, 1.2])
+        else:
+            # GPU情報がない場合
+            info_text = [
+                f"Frames: {result.n_frames}",
+                f"Time: {getattr(result, 'computation_time', 'N/A')}s"
+            ]
+            
+            # Phase Space情報があれば追加
+            if hasattr(result, 'phase_space_results'):
+                ps = result.phase_space_results
+                if isinstance(ps, dict) and 'optimal_parameters' in ps:
+                    params = ps['optimal_parameters']
+                    info_text.append(f"Embedding: {params.get('embedding_dim', 'N/A')}")
+                    info_text.append(f"Delay: {params.get('delay', 'N/A')}")
+            
+            ax.text(0.5, 0.5, '\n'.join(info_text),
+                   ha='center', va='center', fontsize=12,
+                   transform=ax.transAxes)
+            ax.set_xticks([])
+            ax.set_yticks([])
+    
     def _plot_summary_stats(self, ax: plt.Axes, result: MDLambda3Result):
         """サマリー統計"""
         # 統計情報収集
@@ -410,10 +512,11 @@ class Lambda3VisualizerGPU:
         stats.append(('Patterns found', len(result.detected_structures)))
         
         # 計算統計
-        stats.extend([
-            ('Total time (s)', f"{result.computation_time:.2f}"),
-            ('Speed (fps)', f"{result.n_frames/result.computation_time:.1f}")
-        ])
+        if hasattr(result, 'computation_time'):
+            stats.extend([
+                ('Total time (s)', f"{result.computation_time:.2f}"),
+                ('Speed (fps)', f"{result.n_frames/result.computation_time:.1f}")
+            ])
         
         # テーブル形式で表示
         table_data = [[k, str(v)] for k, v in stats]
@@ -490,7 +593,8 @@ class Lambda3VisualizerGPU:
         # データ選択
         if feature == 'anomaly':
             data = result.anomaly_scores.get('final_combined', 
-                                           result.anomaly_scores['combined'])
+                                           result.anomaly_scores.get('combined', 
+                                           result.anomaly_scores['global']))
             title = 'Anomaly Score Evolution'
         elif feature == 'lambda_f':
             data = result.lambda_structures['lambda_F_mag']
@@ -553,6 +657,7 @@ class Lambda3VisualizerGPU:
                 anim.save(save_path, writer='pillow', fps=1000/interval)
             else:
                 anim.save(save_path, writer='ffmpeg', fps=1000/interval)
+            logger.info(f"Animation saved to {save_path}")
         
         return anim
 
@@ -587,6 +692,7 @@ def visualize_residue_analysis(result: TwoStageLambda3Result,
     
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        logger.info(f"Residue analysis figure saved to {save_path}")
     
     return fig
 
@@ -596,9 +702,82 @@ def _visualize_single_event(analysis: ResidueLevelAnalysis,
     """単一イベントの詳細可視化"""
     fig, axes = plt.subplots(2, 3, figsize=(18, 12))
     
-    # 実装は causality_viz_gpu.py に委譲
-    # ここではプレースホルダー
+    # 1. 残基イベントタイムライン
+    ax = axes[0, 0]
+    for residue_id, events in analysis.residue_events.items():
+        for event in events:
+            ax.barh(residue_id, event['duration'], 
+                   left=event['start'], height=0.8,
+                   alpha=0.7, color='steelblue')
+    ax.set_xlabel('Frame')
+    ax.set_ylabel('Residue ID')
+    ax.set_title('Residue Event Timeline')
+    
+    # 2. 因果ネットワーク
+    ax = axes[0, 1]
+    if analysis.causal_network:
+        # 簡易的なネットワーク表示
+        n_links = len(analysis.causal_network)
+        ax.text(0.5, 0.5, f'{n_links} Causal Links',
+               ha='center', va='center', fontsize=14)
+    ax.set_title('Causal Network')
+    
+    # 3. 協調性マトリックス
+    ax = axes[0, 2]
+    if analysis.sync_network:
+        # 同期ネットワークのヒートマップ
+        residue_ids = sorted(set(analysis.residue_events.keys()))
+        matrix = np.zeros((len(residue_ids), len(residue_ids)))
+        
+        for link in analysis.sync_network:
+            i = residue_ids.index(link['residue1'])
+            j = residue_ids.index(link['residue2'])
+            matrix[i, j] = link['correlation']
+            matrix[j, i] = link['correlation']
+        
+        im = ax.imshow(matrix, cmap='coolwarm', vmin=-1, vmax=1)
+        plt.colorbar(im, ax=ax)
+        ax.set_title('Synchronization Matrix')
+    
+    # 4. 異常スコア分布
+    ax = axes[1, 0]
+    scores = [e['anomaly_score'] for events in analysis.residue_events.values() 
+             for e in events]
+    if scores:
+        ax.hist(scores, bins=30, alpha=0.7, color='orange')
+        ax.set_xlabel('Anomaly Score')
+        ax.set_ylabel('Count')
+        ax.set_title('Anomaly Score Distribution')
+    
+    # 5. 構造変化
+    ax = axes[1, 1]
+    if analysis.structural_changes:
+        changes = sorted(analysis.structural_changes, 
+                        key=lambda x: x['magnitude'], reverse=True)[:10]
+        labels = [f"R{c['residue']}" for c in changes]
+        values = [c['magnitude'] for c in changes]
+        ax.bar(labels, values, alpha=0.7, color='green')
+        ax.set_xlabel('Residue')
+        ax.set_ylabel('Change Magnitude')
+        ax.set_title('Top Structural Changes')
+    
+    # 6. サマリー統計
+    ax = axes[1, 2]
+    stats_text = [
+        f"Total Residues: {len(analysis.residue_events)}",
+        f"Causal Links: {len(analysis.causal_network)}",
+        f"Sync Links: {len(analysis.sync_network)}",
+        f"Async Bonds: {len(analysis.async_bonds)}",
+        f"GPU Time: {analysis.gpu_time:.2f}s"
+    ]
+    ax.text(0.1, 0.9, '\n'.join(stats_text),
+           transform=ax.transAxes, fontsize=12,
+           va='top', ha='left')
+    ax.axis('off')
+    ax.set_title('Event Statistics')
+    
     fig.suptitle(f"{event_name} - Residue Level Analysis", fontsize=16)
+    plt.tight_layout()
     
     return fig
 
@@ -609,53 +788,133 @@ def _visualize_residue_summary(result: TwoStageLambda3Result) -> plt.Figure:
     
     # 1. 重要残基ランキング
     ax1 = axes[0, 0]
-    top_residues = sorted(result.global_residue_importance.items(), 
-                         key=lambda x: x[1], reverse=True)[:20]
-    
-    residue_ids = [f"R{r[0]+1}" for r in top_residues]
-    scores = [r[1] for r in top_residues]
-    
-    ax1.barh(residue_ids, scores, alpha=0.7, color='steelblue')
-    ax1.set_xlabel('Importance Score')
-    ax1.set_title('Top 20 Important Residues', fontsize=12)
-    ax1.invert_yaxis()
+    if hasattr(result, 'global_residue_importance'):
+        top_residues = sorted(result.global_residue_importance.items(), 
+                             key=lambda x: x[1], reverse=True)[:20]
+        
+        residue_ids = [f"R{r[0]+1}" for r in top_residues]
+        scores = [r[1] for r in top_residues]
+        
+        ax1.barh(residue_ids, scores, alpha=0.7, color='steelblue')
+        ax1.set_xlabel('Importance Score')
+        ax1.set_title('Top 20 Important Residues', fontsize=12)
+        ax1.invert_yaxis()
+    else:
+        ax1.text(0.5, 0.5, 'No importance data',
+                ha='center', va='center')
     
     # 2. ネットワーク統計
     ax2 = axes[0, 1]
-    stats = result.global_network_stats
-    
-    labels = ['Causal', 'Sync', 'Async']
-    values = [stats['total_causal_links'], 
-             stats['total_sync_links'],
-             stats['total_async_bonds']]
-    
-    ax2.pie(values, labels=labels, autopct='%1.1f%%', 
-           startangle=90, colors=['red', 'green', 'blue'])
-    ax2.set_title('Network Link Distribution', fontsize=12)
+    if hasattr(result, 'global_network_stats'):
+        stats = result.global_network_stats
+        
+        labels = ['Causal', 'Sync', 'Async']
+        values = [stats.get('total_causal_links', 0), 
+                 stats.get('total_sync_links', 0),
+                 stats.get('total_async_bonds', 0)]
+        
+        if sum(values) > 0:
+            ax2.pie(values, labels=labels, autopct='%1.1f%%', 
+                   startangle=90, colors=['red', 'green', 'blue'])
+        ax2.set_title('Network Link Distribution', fontsize=12)
+    else:
+        ax2.text(0.5, 0.5, 'No network stats',
+                ha='center', va='center')
     
     # 3. イベント別統計
     ax3 = axes[1, 0]
-    event_names = list(result.residue_analyses.keys())
-    n_residues = [len(a.residue_events) for a in result.residue_analyses.values()]
-    
-    ax3.bar(event_names, n_residues, alpha=0.7, color='orange')
-    ax3.set_xlabel('Event')
-    ax3.set_ylabel('Number of Residues Involved')
-    ax3.set_title('Residues per Event', fontsize=12)
-    ax3.tick_params(axis='x', rotation=45)
+    if hasattr(result, 'residue_analyses'):
+        event_names = list(result.residue_analyses.keys())[:10]
+        n_residues = [len(a.residue_events) for a in result.residue_analyses.values()][:10]
+        
+        if event_names:
+            ax3.bar(range(len(event_names)), n_residues, alpha=0.7, color='orange')
+            ax3.set_xticks(range(len(event_names)))
+            ax3.set_xticklabels([f"E{i+1}" for i in range(len(event_names))], rotation=45)
+            ax3.set_xlabel('Event')
+            ax3.set_ylabel('Number of Residues Involved')
+            ax3.set_title('Residues per Event', fontsize=12)
+    else:
+        ax3.text(0.5, 0.5, 'No event data',
+                ha='center', va='center')
     
     # 4. GPU性能
     ax4 = axes[1, 1]
-    gpu_times = [a.gpu_time for a in result.residue_analyses.values()]
-    
-    ax4.plot(event_names, gpu_times, 'go-', linewidth=2, markersize=8)
-    ax4.set_xlabel('Event')
-    ax4.set_ylabel('GPU Time (seconds)')
-    ax4.set_title('GPU Processing Time per Event', fontsize=12)
-    ax4.tick_params(axis='x', rotation=45)
-    ax4.grid(True, alpha=0.3)
+    if hasattr(result, 'residue_analyses'):
+        gpu_times = [a.gpu_time for a in result.residue_analyses.values() 
+                    if hasattr(a, 'gpu_time')][:10]
+        
+        if gpu_times:
+            ax4.plot(range(len(gpu_times)), gpu_times, 'go-', linewidth=2, markersize=8)
+            ax4.set_xlabel('Event Index')
+            ax4.set_ylabel('GPU Time (seconds)')
+            ax4.set_title('GPU Processing Time per Event', fontsize=12)
+            ax4.grid(True, alpha=0.3)
+    else:
+        ax4.text(0.5, 0.5, 'No GPU timing data',
+                ha='center', va='center')
     
     plt.suptitle('Residue-Level Analysis Summary', fontsize=16)
     plt.tight_layout()
     
     return fig
+
+
+# テスト用のダミーデータ生成関数
+def create_test_result() -> Dict:
+    """テスト用のダミー結果を生成"""
+    n_frames = 1000
+    
+    result = {
+        'n_frames': n_frames,
+        'computation_time': 10.5,
+        'anomaly_scores': {
+            'global': np.random.randn(n_frames),
+            'local': np.random.randn(n_frames),
+            'combined': np.random.randn(n_frames),
+            'final_combined': np.random.randn(n_frames) * 2
+        },
+        'lambda_structures': {
+            'lambda_F': np.random.randn(n_frames, 3),
+            'lambda_F_mag': np.abs(np.random.randn(n_frames)),
+            'rho_T': np.abs(np.random.randn(n_frames)) * 0.1,
+            'sigma_s': np.random.rand(n_frames),
+            'Q_cumulative': np.cumsum(np.random.randn(n_frames))
+        },
+        'structural_boundaries': {
+            'boundary_score': np.abs(np.random.randn(n_frames)),
+            'boundary_locations': [100, 250, 500, 750],
+            'boundary_strengths': [2.5, 3.1, 2.8, 3.5]
+        },
+        'md_features': {
+            'rmsd': np.cumsum(np.abs(np.random.randn(n_frames))) * 0.01,
+            'radius_of_gyration': 10 + np.random.randn(n_frames) * 0.5
+        },
+        'detected_structures': [
+            {'type': 'periodic', 'period': 50, 'strength': 0.8},
+            {'type': 'helical', 'duration': 100, 'strength': 0.6},
+            {'type': 'beta_sheet', 'duration': 80, 'strength': 0.7}
+        ]
+    }
+    
+    return result
+
+
+# メイン実行部分
+if __name__ == "__main__":
+    # テスト実行
+    print("Testing Lambda³ GPU Visualizer...")
+    
+    # ビジュアライザー作成
+    visualizer = Lambda3VisualizerGPU()
+    
+    # テストデータ生成
+    test_result = create_test_result()
+    
+    # 可視化実行
+    fig = visualizer.visualize_results(test_result, show_extended=False)
+    
+    # 表示
+    plt.show()
+    
+    print("Visualization test completed!")
