@@ -1166,12 +1166,15 @@ class PhaseSpaceAnalyzerGPU(GPUBackend):
             'delay': int(optimal_delay),
             'estimated_from': 'mutual_info_and_fnn'
         }
-    
+
     def _estimate_delay_mutual_info_gpu_fast(self, series: cp.ndarray) -> int:
-        """高速相互情報量による遅延推定"""
+        """高速相互情報量による遅延推定（修正版）"""
         max_delay = min(100, len(series) // 10)
-        mi_values = cp.zeros(max_delay)
         
+        # 🔧 修正1: 配列を無限大で初期化（index 0も含む）
+        mi_values = cp.full(max_delay, cp.inf, dtype=cp.float32)
+        
+        # 🔧 修正2: delay=1から計算（delay=0は意味がない）
         for delay in range(1, max_delay):
             x = series[:-delay]
             y = series[delay:]
@@ -1190,29 +1193,46 @@ class PhaseSpaceAnalyzerGPU(GPUBackend):
             
             mi_values[delay] = mi
         
-        for i in range(2, len(mi_values) - 1):
+        # 🔧 修正3: 最初の極小値を探す（範囲を修正）
+        for i in range(3, len(mi_values) - 1):  # 3から開始
             if mi_values[i] < mi_values[i-1] and mi_values[i] < mi_values[i+1]:
                 return int(i)
         
-        decay_point = cp.where(mi_values < mi_values[1] * 0.5)[0]
-        if len(decay_point) > 0:
-            return int(decay_point[0])
+        # 🔧 修正4: mi_values[1]が存在することを確認
+        if mi_values[1] != cp.inf:
+            decay_point = cp.where(mi_values[1:] < mi_values[1] * 0.5)[0]
+            if len(decay_point) > 0:
+                return int(decay_point[0] + 1)  # +1してインデックス調整
         
-        return 10
+        # 🔧 修正5: デフォルト値を安全な値に
+        return max(1, min(10, max_delay // 4))
     
     def _estimate_dimension_fnn_gpu_fast(self,
                                        series: cp.ndarray,
                                        delay: int,
-                                       max_dim: int) -> int:
-        """高速False Nearest Neighbors法"""
+                                       max_dim: int = 10) -> int:
+        """高速False Nearest Neighbors法（修正版）"""
+        
+        # 🔧 修正1: delay=0のチェック
+        if delay <= 0:
+            logger.warning(f"Invalid delay {delay}, using 1")
+            delay = 1
+        
+        # 🔧 修正2: max_dimの妥当性チェック
+        max_possible_dim = min(max_dim, len(series) // (delay * 10))
+        if max_possible_dim < 2:
+            logger.warning("Series too short for FNN analysis")
+            return 3
+        
         fnn_fractions = []
         
-        for dim in range(1, max_dim):
+        for dim in range(1, max_possible_dim + 1):
             try:
                 phase_space = self._reconstruct_phase_space_gpu(series, dim, delay)
                 n = min(2000, len(phase_space))
                 
                 if n < 100:
+                    logger.debug(f"Too few points ({n}) for dim={dim}")
                     break
                 
                 if len(phase_space) > n:
@@ -1222,7 +1242,9 @@ class PhaseSpaceAnalyzerGPU(GPUBackend):
                     phase_space_sample = phase_space
                 
                 if self.fnn_kernel is not None:
-                    phase_space_flat = cp.ascontiguousarray(phase_space_sample.flatten()).astype(cp.float32)
+                    phase_space_flat = cp.ascontiguousarray(
+                        phase_space_sample.flatten()
+                    ).astype(cp.float32)
                     series_flat = cp.ascontiguousarray(series).astype(cp.float32)
                     fnn_count = cp.zeros(1, dtype=cp.int32)
                     
@@ -1235,41 +1257,122 @@ class PhaseSpaceAnalyzerGPU(GPUBackend):
                     
                     fnn_fraction = float(fnn_count[0]) / n
                 else:
-                    fnn_fraction = 0.5
+                    # 🔧 修正3: CPUフォールバックの改善
+                    fnn_fraction = self._compute_fnn_cpu(phase_space_sample, series, delay)
                 
                 fnn_fractions.append(fnn_fraction)
                 
-                if fnn_fraction < 0.01:
-                    return dim
+                # 🔧 修正4: 早期終了条件の緩和
+                if fnn_fraction < 0.05:  # 0.01→0.05に緩和
+                    if dim >= 3:  # 最小でも3次元は試す
+                        return dim
                 
-                if len(fnn_fractions) > 1:
-                    if fnn_fractions[-2] - fnn_fraction > 0.5:
+                # 🔧 修正5: 急激な改善があった場合
+                if len(fnn_fractions) >= 2:
+                    improvement = fnn_fractions[-2] - fnn_fraction
+                    if improvement > 0.3 and fnn_fraction < 0.1:
                         return dim
             
             except Exception as e:
                 logger.warning(f"FNN dimension {dim} failed: {e}")
-                break
+                if len(fnn_fractions) > 0:
+                    break
         
+        # 🔧 修正6: 結果の解釈改善
         if fnn_fractions:
-            return int(cp.argmin(cp.array(fnn_fractions)) + 1)
+            # 最小値の次元を返す（ただし最低3）
+            best_dim = int(cp.argmin(cp.array(fnn_fractions)) + 1)
+            return max(3, best_dim)
         
+        # デフォルト
         return 3
     
     def _reconstruct_phase_space_gpu(self,
                                    series: cp.ndarray,
                                    embedding_dim: int,
                                    delay: int) -> cp.ndarray:
-        """時系列から位相空間を再構成"""
+        """時系列から位相空間を再構成（修正版）"""
+        
+        # 🔧 修正1: パラメータ検証
+        if embedding_dim < 1:
+            raise ValueError(f"Invalid embedding dimension: {embedding_dim}")
+        
+        if delay < 1:
+            raise ValueError(f"Invalid delay: {delay}")
+        
         n = len(series)
+        
+        # 🔧 修正2: 最小長チェック
+        min_length = embedding_dim * delay + 1
+        if n < min_length:
+            raise ValueError(
+                f"Series too short: {n} < {min_length} "
+                f"(dim={embedding_dim}, delay={delay})"
+            )
+        
         embed_length = n - (embedding_dim - 1) * delay
         
-        if embed_length <= 0:
-            raise ValueError(f"Series too short for embedding: {n} < {(embedding_dim - 1) * delay}")
+        # 🔧 修正3: メモリ効率化（大きすぎる場合の警告）
+        expected_size = embed_length * embedding_dim * 4  # float32
+        if expected_size > 1e9:  # 1GB以上
+            logger.warning(
+                f"Large phase space: {embed_length}x{embedding_dim} "
+                f"({expected_size/1e9:.1f}GB)"
+            )
         
-        indices = cp.arange(embed_length)[:, None] + cp.arange(embedding_dim)[None, :] * delay
-        phase_space = series[indices]
+        # 🔧 修正4: より効率的なインデックス生成
+        try:
+            # ブロードキャスティングを使った効率的な実装
+            indices = cp.arange(embed_length)[:, None] + \
+                     cp.arange(embedding_dim)[None, :] * delay
+            phase_space = series[indices]
+            
+        except cp.cuda.MemoryError:
+            # メモリ不足時は分割処理
+            logger.warning("GPU memory insufficient, using chunked processing")
+            chunk_size = 10000
+            chunks = []
+            
+            for start in range(0, embed_length, chunk_size):
+                end = min(start + chunk_size, embed_length)
+                idx = cp.arange(start, end)[:, None] + \
+                      cp.arange(embedding_dim)[None, :] * delay
+                chunks.append(series[idx])
+            
+            phase_space = cp.vstack(chunks)
         
         return phase_space
+    
+    # 🔧 追加: CPU フォールバック用のFNN計算
+    def _compute_fnn_cpu(self, phase_space: cp.ndarray, 
+                        series: cp.ndarray, delay: int) -> float:
+        """CPUでのFNN計算（フォールバック用）"""
+        n = len(phase_space)
+        fnn_count = 0
+        
+        for i in range(n):
+            # 最近傍を探索（簡易版）
+            min_dist = cp.inf
+            nn_idx = -1
+            
+            for j in range(max(0, i-50), min(n, i+50)):
+                if i != j:
+                    dist = cp.sqrt(cp.sum((phase_space[i] - phase_space[j])**2))
+                    if dist < min_dist:
+                        min_dist = dist
+                        nn_idx = j
+            
+            if nn_idx >= 0 and min_dist > 1e-10:
+                # False nearest neighbor判定
+                next_idx = i + len(phase_space[0]) * delay
+                next_nn_idx = nn_idx + len(phase_space[0]) * delay
+                
+                if next_idx < len(series) and next_nn_idx < len(series):
+                    next_dist = abs(series[next_idx] - series[next_nn_idx])
+                    if next_dist / min_dist > 10.0:
+                        fnn_count += 1
+        
+        return fnn_count / n
     
     def _compute_integrated_score_gpu(self,
                                 anomaly_scores: cp.ndarray,
