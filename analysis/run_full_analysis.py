@@ -282,10 +282,10 @@ def run_quantum_validation_pipeline(
             
             # 解析実行！
             logger.info(f"   Analyzing {len(selected_events)} events...")
-            two_stage_result = two_stage_analyzer.analyze(
-                protein_trajectory,
-                selected_events,
-                lambda_result,
+            two_stage_result = two_stage_analyzer.analyze_trajectory(  # ← analyze_trajectory！
+                trajectory=protein_trajectory,  # ← trajectoryという引数名
+                macro_result=lambda_result,     # ← macro_resultという引数名  
+                detected_events=selected_events, # ← detected_eventsという引数名
                 n_residues=n_protein_residues
             )
             
