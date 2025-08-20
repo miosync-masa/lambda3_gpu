@@ -79,6 +79,21 @@ def generate_maximum_report_from_results_v4(
     4.0.2 : Propagation Pathway解析追加
     4.0.3 : quantum_assessments対応、キーマッチング修正
     """
+    # ========= 🔴 これを追加！！ =========
+    # 変数の事前初期化（後で使う変数を全部ここで定義）
+    pattern_counts = {}
+    sig_counts = {}
+    confidences = []
+    lambda_anomalies = []
+    atomic_evidences = []
+    bell_values = []
+    ci_widths = []
+    all_confidence_results = []
+    hub_counts = Counter()
+    all_hub_residues = []
+    total = 0
+    quantum_count = 0
+    # ========= ここまで追加 =========
     
     output_path = Path(output_dir)
     output_path.mkdir(exist_ok=True)
