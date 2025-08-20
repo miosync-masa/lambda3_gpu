@@ -199,7 +199,7 @@ def run_quantum_validation_pipeline(
     except Exception as e:
         logger.error(f"Lambda³ analysis failed: {e}")
         raise
-    
+  
     # ========================================
     # Step 3: Two-Stage詳細解析
     # ========================================
@@ -207,7 +207,7 @@ def run_quantum_validation_pipeline(
     network_results = []
     
     if enable_two_stage and len(lambda_result.critical_events) > 0:
-        logger.info("\n🔬 Running Two-Stage Residue-Level Analysis...")
+        logger.info("\\n🔬 Running Two-Stage Residue-Level Analysis...")
         
         try:
             # タンパク質残基数の取得
@@ -267,15 +267,52 @@ def run_quantum_validation_pipeline(
                 logger.debug("   Top event scores:")
                 for i, (start, end, score) in enumerate(selected_events[:10]):
                     logger.debug(f"     Event {i}: frames {start}-{end}, score={score:.3f}")
-                    
+            
+            # =========== ここから追加！！ ===========
+            # TwoStageAnalyzerの設定
+            residue_config = ResidueAnalysisConfig()
+            residue_config.n_residues = n_protein_residues
+            residue_config.min_window_size = MIN_WINDOW_SIZE
+            residue_config.use_gpu = True
+            residue_config.verbose = verbose
+            
+            # TwoStageAnalyzer初期化
+            logger.info("   Initializing Two-Stage Analyzer...")
+            two_stage_analyzer = TwoStageAnalyzerGPU(residue_config)
+            
+            # 解析実行！
+            logger.info(f"   Analyzing {len(selected_events)} events...")
+            two_stage_result = two_stage_analyzer.analyze(
+                protein_trajectory,
+                selected_events,
+                lambda_result,
+                n_residues=n_protein_residues
+            )
+            
+            logger.info(f"   ✅ Two-stage analysis complete")
+            
+            # ネットワーク結果の抽出
+            if hasattr(two_stage_result, 'residue_analyses'):
+                network_results = []
+                for analysis in two_stage_result.residue_analyses.values():
+                    if hasattr(analysis, 'network_result'):
+                        network_results.append(analysis.network_result)
+                logger.info(f"   Extracted {len(network_results)} network results")
+            
+            # グローバル統計の表示
+            if hasattr(two_stage_result, 'global_network_stats'):
+                stats = two_stage_result.global_network_stats
+                logger.info(f"   Total causal links: {stats.get('total_causal_links', 0)}")
+                logger.info(f"   Total async bonds: {stats.get('total_async_bonds', 0)}")
+            
         except Exception as e:
             logger.error(f"Two-stage analysis failed: {e}")
             if verbose:
                 import traceback
                 traceback.print_exc()
             two_stage_result = None
-            network_results = []    
-      
+            network_results = []   
+          
     # ========================================
     # Step 4: 量子検証（Version 4.0）
     # ========================================
