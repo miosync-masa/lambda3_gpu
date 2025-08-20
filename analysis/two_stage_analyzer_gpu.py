@@ -7,6 +7,8 @@ import numpy as np
 import time
 from typing import Dict, List, Tuple, Optional, Any, TYPE_CHECKING
 from dataclasses import dataclass, field
+import logging
+logger = logging.getLogger(__name__)
 
 # CuPyの条件付きインポート
 try:
