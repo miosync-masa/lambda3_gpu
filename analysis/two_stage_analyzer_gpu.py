@@ -88,7 +88,6 @@ class ResidueEvent:
     role: str
     adaptive_window: int = 100
 
-
 @dataclass
 class ResidueLevelAnalysis:
     """残基レベル解析結果"""
@@ -104,7 +103,6 @@ class ResidueLevelAnalysis:
     network_stats: Dict = field(default_factory=dict)
     confidence_results: List[Any] = field(default_factory=list)
     gpu_time: float = 0.0
-
 
 @dataclass
 class TwoStageLambda3Result:
