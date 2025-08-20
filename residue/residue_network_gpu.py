@@ -329,66 +329,86 @@ class ResidueNetworkGPU(GPUBackend):
     # ========================================
     
     def _analyze_instantaneous_pattern(self,
-                                      residue_anomaly_scores: Dict[int, np.ndarray],
-                                      residue_coupling: np.ndarray,
-                                      residue_coms: Optional[np.ndarray]) -> NetworkAnalysisResult:
-        """INSTANTANEOUSパターン：瞬間的変化の解析"""
+                                  residue_anomaly_scores: Dict[int, np.ndarray],
+                                  residue_coupling: np.ndarray,
+                                  residue_coms: Optional[np.ndarray]) -> NetworkAnalysisResult:
+        """INSTANTANEOUSパターン：同一フレーム内並列協調ネットワーク"""
         
         residue_ids = sorted(residue_anomaly_scores.keys())
-        n_residues = len(residue_ids)
         
-        # カップリング行列から強い相互作用を検出
+        # 単一フレームの異常スコア取得
+        frame_scores = {}
+        for res_id, scores in residue_anomaly_scores.items():
+            frame_scores[res_id] = float(scores[0] if hasattr(scores, '__len__') else scores)
+        
+        # 高異常残基を特定
+        mean_score = np.mean(list(frame_scores.values()))
+        std_score = np.std(list(frame_scores.values()))
+        anomaly_threshold = mean_score + 2 * std_score
+        high_anomaly_residues = [r for r, s in frame_scores.items() if s > anomaly_threshold]
+        
+        logger.info(f"   Found {len(high_anomaly_residues)} residues with simultaneous anomalies")
+        
+        # カップリング行列の準備
         if residue_coupling.ndim == 3 and residue_coupling.shape[0] > 0:
             coupling = residue_coupling[0]
         elif residue_coupling.ndim == 2:
             coupling = residue_coupling
         else:
-            logger.warning("Invalid coupling matrix shape")
-            return self._create_empty_result()
+            coupling = None
         
-        # 統計的閾値設定
-        mean_coupling = float(np.mean(coupling))
-        std_coupling = float(np.std(coupling))
-        threshold = mean_coupling + 2 * std_coupling
-        
-        # ネットワークリンクを構築
-        causal_links = []
+        # 並列協調ネットワーク構築
         sync_links = []
         async_bonds = []
         
-        for i, res_i in enumerate(residue_ids):
-            for j, res_j in enumerate(residue_ids[i+1:], i+1):
-                if res_i < coupling.shape[0] and res_j < coupling.shape[1]:
-                    coupling_strength = coupling[res_i, res_j]
-                    
-                    if coupling_strength > threshold:
-                        # 瞬間的な強い結合 = 量子もつれ的
-                        link = NetworkLink(
-                            from_res=res_i,
-                            to_res=res_j,
-                            strength=float(coupling_strength),
-                            lag=0,
-                            sync_rate=1.0,  # 完全同期
-                            link_type='instantaneous',
-                            confidence=1.0,
-                            quantum_signature='entanglement'
-                        )
-                        sync_links.append(link)
-                        
-                        # 特に強い結合はasync_bondsにも追加
-                        if coupling_strength > threshold * 1.5:
-                            async_bonds.append(link)
+        # 高異常残基間のペア
+        for i, res_i in enumerate(high_anomaly_residues):
+            for j, res_j in enumerate(high_anomaly_residues[i+1:], i+1):
+                # 協調強度 = 異常度の幾何平均
+                strength = np.sqrt(frame_scores[res_i] * frame_scores[res_j])
+                
+                # カップリングで重み付け（あれば）
+                if coupling is not None and res_i < coupling.shape[0] and res_j < coupling.shape[1]:
+                    coupling_factor = coupling[res_i, res_j] / (np.mean(coupling) + 1e-10)
+                    strength *= np.clip(coupling_factor, 0.5, 2.0)
+                
+                # 空間距離（あれば）
+                distance = None
+                if residue_coms is not None and residue_coms.size > 0:
+                    if residue_coms.ndim >= 2 and res_i < residue_coms.shape[-2] and res_j < residue_coms.shape[-2]:
+                        if residue_coms.ndim == 3:
+                            com_i = residue_coms[0, res_i]
+                            com_j = residue_coms[0, res_j]
+                        else:
+                            com_i = residue_coms[res_i]
+                            com_j = residue_coms[res_j]
+                        distance = float(np.linalg.norm(com_i - com_j))
+                
+                link = NetworkLink(
+                    from_res=res_i,
+                    to_res=res_j,
+                    strength=float(strength),
+                    lag=0,  # 時間差なし
+                    distance=distance,
+                    sync_rate=1.0,  # 完全同期
+                    link_type='instantaneous',
+                    confidence=1.0,
+                    quantum_signature='parallel_coordination'  # 並列協調
+                )
+                sync_links.append(link)
+                
+                # 特に強い協調
+                if strength > anomaly_threshold * 1.5:
+                    async_bonds.append(link)
         
-        # 空間制約
+        # 空間制約（オプション）
         spatial_constraints = {}
         if residue_coms is not None and residue_coms.shape[0] > 0:
-            spatial_constraints = self._compute_spatial_constraints(
-                residue_ids, residue_coms
-            )
+            spatial_constraints = self._compute_spatial_constraints(residue_ids, residue_coms)
         
         return NetworkAnalysisResult(
-            causal_network=causal_links,
-            sync_network=sync_links,
+            causal_network=[],  # 因果なし（時間差ゼロ）
+            sync_network=sync_links,  # 並列協調ネットワーク
             async_strong_bonds=async_bonds,
             spatial_constraints=spatial_constraints,
             adaptive_windows={res_id: 1 for res_id in residue_ids},
@@ -397,12 +417,13 @@ class ResidueNetworkGPU(GPUBackend):
                 'n_sync': len(sync_links),
                 'n_async': len(async_bonds),
                 'event_type': 'INSTANTANEOUS',
-                'pattern': 'instantaneous',
-                'quantum_signature': 'entanglement',
-                'n_frames': 1
+                'pattern': 'parallel_network',  # 並列ネットワーク
+                'quantum_signature': 'parallel_coordination',
+                'n_frames': 1,
+                'n_high_anomaly': len(high_anomaly_residues)
             }
         )
-    
+        
     # ========================================
     # TRANSITION パターン解析
     # ========================================
