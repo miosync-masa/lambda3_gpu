@@ -460,10 +460,11 @@ def generate_maximum_report_from_results_v4(
         total = len(quantum_assessments)
         quantum_count = sum(1 for a in quantum_assessments if getattr(a, 'is_quantum', False))
         
+        percent = quantum_count/total*100 if total > 0 else 0
         report += f"""
 ### Overview
 - **Total events analyzed**: {total}
-- **Quantum events confirmed**: {quantum_count} ({quantum_count/total*100:.1f if total > 0 else 0}%)
+- **Quantum events confirmed**: {quantum_count} ({percent:.1f}%)
 """
         
         # パターン分布（Version 4.0の3パターン分類）
@@ -474,7 +475,8 @@ def generate_maximum_report_from_results_v4(
                 quantum_in_pattern = sum(1 for a in quantum_assessments 
                                         if getattr(a, 'pattern').value == pattern and getattr(a, 'is_quantum', False))
                 report += f"- **{pattern}**: {count} events, "
-                report += f"{quantum_in_pattern} quantum ({quantum_in_pattern/count*100:.1f if count > 0 else 0}%)\n"
+                percent = quantum_in_pattern/count*100 if count > 0 else 0
+                report += f"{quantum_in_pattern} quantum ({percent:.1f}%)\n"
         
         # シグネチャー分布（Version 4.0）
         if total > 0 and hasattr(quantum_assessments[0], 'signature'):
@@ -607,10 +609,11 @@ def generate_maximum_report_from_results_v4(
         n_total = len(all_confidence_results)
         n_significant = sum(1 for r in all_confidence_results if r.get('is_significant', False))
         
+        percent = n_significant/n_total*100 if n_total > 0 else 0
         report += f"""
 ### Overall Bootstrap Statistics
 - **Total correlations tested**: {n_total}
-- **Statistically significant**: {n_significant} ({n_significant/n_total*100:.1f if n_total > 0 else 0}%)
+- **Statistically significant**: {n_significant} ({percent:.1f}%)
 - **Bootstrap iterations**: {all_confidence_results[0].get('n_bootstrap', 1000) if all_confidence_results else 'N/A'}
 - **Confidence level**: 95%
 """
@@ -1009,7 +1012,6 @@ def _build_propagation_paths(causal_network, initiators, max_paths=3, max_hops=6
             paths.append(path)
     
     return paths
-
 
 # ========================================
 # V3互換性のための関数（簡略版）
