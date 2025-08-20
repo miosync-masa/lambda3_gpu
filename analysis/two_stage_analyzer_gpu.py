@@ -292,12 +292,10 @@ class TwoStageAnalyzerGPU(GPUBackend):
         # ========================================
         is_single_frame = False
         if end_frame <= start_frame:
-            logger.warning(f"Single frame event detected: {event_name} at frame {start_frame}")
             is_single_frame = True
             end_frame = min(start_frame + 1, trajectory.shape[0])
             
             if end_frame <= start_frame:
-                logger.error(f"Cannot process event {event_name}: invalid frame range")
                 return self._create_empty_analysis(event_name, start_frame, end_frame)
         
         event_frames = end_frame - start_frame
@@ -336,7 +334,6 @@ class TwoStageAnalyzerGPU(GPUBackend):
             )
             
             pattern = network_results.network_stats.get('pattern', 'unknown')
-            logger.info(f"    Network pattern: {pattern}")
             
             # ========================================
             # 4. イベント構築
@@ -369,12 +366,10 @@ class TwoStageAnalyzerGPU(GPUBackend):
             confidence_results = []
             if self.config.use_confidence:
                 if is_single_frame:
-                    logger.info("    Single frame: using structural confidence")
                     confidence_results = self._compute_structural_confidence(
                         network_results.sync_network, anomaly_scores
                     )
                 elif causality_chains:
-                    logger.info(f"    Computing confidence for {len(causality_chains[:10])} links")
                     confidence_results = self.confidence_analyzer.analyze(
                         causality_chains[:10], anomaly_scores
                     )
@@ -517,7 +512,6 @@ class TwoStageAnalyzerGPU(GPUBackend):
             anomaly_scores[res_id] = np.array([score])
         
         n_high = sum(s[0] > 3.0 for s in anomaly_scores.values())
-        logger.info(f"    {event_name}: {n_high} highly anomalous residues")
         
         return anomaly_scores
     
