@@ -481,8 +481,8 @@ class TwoStageAnalyzerGPU(GPUBackend):
         return anomaly_scores
     
     def _detect_residue_anomalies_gpu(self,
-                                    structures,
-                                    event_type: str) -> Dict[int, np.ndarray]:
+                                structures,
+                                event_type: str) -> Dict[int, np.ndarray]:
         """
         残基異常検出（GPU最適化・修正版）
         感度を適切に調整して、異常を確実に検出！
