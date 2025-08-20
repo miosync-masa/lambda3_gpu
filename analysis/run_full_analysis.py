@@ -201,7 +201,7 @@ def run_quantum_validation_pipeline(
         raise
     
     # ========================================
-    # Step 3: Two-Stage詳細解析（オプション）
+    # Step 3: Two-Stage詳細解析
     # ========================================
     two_stage_result = None
     network_results = []
@@ -231,115 +231,42 @@ def run_quantum_validation_pipeline(
                 elif isinstance(event, (tuple, list)) and len(event) >= 2:
                     start = int(event[0])
                     end = int(event[1])
-                    score = event[2] if len(event) > 2 else 0
+                    
+                    # ⚡ 修正: anomaly_scoresから実際のスコアを取得（最大値）
+                    if len(event) > 2:
+                        score = event[2]  # 既にスコアがある場合
+                    else:
+                        # anomaly_scoresから該当範囲の最大値を取得
+                        if 'combined' in lambda_result.anomaly_scores:
+                            # 範囲内の最大値（量子的スパイクを捉える）
+                            score = float(np.max(lambda_result.anomaly_scores['combined'][start:end+1]))
+                        elif 'final_combined' in lambda_result.anomaly_scores:
+                            score = float(np.max(lambda_result.anomaly_scores['final_combined'][start:end+1]))
+                        elif 'global' in lambda_result.anomaly_scores:
+                            score = float(np.max(lambda_result.anomaly_scores['global'][start:end+1]))
+                        else:
+                            # フォールバック：何かしらのスコアを探す
+                            for key in ['local', 'extended']:
+                                if key in lambda_result.anomaly_scores:
+                                    score = float(np.max(lambda_result.anomaly_scores[key][start:end+1]))
+                                    break
+                            else:
+                                score = 0.0
+                                logger.warning(f"   ⚠️ No anomaly scores found for event at frames {start}-{end}")
                 else:
                     continue
                 sorted_events.append((start, end, score))
             
+            # スコアでソート（降順）
             sorted_events.sort(key=lambda x: x[2], reverse=True)
             selected_events = sorted_events[:min(MAX_EVENTS, len(sorted_events))]
             logger.info(f"   Selected TOP {len(selected_events)} events")
             
-            # イベント窓の作成
-            events = []
-            for i, (original_start, original_end, score) in enumerate(selected_events):
-                duration = original_end - original_start
-                
-                # 単一フレーム対応を含むウィンドウサイズ決定
-                if duration <= 0:  # 単一フレーム（0フレーム間）
-                    logger.info(f"   Event {i}: Single frame at {original_start}")
-                    # 単一フレームは最小限の拡張
-                    window_size = MIN_WINDOW_SIZE
-                    center = original_start
-                elif duration < 5:  # 短いイベント
-                    window_size = max(MIN_WINDOW_SIZE, duration * 3)
-                    center = (original_start + original_end) // 2
-                elif duration < 20:  # 中程度のイベント
-                    window_size = duration + 10
-                    center = (original_start + original_end) // 2
-                else:  # 長いイベント
-                    window_size = min(duration + 20, 100)  # 最大100フレーム
-                    center = (original_start + original_end) // 2
-                
-                half_window = window_size // 2
-                start = max(0, center - half_window)
-                end = min(n_frames, center + half_window)
-                
-                # 最終調整（最低でも1フレーム確保）
-                if end <= start:
-                    end = min(start + 1, n_frames)
-                
-                event_name = f'top_{i:02d}_score_{score:.2f}'
-                events.append((start, end, event_name))
-                
-                logger.debug(f"   Event {i}: frames [{original_start},{original_end}] "
-                            f"→ window [{start},{end}] (duration: {end-start})")
-            
-            if events:
-                logger.info(f"   Processing {len(events)} events with adaptive windows")
-                
-                # 残基解析設定
-                residue_config = ResidueAnalysisConfig()
-                residue_config.sensitivity = 1.5
-                residue_config.correlation_threshold = 0.10
-                residue_config.use_confidence = True
-                residue_config.n_bootstrap = 100
-                residue_config.parallel_events = True
-                residue_config.adaptive_window = True
-                    
-                # TwoStageAnalyzer実行
-                analyzer = TwoStageAnalyzerGPU(residue_config)
-                two_stage_result = analyzer.analyze_trajectory(
-                    protein_trajectory,
-                    lambda_result,
-                    events,
-                    n_protein_residues
-                )
-                
-                logger.info("   ✅ Two-stage analysis complete")
-                
-                # ネットワーク結果を抽出
-                if hasattr(two_stage_result, 'residue_analyses'):
-                    n_single_frame = 0
-                    n_parallel = 0
-                    n_cascade = 0
-                    
-                    for event_name, analysis in two_stage_result.residue_analyses.items():
-                        if hasattr(analysis, 'network_result'):
-                            network_results.append(analysis.network_result)
-                        
-                        # パターン統計
-                        if hasattr(analysis, 'network_stats'):
-                            pattern = analysis.network_stats.get('pattern', '')
-                            if 'parallel' in pattern:
-                                n_parallel += 1
-                            elif 'cascade' in pattern:
-                                n_cascade += 1
-                            if analysis.network_stats.get('is_single_frame', False):
-                                n_single_frame += 1
-                    
-                    logger.info(f"\n   📊 Event Pattern Statistics:")
-                    logger.info(f"     Single frame events: {n_single_frame}")
-                    logger.info(f"     Parallel networks: {n_parallel}")
-                    logger.info(f"     Cascade networks: {n_cascade}")
-                
-                # グローバル統計表示
-                if hasattr(two_stage_result, 'global_network_stats'):
-                    stats = two_stage_result.global_network_stats
-                    logger.info("\n   🌐 Global Network Statistics:")
-                    logger.info(f"     Total causal links: {stats.get('total_causal_links', 0)}")
-                    logger.info(f"     Total sync links: {stats.get('total_sync_links', 0)}")
-                    logger.info(f"     Total async bonds: {stats.get('total_async_bonds', 0)}")
-                    
-                    if stats.get('total_causal_links', 0) > 0:
-                        ratio = stats.get('total_async_bonds', 0) / stats.get('total_causal_links', 1)
-                        logger.info(f"     Async/Causal ratio: {ratio:.2%}")
-                        
-        except Exception as e:
-            logger.error(f"Two-stage analysis failed: {e}")
+            # デバッグ：上位イベントのスコアを表示
             if verbose:
-                import traceback
-                traceback.print_exc()
+                logger.debug("   Top event scores:")
+                for i, (start, end, score) in enumerate(selected_events[:10]):
+                    logger.debug(f"     Event {i}: frames {start}-{end}, score={score:.3f}")
     
     # ========================================
     # Step 4: 量子検証（Version 4.0）
