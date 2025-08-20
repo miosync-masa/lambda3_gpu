@@ -806,21 +806,26 @@ class TwoStageAnalyzerGPU(GPUBackend):
         return unique_paths
     
     def _identify_intervention_points_gpu(self,
-                                        importance_scores: Dict[int, float],
-                                        top_n: int = 10) -> List[int]:
+                                    importance_scores: Dict[int, float],
+                                    top_n: int = 10) -> List[int]:
         """介入ポイントの特定（GPU使用）"""
-        # GPU上でソート
         if importance_scores:
-            residues = cp.array(list(importance_scores.keys()))
-            scores = cp.array(list(importance_scores.values()))
-            
-            # 降順でソート
-            sorted_indices = cp.argsort(scores)[::-1]
-            
-            # 上位を取得
-            top_residues = residues[sorted_indices[:top_n]]
-            
-            return self.to_cpu(top_residues).tolist()
+            if self.is_gpu and HAS_CUPY:
+                # GPU版
+                residues = cp.array(list(importance_scores.keys()))
+                scores = cp.array(list(importance_scores.values()))
+                
+                # 降順でソート
+                sorted_indices = cp.argsort(scores)[::-1]
+                
+                # 上位を取得
+                top_residues = residues[sorted_indices[:top_n]]
+                
+                return self.to_cpu(top_residues).tolist()
+            else:
+                # CPU版フォールバック
+                sorted_items = sorted(importance_scores.items(), key=lambda x: x[1], reverse=True)
+                return [res_id for res_id, _ in sorted_items[:top_n]]
         
         return []
     
@@ -846,7 +851,7 @@ class TwoStageAnalyzerGPU(GPUBackend):
         return {i: f"RES{i+1}" for i in range(n_residues)}
     
     def _compute_global_stats(self, residue_analyses):
-         """グローバル統計の計算"""
+        """グローバル統計の計算"""
         total_causal = sum(a.network_stats.get('n_causal', 0) for a in residue_analyses.values())
         total_sync = sum(a.network_stats.get('n_sync', 0) for a in residue_analyses.values())
         total_async = sum(a.network_stats.get('n_async', 0) for a in residue_analyses.values())
