@@ -276,7 +276,7 @@ class TwoStageAnalyzerGPU(GPUBackend):
             print(f"    GPU time: {analysis.gpu_time:.2f}s")
         
         return residue_analyses
-    
+                                     
     def _analyze_single_event_gpu(self,
                               trajectory: np.ndarray,
                               event_name: str,
@@ -284,91 +284,353 @@ class TwoStageAnalyzerGPU(GPUBackend):
                               end_frame: int,
                               residue_atoms: Dict[int, List[int]],
                               residue_names: Dict[int, str]) -> ResidueLevelAnalysis:
-        """単一イベントのGPU解析"""
+        """単一イベントのGPU解析（単一フレーム対応版）"""
         event_start_time = time.time()
         
-        # GPUメモリコンテキスト
+        # ========================================
+        # フレーム範囲の検証と修正
+        # ========================================
+        is_single_frame = False
+        if end_frame <= start_frame:
+            logger.warning(f"Single frame event detected: {event_name} at frame {start_frame}")
+            is_single_frame = True
+            end_frame = min(start_frame + 1, trajectory.shape[0])
+            
+            if end_frame <= start_frame:
+                logger.error(f"Cannot process event {event_name}: invalid frame range")
+                return self._create_empty_analysis(event_name, start_frame, end_frame)
+        
         event_frames = end_frame - start_frame
+        event_trajectory = trajectory[start_frame:end_frame]
+        
+        # GPUメモリコンテキスト
         with self.memory_manager.batch_context(event_frames * len(residue_atoms) * 3 * 4):
             
+            # ========================================
             # 1. 残基構造計算
-            structures = self.residue_structures.compute_residue_structures(
-                trajectory, start_frame, end_frame, residue_atoms
-            )
+            # ========================================
+            if is_single_frame:
+                structures = self._compute_single_frame_structures(event_trajectory, residue_atoms)
+            else:
+                structures = self.residue_structures.compute_residue_structures(
+                    event_trajectory, 0, event_frames, residue_atoms
+                )
             
+            # ========================================
             # 2. 異常検出
-            anomaly_scores = self._detect_residue_anomalies_gpu(
-                structures, event_name
-            )
+            # ========================================
+            if is_single_frame:
+                anomaly_scores = self._detect_instantaneous_anomalies(
+                    structures, event_name, residue_atoms
+                )
+            else:
+                anomaly_scores = self._detect_residue_anomalies_gpu(structures, event_name)
             
+            # ========================================
             # 3. ネットワーク解析
+            # ========================================
             network_results = self.residue_network.analyze_network(
                 anomaly_scores,
                 structures.residue_coupling,
-                structures.residue_coms 
+                structures.residue_coms
             )
             
+            pattern = network_results.network_stats.get('pattern', 'unknown')
+            logger.info(f"    Network pattern: {pattern}")
+            
+            # ========================================
             # 4. イベント構築
+            # ========================================
             residue_events = self._build_residue_events_gpu(
                 anomaly_scores, residue_names, start_frame, network_results
             )
             
-            # 5. イニシエータ特定
-            initiators = self._find_initiators_gpu(
-                residue_events, network_results.causal_network
-            )
-            
-            # 6. 因果連鎖
-            causality_chains = [
-                (link.from_res, link.to_res, link.strength)
-                for link in network_results.causal_network
-            ]
-            print(f"    DEBUG: causality_chains length = {len(causality_chains)}")
-
-            # 7. 伝播経路
-            propagation_paths = self._build_propagation_paths_gpu(
-                initiators, causality_chains
-            )
-            
-            # 8. 信頼区間解析（オプション）
-            confidence_results = []
-            print(f"    DEBUG: use_confidence = {self.config.use_confidence}")  # 追加！
-            if self.config.use_confidence and causality_chains:
-                print(f"    DEBUG: Calling confidence analysis...")  # 追加！
-                confidence_results = self.confidence_analyzer.analyze(
-                    causality_chains[:10], anomaly_scores
-                )
-                print(f"    DEBUG: Got {len(confidence_results)} confidence results")  # 追加！
+            # ========================================
+            # 5. パターン別解析
+            # ========================================
+            if pattern == 'parallel_network' or is_single_frame:
+                initiators = self._find_parallel_initiators(residue_events, network_results.sync_network)
+                causality_chains = []
+                propagation_paths = []
             else:
-                print(f"    DEBUG: Skipping confidence (use={self.config.use_confidence}, chains={len(causality_chains)})")  # 追加！
+                initiators = self._find_initiators_gpu(residue_events, network_results.causal_network)
+                causality_chains = [
+                    (link.from_res, link.to_res, link.strength)
+                    for link in network_results.causal_network
+                ]
+                propagation_paths = (
+                    self._build_propagation_paths_gpu(initiators, causality_chains) 
+                    if causality_chains else []
+                )
+            
+            # ========================================
+            # 6. 信頼区間解析
+            # ========================================
+            confidence_results = []
+            if self.config.use_confidence:
+                if is_single_frame:
+                    logger.info("    Single frame: using structural confidence")
+                    confidence_results = self._compute_structural_confidence(
+                        network_results.sync_network, anomaly_scores
+                    )
+                elif causality_chains:
+                    logger.info(f"    Computing confidence for {len(causality_chains[:10])} links")
+                    confidence_results = self.confidence_analyzer.analyze(
+                        causality_chains[:10], anomaly_scores
+                    )
         
         gpu_time = time.time() - event_start_time
         
-        # 結果を返す
-        network_stats = network_results.network_stats.copy()  # 元のstatsをコピー
-        # 追加の統計情報を上書き/追加
+        # ========================================
+        # 7. 結果構築
+        # ========================================
+        network_stats = network_results.network_stats.copy()
         network_stats.update({
             'n_causal': network_results.n_causal_links,
             'n_sync': network_results.n_sync_links,
             'n_async': network_results.n_async_bonds,
-            'mean_adaptive_window': np.mean(list(network_results.adaptive_windows.values())) if network_results.adaptive_windows else 100
+            'is_single_frame': is_single_frame,
+            'mean_adaptive_window': (
+                np.mean(list(network_results.adaptive_windows.values())) 
+                if network_results.adaptive_windows else (1 if is_single_frame else 100)
+            )
         })
-        # 結果を返す（修正）
+        
         return ResidueLevelAnalysis(
             event_name=event_name,
             macro_start=start_frame,
-            macro_end=end_frame,
+            macro_end=end_frame if not is_single_frame else start_frame,
             residue_events=residue_events,
             causality_chain=causality_chains,
             initiator_residues=initiators,
             key_propagation_paths=propagation_paths[:5],
-            async_strong_bonds=network_results.async_strong_bonds,  # 直接アクセス
-            sync_network=network_results.sync_network,  # 直接アクセス
+            async_strong_bonds=network_results.async_strong_bonds,
+            sync_network=network_results.sync_network,
             network_stats=network_stats,
             confidence_results=confidence_results,
             gpu_time=gpu_time
         )
     
+    def _compute_single_frame_structures(self, trajectory, residue_atoms):
+        """単一フレーム用の構造計算"""
+        n_residues = len(residue_atoms)
+        frame = trajectory[0]
+        
+        residue_coms = np.zeros((n_residues, 3), dtype=np.float32)
+        residue_lambda_f = {}
+        residue_rho_t = {}
+        
+        for i, (res_id, atom_indices) in enumerate(residue_atoms.items()):
+            coords = frame[atom_indices]
+            com = np.mean(coords, axis=0)
+            residue_coms[i] = com
+            
+            # 慣性半径
+            distances_from_com = np.linalg.norm(coords - com, axis=1)
+            rg = np.sqrt(np.mean(distances_from_com**2))
+            residue_lambda_f[res_id] = np.array([rg])
+            
+            # 構造密度
+            if len(atom_indices) > 1:
+                from scipy.spatial.distance import pdist
+                pairwise_distances = pdist(coords)
+                mean_dist = np.mean(pairwise_distances) if len(pairwise_distances) > 0 else 1.0
+                residue_rho_t[res_id] = np.array([1.0 / mean_dist])
+            else:
+                residue_rho_t[res_id] = np.array([1.0])
+        
+        # カップリング行列
+        if self.is_gpu and HAS_GPU:
+            coms_gpu = self.to_gpu(residue_coms)
+            from cupyx.scipy.spatial.distance import cdist as cp_cdist
+            distances = cp_cdist(coms_gpu, coms_gpu)
+            
+            # LJポテンシャル
+            epsilon = 1.0
+            sigma = 3.5
+            r_scaled = distances / sigma
+            r6 = r_scaled**6
+            r12 = r6**2
+            
+            coupling = self.xp.where(
+                distances > 0.1,
+                4 * epsilon * (1.0/r12 - 1.0/r6),
+                0.0
+            )
+            coupling = 1.0 / (1.0 + self.xp.exp(-coupling))
+            residue_coupling = self.to_cpu(coupling)
+        else:
+            from scipy.spatial.distance import cdist
+            distances = cdist(residue_coms, residue_coms)
+            sigma = 5.0
+            coupling = np.exp(-distances**2 / (2 * sigma**2))
+            np.fill_diagonal(coupling, 0)
+            residue_coupling = coupling
+        
+        secondary_structure = self._estimate_secondary_structure(frame, residue_atoms)
+        
+        return ResidueStructureResult(
+            residue_lambda_f=residue_lambda_f,
+            residue_rho_t=residue_rho_t,
+            residue_coupling=residue_coupling.reshape(1, *residue_coupling.shape),
+            residue_coms=residue_coms.reshape(1, -1, 3),
+            secondary_structure=secondary_structure
+        )
+    
+    def _detect_instantaneous_anomalies(self, structures, event_name, residue_atoms):
+        """単一フレーム用の瞬間異常検出"""
+        anomaly_scores = {}
+        
+        all_lambda = np.array([v[0] for v in structures.residue_lambda_f.values()])
+        all_rho = np.array([v[0] for v in structures.residue_rho_t.values()])
+        
+        # ロバスト統計
+        lambda_median = np.median(all_lambda)
+        lambda_mad = np.median(np.abs(all_lambda - lambda_median))
+        rho_median = np.median(all_rho)
+        rho_mad = np.median(np.abs(all_rho - rho_median))
+        
+        coupling_matrix = (
+            structures.residue_coupling[0] 
+            if structures.residue_coupling.ndim == 3 
+            else structures.residue_coupling
+        )
+        coupling_strengths = np.sum(coupling_matrix, axis=1)
+        coupling_median = np.median(coupling_strengths)
+        coupling_mad = np.median(np.abs(coupling_strengths - coupling_median))
+        
+        for i, res_id in enumerate(residue_atoms.keys()):
+            lambda_val = structures.residue_lambda_f[res_id][0]
+            rho_val = structures.residue_rho_t[res_id][0]
+            
+            # Modified Z-score
+            lambda_z = 0.6745 * (lambda_val - lambda_median) / (lambda_mad + 1e-10)
+            rho_z = 0.6745 * (rho_val - rho_median) / (rho_mad + 1e-10)
+            coupling_z = 0.6745 * (coupling_strengths[i] - coupling_median) / (coupling_mad + 1e-10)
+            
+            score = np.sqrt(lambda_z**2 + rho_z**2 + coupling_z**2)
+            
+            if hasattr(structures, 'secondary_structure'):
+                ss_factor = structures.secondary_structure.get(res_id, 1.0)
+                score *= ss_factor
+            
+            anomaly_scores[res_id] = np.array([score])
+        
+        n_high = sum(s[0] > 3.0 for s in anomaly_scores.values())
+        logger.info(f"    {event_name}: {n_high} highly anomalous residues")
+        
+        return anomaly_scores
+    
+    def _estimate_secondary_structure(self, coords, residue_atoms):
+        """二次構造推定"""
+        secondary_structure = {}
+        ca_coords = []
+        res_ids = []
+        
+        for res_id, atom_indices in residue_atoms.items():
+            if len(atom_indices) > 0:
+                ca_coords.append(coords[atom_indices[0]])
+                res_ids.append(res_id)
+        
+        ca_coords = np.array(ca_coords)
+        
+        if len(ca_coords) >= 4:
+            for i in range(len(ca_coords) - 3):
+                v1 = ca_coords[i+1] - ca_coords[i]
+                v2 = ca_coords[i+2] - ca_coords[i+1]
+                v3 = ca_coords[i+3] - ca_coords[i+2]
+                
+                n1 = np.cross(v1, v2)
+                n2 = np.cross(v2, v3)
+                
+                cos_angle = np.dot(n1, n2) / (np.linalg.norm(n1) * np.linalg.norm(n2) + 1e-10)
+                
+                if -0.5 < cos_angle < 0.5:
+                    factor = 1.2  # ヘリックス
+                elif cos_angle > 0.8 or cos_angle < -0.8:
+                    factor = 0.8  # シート
+                else:
+                    factor = 1.0  # ループ
+                
+                secondary_structure[res_ids[i+1]] = factor
+        
+        for res_id in residue_atoms.keys():
+            if res_id not in secondary_structure:
+                secondary_structure[res_id] = 1.0
+        
+        return secondary_structure
+    
+    def _find_parallel_initiators(self, residue_events, sync_network):
+        """並列ネットワークのハブ残基特定"""
+        degree_count = {}
+        
+        for link in sync_network:
+            degree_count[link.from_res] = degree_count.get(link.from_res, 0) + 1
+            degree_count[link.to_res] = degree_count.get(link.to_res, 0) + 1
+        
+        sorted_residues = sorted(degree_count.items(), key=lambda x: x[1], reverse=True)
+        return [res_id for res_id, _ in sorted_residues[:5]]
+    
+    def _compute_structural_confidence(self, sync_network, anomaly_scores):
+        """構造的信頼度計算"""
+        if not sync_network:
+            return []
+        
+        confidence_results = []
+        score_dict = {res_id: scores[0] for res_id, scores in anomaly_scores.items()}
+        
+        for link in sync_network[:10]:
+            res_i = link.from_res
+            res_j = link.to_res
+            
+            score_i = score_dict.get(res_i, 0)
+            score_j = score_dict.get(res_j, 0)
+            
+            strength_confidence = link.strength
+            anomaly_confidence = min(score_i, score_j) / (max(score_i, score_j) + 1e-10)
+            distance_confidence = (
+                np.exp(-link.distance / 10.0) if link.distance is not None else 0.5
+            )
+            
+            overall_confidence = np.mean([
+                strength_confidence, 
+                anomaly_confidence, 
+                distance_confidence
+            ])
+            
+            std_estimate = overall_confidence * 0.15
+            ci_lower = max(0, overall_confidence - 1.96 * std_estimate)
+            ci_upper = min(1, overall_confidence + 1.96 * std_estimate)
+            
+            confidence_results.append({
+                'pair': (res_i, res_j),
+                'correlation': link.strength,
+                'confidence': overall_confidence,
+                'confidence_interval': (ci_lower, ci_upper),
+                'p_value': 1.0 - overall_confidence,
+                'distance': link.distance,
+                'anomaly_product': score_i * score_j
+            })
+        
+        return confidence_results
+    
+    def _create_empty_analysis(self, event_name, start_frame, end_frame):
+        """空の解析結果"""
+        return ResidueLevelAnalysis(
+            event_name=event_name,
+            macro_start=start_frame,
+            macro_end=end_frame,
+            residue_events={},
+            causality_chain=[],
+            initiator_residues=[],
+            key_propagation_paths=[],
+            async_strong_bonds=[],
+            sync_network=[],
+            network_stats={'error': 'Invalid frame range'},
+            confidence_results=[],
+            gpu_time=0.0
+        )
+
     def _detect_residue_anomalies_gpu(self,
                                     structures,  # ResidueStructureResultまたはDict
                                     event_type: str) -> Dict[int, np.ndarray]:
