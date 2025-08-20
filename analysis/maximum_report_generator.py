@@ -259,13 +259,18 @@ def generate_maximum_report_from_results_v4(
         for i, event in enumerate(lambda_result.critical_events):
             if isinstance(event, tuple) and len(event) >= 2:
                 start, end = event[0], event[1]
-                event_key = f"event_{i}"
+                
+                # 正しいキー形式で探す！
+                found_key = None
+                for key in two_stage_result.residue_analyses.keys():
+                    if key.startswith(f"top_{i:02d}_"):  # "top_00_", "top_01_"...
+                        found_key = key
+                        break
                 
                 report += f"\n#### Event {i+1} (frames {start}-{end}):\n"
                 
-                # 対応する残基解析を取得
-                if event_key in two_stage_result.residue_analyses:
-                    analysis = two_stage_result.residue_analyses[event_key]
+                if found_key:  # ← 見つかったキーで取得！
+                    analysis = two_stage_result.residue_analyses[found_key]
                     
                     # Initiator residues
                     initiators = []
@@ -312,10 +317,7 @@ def generate_maximum_report_from_results_v4(
                             report += f"  - Max Λ: {max_lambda:.3f}\n"
                 else:
                     report += f"- *Residue analysis not available for this event*\n"
-    
-    # ========================================
-    # 3. Two-Stage結果の完全解析（既存、位置調整）
-    # ========================================
+
     # ========================================
     # 3. Two-Stage結果の完全解析（既存、位置調整）
     # ========================================
