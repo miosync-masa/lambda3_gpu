@@ -267,7 +267,83 @@ def run_quantum_validation_pipeline(
                 logger.debug("   Top event scores:")
                 for i, (start, end, score) in enumerate(selected_events[:10]):
                     logger.debug(f"     Event {i}: frames {start}-{end}, score={score:.3f}")
+
+    # ========================================
+    # Step 3: Two-Stage詳細解析
+    # ========================================
+    two_stage_result = None
+    network_results = []
     
+    if enable_two_stage and len(lambda_result.critical_events) > 0:
+        logger.info("\n🔬 Running Two-Stage Residue-Level Analysis...")
+        
+        try:
+            # タンパク質残基数の取得
+            n_protein_residues = metadata.get('protein', {}).get('n_residues', 10)
+            logger.info(f"   Protein residues: {n_protein_residues}")
+            
+            # タンパク質部分のトラジェクトリ
+            protein_trajectory = trajectory[:, protein_indices, :]
+            
+            # TOP50イベント選択
+            MAX_EVENTS = 50
+            MIN_WINDOW_SIZE = 10
+            
+            # イベントのスコア付きソート
+            sorted_events = []
+            for event in lambda_result.critical_events:
+                if isinstance(event, dict):
+                    score = event.get('anomaly_score', 0)
+                    start = event.get('start', event.get('frame', 0))
+                    end = event.get('end', start)
+                elif isinstance(event, (tuple, list)) and len(event) >= 2:
+                    start = int(event[0])
+                    end = int(event[1])
+                    
+                    # ⚡ 修正: anomaly_scoresから実際のスコアを取得（最大値）
+                    if len(event) > 2:
+                        score = event[2]  # 既にスコアがある場合
+                    else:
+                        # anomaly_scoresから該当範囲の最大値を取得
+                        if 'combined' in lambda_result.anomaly_scores:
+                            # 範囲内の最大値（量子的スパイクを捉える）
+                            score = float(np.max(lambda_result.anomaly_scores['combined'][start:end+1]))
+                        elif 'final_combined' in lambda_result.anomaly_scores:
+                            score = float(np.max(lambda_result.anomaly_scores['final_combined'][start:end+1]))
+                        elif 'global' in lambda_result.anomaly_scores:
+                            score = float(np.max(lambda_result.anomaly_scores['global'][start:end+1]))
+                        else:
+                            # フォールバック：何かしらのスコアを探す
+                            for key in ['local', 'extended']:
+                                if key in lambda_result.anomaly_scores:
+                                    score = float(np.max(lambda_result.anomaly_scores[key][start:end+1]))
+                                    break
+                            else:
+                                score = 0.0
+                                logger.warning(f"   ⚠️ No anomaly scores found for event at frames {start}-{end}")
+                else:
+                    continue
+                sorted_events.append((start, end, score))
+            
+            # スコアでソート（降順）
+            sorted_events.sort(key=lambda x: x[2], reverse=True)
+            selected_events = sorted_events[:min(MAX_EVENTS, len(sorted_events))]
+            logger.info(f"   Selected TOP {len(selected_events)} events")
+            
+            # デバッグ：上位イベントのスコアを表示
+            if verbose:
+                logger.debug("   Top event scores:")
+                for i, (start, end, score) in enumerate(selected_events[:10]):
+                    logger.debug(f"     Event {i}: frames {start}-{end}, score={score:.3f}")
+                    
+        except Exception as e:
+            logger.error(f"Two-stage analysis failed: {e}")
+            if verbose:
+                import traceback
+                traceback.print_exc()
+            two_stage_result = None
+            network_results = []    
+      
     # ========================================
     # Step 4: 量子検証（Version 4.0）
     # ========================================
