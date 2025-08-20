@@ -719,7 +719,7 @@ class TwoStageAnalyzerGPU(GPUBackend):
     
     def _compute_anomaly_gpu(self, series: ArrayType, window: int = 50) -> ArrayType:
         """GPU上で異常スコア計算"""
-        anomaly = self.zeros_like(series)
+        anomaly = self.xp.zeros_like(series)
         
         for i in range(len(series)):
             start = max(0, i - window)
