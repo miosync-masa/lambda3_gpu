@@ -412,6 +412,52 @@ def run_quantum_validation_pipeline(
             traceback.print_exc()
     
     # ========================================
+    # Step 4.5: Third Impact Analysis（新規追加）
+    # ========================================
+    third_impact_results = None
+    
+    if enable_third_impact and two_stage_result is not None:
+        logger.info("\n🔺 Running Third Impact Analysis...")
+        
+        try:
+            from lambda3_gpu.analysis.third_impact_analytics import run_third_impact_analysis
+            
+            # Third Impact解析実行
+            third_impact_results = run_third_impact_analysis(
+                lambda_result=lambda_result,
+                two_stage_result=two_stage_result,
+                trajectory=trajectory[:, protein_indices, :],  # タンパク質部分のみ
+                output_dir=output_path / 'third_impact',
+                top_n=10,  # 上位10残基を解析
+                enable_propagation=True,
+                use_gpu=True
+            )
+            
+            # 統計表示
+            if third_impact_results:
+                total_genesis = sum(len(r.genesis_atoms) for r in third_impact_results.values())
+                total_quantum_atoms = sum(r.n_quantum_atoms for r in third_impact_results.values())
+                
+                logger.info(f"   ✅ Third Impact analysis complete")
+                logger.info(f"   Genesis atoms identified: {total_genesis}")
+                logger.info(f"   Total quantum atoms: {total_quantum_atoms}")
+                
+                # 創薬ターゲット表示
+                drug_targets = []
+                for result in third_impact_results.values():
+                    drug_targets.extend(result.drug_target_atoms)
+                
+                if drug_targets:
+                    unique_targets = list(set(drug_targets[:10]))
+                    logger.info(f"   Drug target atoms: {unique_targets}")
+            
+        except Exception as e:
+            logger.error(f"Third Impact analysis failed: {e}")
+            if verbose:
+                import traceback
+                traceback.print_exc()
+
+    # ========================================
     # Step 5: 可視化（Version 4.0対応）
     # ========================================
     if enable_visualization:
@@ -524,7 +570,6 @@ def run_quantum_validation_pipeline(
         'output_dir': output_path,
         'success': True
     }
-
 
 # ============================================
 # 補助関数群（Version 4.0）
