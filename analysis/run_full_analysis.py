@@ -65,6 +65,7 @@ def run_quantum_validation_pipeline(
     protein_indices_path: str,
     topology_path: Optional[str] = None,
     enable_two_stage: bool = True,
+    enable_third_impact: bool = True,  # ← これ追加！
     enable_visualization: bool = True,
     output_dir: str = './quantum_results_v4',
     verbose: bool = False
