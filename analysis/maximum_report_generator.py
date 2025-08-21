@@ -260,27 +260,35 @@ def generate_maximum_report_from_results_v4(
         
         report += "\n## 🔬 Structural Events with Propagation Pathways\n"
         
-        # タイムライン
+        # 実際に解析されたイベント数を取得
+        n_analyzed_events = len(two_stage_result.residue_analyses)
+        n_total_events = len(lambda_result.critical_events)
+        
+        # タイムライン（全イベント表示、ただし解析済みを明示）
         report += "\n### 📅 Events Timeline:\n"
         for i, event in enumerate(lambda_result.critical_events):
             if isinstance(event, tuple) and len(event) >= 2:
                 start, end = event[0], event[1]
                 duration = end - start
-                report += f"- **Event {i+1}**: frames {start:6d}-{end:6d} ({duration:5d} frames)\n"
+                # 解析済みかどうかマーク
+                analyzed_mark = " ✓" if i < n_analyzed_events else ""
+                report += f"- **Event {i+1}**: frames {start:6d}-{end:6d} ({duration:5d} frames){analyzed_mark}\n"
         
-        # 各イベントの詳細解析
-        report += "\n### 🧬 Detailed Event Analysis:\n"
+        # 各イベントの詳細解析（解析済みの分だけ）
+        report += f"\n### 🧬 Detailed Event Analysis (Top {n_analyzed_events} events):\n"
         
-        for i, event in enumerate(lambda_result.critical_events):
+        # 解析されたイベント数だけループ
+        for i in range(min(n_analyzed_events, n_total_events)):
+            event = lambda_result.critical_events[i]
             if isinstance(event, tuple) and len(event) >= 2:
                 start, end = event[0], event[1]
                 
-                # 正しいキー形式で探す！
+                # 正しいキー形式で探す
                 found_key = None
                 for key in two_stage_result.residue_analyses.keys():
-                    key_str = str(key)  # ← floatでも文字列に変換！
+                    key_str = str(key)
                     if key_str.startswith(f"top_{i:02d}_"):
-                        found_key = key  # 元のキー（floatのまま）を保存
+                        found_key = key
                         break
                 
                 report += f"\n#### Event {i+1} (frames {start}-{end}):\n"
@@ -332,7 +340,7 @@ def generate_maximum_report_from_results_v4(
                             report += f"  - Mean Λ: {mean_lambda:.3f}\n"
                             report += f"  - Max Λ: {max_lambda:.3f}\n"
                 else:
-                    report += f"- *Residue analysis not available for this event*\n"
+                    report += f"- *Analysis data not found (check key format)*\n"
     
     # ========================================
     # 3. Two-Stage結果の完全解析（既存、位置調整）
