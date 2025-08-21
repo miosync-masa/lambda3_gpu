@@ -166,7 +166,7 @@ def run_quantum_validation_pipeline(
         config.use_drift = True
         config.adaptive_window = True
         config.window_scale = 0.005
-        config.gpu_batch_size = 10000
+        config.gpu_batch_size = 30000
         config.verbose = verbose
         config.sensitivity = 2.0
         config.use_hierarchical = True
