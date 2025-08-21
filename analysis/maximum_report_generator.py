@@ -278,8 +278,9 @@ def generate_maximum_report_from_results_v4(
                 # 正しいキー形式で探す！
                 found_key = None
                 for key in two_stage_result.residue_analyses.keys():
-                    if key.startswith(f"top_{i:02d}_"):  # "top_00_", "top_01_"...
-                        found_key = key
+                    key_str = str(key)  # ← floatでも文字列に変換！
+                    if key_str.startswith(f"top_{i:02d}_"):
+                        found_key = key  # 元のキー（floatのまま）を保存
                         break
                 
                 report += f"\n#### Event {i+1} (frames {start}-{end}):\n"
