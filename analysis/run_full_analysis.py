@@ -207,7 +207,7 @@ def run_quantum_validation_pipeline(
     network_results = []
     
     if enable_two_stage and len(lambda_result.critical_events) > 0:
-        logger.info("\\n🔬 Running Two-Stage Residue-Level Analysis...")
+        logger.info("\n🔬 Running Two-Stage Residue-Level Analysis...")
         
         try:
             # タンパク質残基数の取得
@@ -232,20 +232,19 @@ def run_quantum_validation_pipeline(
                     start = int(event[0])
                     end = int(event[1])
                     
-                    # ⚡ 修正: anomaly_scoresから実際のスコアを取得（最大値）
+                    # anomaly_scoresから実際のスコアを取得（最大値）
                     if len(event) > 2:
                         score = event[2]  # 既にスコアがある場合
                     else:
                         # anomaly_scoresから該当範囲の最大値を取得
                         if 'combined' in lambda_result.anomaly_scores:
-                            # 範囲内の最大値（量子的スパイクを捉える）
                             score = float(np.max(lambda_result.anomaly_scores['combined'][start:end+1]))
                         elif 'final_combined' in lambda_result.anomaly_scores:
                             score = float(np.max(lambda_result.anomaly_scores['final_combined'][start:end+1]))
                         elif 'global' in lambda_result.anomaly_scores:
                             score = float(np.max(lambda_result.anomaly_scores['global'][start:end+1]))
                         else:
-                            # フォールバック：何かしらのスコアを探す
+                            # フォールバック
                             for key in ['local', 'extended']:
                                 if key in lambda_result.anomaly_scores:
                                     score = float(np.max(lambda_result.anomaly_scores[key][start:end+1]))
@@ -268,7 +267,14 @@ def run_quantum_validation_pipeline(
                 for i, (start, end, score) in enumerate(selected_events[:10]):
                     logger.debug(f"     Event {i}: frames {start}-{end}, score={score:.3f}")
             
-            # =========== ここから追加！！ ===========
+            # =========== 修正部分！！ ===========
+            # detected_eventsをtop_XX_score_Y.YY形式に変換
+            detected_events = []
+            for i, (start, end, score) in enumerate(selected_events):
+                # maximum_report_generatorが期待する形式
+                event_name = f"top_{i:02d}_score_{score:.3f}"
+                detected_events.append((start, end, event_name))
+            
             # TwoStageAnalyzerの設定
             residue_config = ResidueAnalysisConfig()
             residue_config.n_residues = n_protein_residues
@@ -280,12 +286,12 @@ def run_quantum_validation_pipeline(
             logger.info("   Initializing Two-Stage Analyzer...")
             two_stage_analyzer = TwoStageAnalyzerGPU(residue_config)
             
-            # 解析実行！
-            logger.info(f"   Analyzing {len(selected_events)} events...")
-            two_stage_result = two_stage_analyzer.analyze_trajectory(  # ← analyze_trajectory！
-                trajectory=protein_trajectory,  # ← trajectoryという引数名
-                macro_result=lambda_result,     # ← macro_resultという引数名  
-                detected_events=selected_events, # ← detected_eventsという引数名
+            # 解析実行！（detected_eventsは名前付きになった！）
+            logger.info(f"   Analyzing {len(detected_events)} events...")
+            two_stage_result = two_stage_analyzer.analyze_trajectory(
+                trajectory=protein_trajectory,
+                macro_result=lambda_result,
+                detected_events=detected_events,  # top_XX_score_Y.YY形式！
                 n_residues=n_protein_residues
             )
             
@@ -311,7 +317,7 @@ def run_quantum_validation_pipeline(
                 import traceback
                 traceback.print_exc()
             two_stage_result = None
-            network_results = []   
+            network_results = []
           
     # ========================================
     # Step 4: 量子検証（Version 4.0）
