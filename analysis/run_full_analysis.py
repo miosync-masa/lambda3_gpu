@@ -34,6 +34,12 @@ try:
         TwoStageLambda3Result,
         ResidueAnalysisConfig
     )
+    # Third Impact Analytics
+    from lambda3_gpu.analysis.third_impact_analytics import (
+        run_third_impact_analysis,
+        ThirdImpactAnalyzer,
+        ThirdImpactResult
+    )
     # Version 4.0 imports
     from lambda3_gpu.quantum import (
         QuantumValidatorV4,
@@ -46,7 +52,7 @@ except ImportError as e:
     print(f"Import error: {e}")
     print("Make sure lambda3_gpu is properly installed")
     raise
-
+    
 # Logger設定
 logging.basicConfig(
     level=logging.INFO,
@@ -421,8 +427,6 @@ def run_quantum_validation_pipeline(
         logger.info("\n🔺 Running Third Impact Analysis...")
         
         try:
-            from lambda3_gpu.analysis.third_impact_analytics import run_third_impact_analysis
-            
             # Third Impact解析実行
             third_impact_results = run_third_impact_analysis(
                 lambda_result=lambda_result,
