@@ -318,12 +318,18 @@ def generate_maximum_report_from_results_v4(
                                 for j, path in enumerate(pathways[:3], 1):  # Top 3 paths
                                     path_str = ' → '.join([f"R{r+1}" for r in path])
                                     report += f"  - Path {j}: {path_str}\n"
-                    
-                    # 統計情報
-                    n_residues = len(analysis.residue_events) if hasattr(analysis, 'residue_events') else 0
-                    n_causal = len(network.causal_network) if hasattr(network, 'causal_network') else 0
-                    n_sync = len(network.sync_network) if hasattr(network, 'sync_network') else 0
-                    n_async = len(network.async_strong_bonds) if hasattr(network, 'async_strong_bonds') else 0
+                        
+                        # 統計情報（networkが定義されてる場合のみ）
+                        n_residues = len(analysis.residue_events) if hasattr(analysis, 'residue_events') else 0
+                        n_causal = len(network.causal_network) if hasattr(network, 'causal_network') else 0
+                        n_sync = len(network.sync_network) if hasattr(network, 'sync_network') else 0
+                        n_async = len(network.async_strong_bonds) if hasattr(network, 'async_strong_bonds') else 0
+                    else:
+                        # networkがない場合
+                        n_residues = len(analysis.residue_events) if hasattr(analysis, 'residue_events') else 0
+                        n_causal = 0
+                        n_sync = 0
+                        n_async = 0
                     
                     report += f"- **📊 Statistics**:\n"
                     report += f"  - Residues involved: {n_residues}\n"
