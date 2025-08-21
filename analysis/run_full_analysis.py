@@ -1032,6 +1032,9 @@ Examples:
                        help='Path to protein indices file (.npy)')
     
     # オプション引数
+    parser.add_argument('--enable-third-impact', 
+                       action='store_true',
+                       help='Enable Third Impact atomic-level analysis') 
     parser.add_argument('--topology', '-t',
                        help='Path to topology file (optional)')
     parser.add_argument('--output', '-o', 
