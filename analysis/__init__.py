@@ -21,10 +21,19 @@ from .two_stage_analyzer_gpu import (
 
 # 🔺 Third Impact Analytics
 from .third_impact_analytics import (
+    # メインクラス
     ThirdImpactAnalyzer,
     ThirdImpactResult,
+    # 原子レベル
     AtomicQuantumTrace,
-    ImpactPropagation,
+    # ネットワーク解析（v3.0新機能！）
+    AtomicNetworkGPU,
+    AtomicNetworkResult,
+    AtomicNetworkLink,
+    ResidueBridge,
+    # 起源情報
+    EventOrigin,
+    # 実行関数
     run_third_impact_analysis,
 )
 
