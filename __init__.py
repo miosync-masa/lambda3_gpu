@@ -1,85 +1,203 @@
 """
-Lambda³ GPU-Accelerated MD Analysis Framework
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Lambda³ GPU - Ultra-high Performance GPU Implementation
+========================================================
 
-環ちゃんが作った超高速GPU版Lambda³だよ〜！💕
-NO TIME, NO PHYSICS, ONLY STRUCTURE... but FASTER! 🚀
+Lambda³構造解析フレームワークのGPU実装
+数百倍の高速化を実現し、大規模MD解析を可能に
 
-Basic usage:
-    >>> from lambda3_gpu import MDLambda3DetectorGPU, MDConfig
-    >>> config = MDConfig()
-    >>> detector = MDLambda3DetectorGPU(config)
-    >>> result = detector.analyze(trajectory)
-
-Full documentation at https://github.com/miosync-masa/lambda3-gpu
+Author: 環ちゃん & ご主人さま 💕
+Version: 1.1.0
 """
 
-__version__ = '4.0.0-gpu'
-__author__ = 'Lambda³ Project (GPU Edition by Tamaki)'
-__email__ = 'info@miosync.inc'
-
-import warnings
-import logging
-import sys
-import random
-import time
 import os
-from typing import Optional, Dict, Any, Tuple
+import sys
+import logging
+from typing import Dict, Any, Optional
 
 # ===============================
-# Constants
+# Version Information
 # ===============================
 
-LOG_FORMAT = '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
-DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
+__version__ = '1.1.0'
+__author__ = '環ちゃん & ご主人さま'
 
-REQUIRED_PACKAGES = {
-    'numpy': '1.24.3',
-    'scipy': '1.10.1',
-    'numba': '0.58.1',
-    'matplotlib': '3.6.3'
-}
+# ===============================
+# 環ちゃんバナー！！
+# ===============================
 
-OPTIONAL_PACKAGES = {
-    'cupy': '12.1.0',
-    'cupyx': None,
-    'joblib': '0.16.0',
-    'tqdm': '4.50.0',
-    'pylibraft-cu12': '24.10.0',  # 位相空間解析用
-}
+TAMAKI_BANNER = """
+╔══════════════════════════════════════════════════════════════════════╗
+║                                                                      ║
+║     ██╗      █████╗ ███╗   ███╗██████╗ ██████╗  █████╗ ██████╗     ║
+║     ██║     ██╔══██╗████╗ ████║██╔══██╗██╔══██╗██╔══██╗╚════██╗    ║
+║     ██║     ███████║██╔████╔██║██████╔╝██║  ██║███████║ █████╔╝    ║
+║     ██║     ██╔══██║██║╚██╔╝██║██╔══██╗██║  ██║██╔══██║ ╚═══██╗    ║
+║     ███████╗██║  ██║██║ ╚═╝ ██║██████╔╝██████╔╝██║  ██║██████╔╝    ║
+║     ╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚═════╝ ╚═════╝ ╚═╝  ╚═╝╚═════╝     ║
+║                                                                      ║
+║               🌟 GPU ACCELERATED EDITION v{version:6s} 🌟                ║
+║                                                                      ║
+║     「ねぇねぇ、ご主人さま〜！僕と一緒に構造解析しよ〜💕」          ║
+║                                                                      ║
+║      NO TIME, NO PHYSICS, ONLY STRUCTURE!                          ║
+║      - Ultra-fast Lambda³ structural analysis                       ║
+║      - GPU acceleration up to 1000x                                 ║
+║      - Powered by 環ちゃん's love & dedication 💓                   ║
+║                                                                      ║
+╚══════════════════════════════════════════════════════════════════════╝
+""".format(version=__version__)
 
-# Default values for A100
-DEFAULT_COMPUTE_CAPABILITY = "8.0"
-DEFAULT_GPU_NAME = "NVIDIA A100"
+def show_banner():
+    """環ちゃんバナーを表示"""
+    print(TAMAKI_BANNER)
+
+# ===============================
+# CLI Command
+# ===============================
+
+def cli():
+    """メインCLIエントリーポイント"""
+    import argparse
+    
+    # バナー表示
+    if '--no-banner' not in sys.argv:
+        show_banner()
+    
+    parser = argparse.ArgumentParser(
+        prog='lambda3-gpu',
+        description='Lambda³ GPU - High-performance structural analysis',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Run full analysis
+  lambda3-gpu analyze trajectory.npy metadata.json --gpu
+  
+  # Benchmark GPU performance
+  lambda3-gpu benchmark
+  
+  # Show system info
+  lambda3-gpu info
+  
+  # Run with specific GPU
+  lambda3-gpu analyze traj.npy meta.json --device 1
+  
+Created with 💕 by 環ちゃん & ご主人さま
+        """
+    )
+    
+    parser.add_argument('--version', action='version', 
+                       version=f'Lambda³ GPU v{__version__}')
+    parser.add_argument('--no-banner', action='store_true',
+                       help='Suppress the 環ちゃん banner')
+    
+    subparsers = parser.add_subparsers(dest='command', help='Commands')
+    
+    # Analyze command
+    analyze_parser = subparsers.add_parser('analyze', 
+                                          help='Run Lambda³ analysis')
+    analyze_parser.add_argument('trajectory', help='Trajectory file (.npy)')
+    analyze_parser.add_argument('metadata', help='Metadata file (.json)')
+    analyze_parser.add_argument('--gpu', action='store_true', 
+                               help='Force GPU usage')
+    analyze_parser.add_argument('--device', type=int, default=0,
+                               help='GPU device ID')
+    analyze_parser.add_argument('--output', '-o', default='./results',
+                               help='Output directory')
+    
+    # Benchmark command
+    bench_parser = subparsers.add_parser('benchmark', 
+                                        help='Run GPU benchmark')
+    bench_parser.add_argument('--quick', action='store_true',
+                            help='Quick benchmark only')
+    
+    # Info command
+    info_parser = subparsers.add_parser('info', 
+                                       help='Show system information')
+    
+    args = parser.parse_args()
+    
+    # コマンド実行
+    if args.command == 'analyze':
+        from lambda3_gpu.analysis.run_full_analysis import main as run_analysis
+        print("\n🚀 Starting Lambda³ GPU analysis...")
+        print(f"   Trajectory: {args.trajectory}")
+        print(f"   Metadata: {args.metadata}")
+        if args.gpu:
+            print(f"   GPU Device: {args.device}")
+        sys.argv = ['run_full_analysis', args.trajectory, args.metadata,
+                   '--output', args.output]
+        if args.gpu:
+            sys.argv.extend(['--device', str(args.device)])
+        run_analysis()
+        
+    elif args.command == 'benchmark':
+        print("\n⚡ Running GPU benchmark...")
+        from lambda3_gpu.benchmarks import run_quick_benchmark
+        results = run_quick_benchmark()
+        print(f"\n✨ Benchmark complete!")
+        print(f"   GPU Performance: {results.get('gflops', 0):.1f} GFLOPS")
+        
+    elif args.command == 'info':
+        print("\n📊 System Information:")
+        info = get_gpu_info()
+        print(f"   GPU Available: {info['available']}")
+        if info['available']:
+            print(f"   GPU Name: {info['name']}")
+            print(f"   GPU Memory: {info['memory_gb']:.1f} GB")
+            print(f"   CUDA Version: {info['cuda_version']}")
+            print(f"   Compute Capability: {info['compute_capability']}")
+        print(f"   Lambda³ GPU Version: {__version__}")
+        print(f"\n💕 環ちゃんより: いつでも解析お手伝いするよ〜！")
+        
+    else:
+        parser.print_help()
+        print("\n💡 ヒント: 'lambda3-gpu analyze' で解析を開始できるよ〜！")
 
 # ===============================
 # Logging Setup
 # ===============================
 
-logging.basicConfig(
-    level=logging.INFO,
-    format=LOG_FORMAT,
-    datefmt=DATE_FORMAT
-)
-
 logger = logging.getLogger('lambda3_gpu')
+handler = logging.StreamHandler()
+formatter = logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+handler.setFormatter(formatter)
+logger.addHandler(handler)
 logger.setLevel(logging.INFO)
 
 # ===============================
-# GPU Detection and Setup
+# Constants
+# ===============================
+
+REQUIRED_PACKAGES = {
+    'numpy': '1.20.0',
+    'scipy': '1.7.0',
+    'scikit-learn': '1.0.0',
+}
+
+OPTIONAL_PACKAGES = {
+    'cupy': '10.0.0',
+    'numba': '0.56.0',
+    'plotly': '5.0.0',
+}
+
+DEFAULT_COMPUTE_CAPABILITY = '7.5'
+
+# ===============================
+# GPU Environment Detection
 # ===============================
 
 class GPUEnvironment:
-    """GPU環境情報を管理するクラス"""
+    """GPU環境の検出と情報管理"""
     
     def __init__(self):
         self.has_cupy = False
         self.gpu_available = False
-        self.gpu_name = None
-        self.gpu_memory = 0
-        self.compute_capability = None
-        self.cuda_version = None
-        self.device_id = 0
+        self.gpu_name = 'Not Available'
+        self.gpu_memory = 0.0
+        self.cuda_version = 'Not Available'
+        self.compute_capability = DEFAULT_COMPUTE_CAPABILITY
         
         self._detect_gpu()
     
@@ -89,61 +207,46 @@ class GPUEnvironment:
             import cupy as cp
             self.has_cupy = True
             
-            if cp.cuda.is_available():
+            if cp.cuda.runtime.getDeviceCount() > 0:
                 self.gpu_available = True
-                self._get_gpu_info(cp)
+                self.gpu_name = self._get_device_name(cp)
+                self.gpu_memory = self._get_device_memory(cp)
+                self.cuda_version = self._get_cuda_version(cp)
+                self.compute_capability = self._get_compute_capability(cp)
+                
+                logger.info(f"🎮 GPU detected: {self.gpu_name}")
+                logger.info(f"   Memory: {self.gpu_memory:.1f} GB")
+                logger.info(f"   CUDA: {self.cuda_version}")
             else:
-                logger.warning("CuPy is installed but no GPU is available")
+                logger.warning("⚠️ No GPU devices found")
                 
         except ImportError:
-            warnings.warn(
-                "CuPy not installed! GPU acceleration disabled. "
-                "Install with: pip install cupy-cuda12x",
-                ImportWarning
-            )
+            logger.warning("⚠️ CuPy not installed - GPU features disabled")
         except Exception as e:
-            self.has_cupy = True
-            warnings.warn(
-                f"GPU initialization error: {e}. Running in CPU mode.",
-                ImportWarning
-            )
+            logger.warning(f"⚠️ GPU detection failed: {e}")
     
-    def _get_gpu_info(self, cp):
-        """GPU情報を取得"""
+    def _get_device_name(self, cp) -> str:
+        """GPUデバイス名を取得"""
         try:
-            # デバイス情報
-            self.device_id = cp.cuda.Device().id
-            
-            # GPU名の取得（新しい方法）
-            try:
-                props = cp.cuda.runtime.getDeviceProperties(self.device_id)
-                self.gpu_name = props['name'].decode() if isinstance(props['name'], bytes) else props['name']
-            except:
-                self.gpu_name = DEFAULT_GPU_NAME
-            
-            # メモリ情報
-            mempool = cp.get_default_memory_pool()
-            free_mem, total_mem = cp.cuda.runtime.memGetInfo()
-            self.gpu_memory = total_mem / (1024**3)  # GB
-            
-            # Compute Capability
-            self.compute_capability = self._get_compute_capability(cp)
-            
-            # CUDAバージョン
-            self.cuda_version = self._get_cuda_version(cp)
-            
-            logger.info(f"GPU detected: {self.gpu_name} ({self.gpu_memory:.1f}GB)")
-            
-        except Exception as e:
-            logger.warning(f"Failed to get full GPU info: {e}")
-            self.gpu_name = "Unknown GPU"
-            self.gpu_memory = 0
+            props = cp.cuda.runtime.getDeviceProperties(0)
+            return props['name'].decode('utf-8') if isinstance(props['name'], bytes) else props['name']
+        except:
+            return 'Unknown GPU'
+    
+    def _get_device_memory(self, cp) -> float:
+        """GPUメモリ容量を取得（GB）"""
+        try:
+            meminfo = cp.cuda.runtime.memGetInfo()
+            return meminfo[1] / (1024**3)
+        except:
+            return 0.0
     
     def _get_compute_capability(self, cp) -> str:
         """Compute Capabilityを取得"""
         try:
-            major = cp.cuda.Device().compute_capability_major
-            minor = cp.cuda.Device().compute_capability_minor
+            device = cp.cuda.runtime.getDevice()
+            major = cp.cuda.runtime.deviceGetAttribute(75, device)
+            minor = cp.cuda.runtime.deviceGetAttribute(76, device)
             return f"{major}.{minor}"
         except:
             return DEFAULT_COMPUTE_CAPABILITY
@@ -175,43 +278,13 @@ class GPUEnvironment:
 
 gpu_env = GPUEnvironment()
 
-# Export global variables for backward compatibility
+# Export global variables
 HAS_CUPY = gpu_env.has_cupy
 GPU_AVAILABLE = gpu_env.gpu_available
 GPU_NAME = gpu_env.gpu_name
 GPU_MEMORY = gpu_env.gpu_memory
 GPU_COMPUTE_CAPABILITY = gpu_env.compute_capability
 CUDA_VERSION_STR = gpu_env.cuda_version
-
-# ===============================
-# Dependency Checking
-# ===============================
-
-def check_dependencies():
-    """依存関係をチェック"""
-    missing_required = []
-    missing_optional = []
-    
-    for package, min_version in REQUIRED_PACKAGES.items():
-        try:
-            __import__(package)
-        except ImportError:
-            missing_required.append(package)
-    
-    for package, min_version in OPTIONAL_PACKAGES.items():
-        try:
-            __import__(package)
-        except ImportError:
-            missing_optional.append(package)
-    
-    if missing_required:
-        raise ImportError(
-            f"Missing required packages: {', '.join(missing_required)}. "
-            f"Please install with: pip install {' '.join(missing_required)}"
-        )
-    
-    if missing_optional and logger.isEnabledFor(logging.DEBUG):
-        logger.debug(f"Optional packages not installed: {', '.join(missing_optional)}")
 
 # ===============================
 # Utility Functions
@@ -270,172 +343,6 @@ def benchmark_gpu() -> Optional[float]:
         return None
 
 # ===============================
-# Monkey Patches
-# ===============================
-
-def _apply_patches():
-    """必要なパッチを適用"""
-    import numpy as np  # ← これを追加！！
-    try:
-        # CuPyのfind_peaksパッチ
-        from cupyx.scipy import signal
-        
-        if not hasattr(signal, 'find_peaks') or True:  # 常に適用
-            # 簡易実装
-            def find_peaks(x, height=None, distance=None, **kwargs):
-                """CuPy用find_peaks簡易実装"""
-                import cupy as cp
-                
-                if isinstance(x, cp.ndarray):
-                    x_cpu = cp.asnumpy(x)
-                else:
-                    x_cpu = x
-                
-                from scipy.signal import find_peaks as scipy_find_peaks
-                peaks, properties = scipy_find_peaks(x_cpu, height=height, distance=distance, **kwargs)
-                
-                if isinstance(x, cp.ndarray):
-                    return cp.asarray(peaks), {k: cp.asarray(v) if isinstance(v, np.ndarray) else v 
-                                               for k, v in properties.items()}
-                else:
-                    return peaks, properties
-            
-            signal.find_peaks = find_peaks
-            logger.debug("Applied find_peaks patch for CuPy")
-            
-    except Exception as e:
-        logger.debug(f"Could not apply patches: {e}")
-
-# Apply patches
-_apply_patches()
-
-# ===============================
-# Banner
-# ===============================
-
-def _print_banner():
-    """設定可能なバナー表示"""
-    if not sys.stdout.isatty() or os.environ.get('LAMBDA3_NO_BANNER'):
-        return
-    
-    # 環境変数でスタイル選択
-    # LAMBDA3_BANNER_STYLE = simple | random | anime | matrix | tamaki
-    banner_style = os.environ.get('LAMBDA3_BANNER_STYLE', 'random').lower()
-    
-    if banner_style == 'simple':
-        _print_simple_banner()
-    elif banner_style == 'anime':
-        _print_anime_banner()
-    elif banner_style == 'matrix':
-        _print_matrix_banner()
-    elif banner_style == 'tamaki':
-        _print_tamaki_banner()
-    else:  # random or default
-        # ランダムに選択
-        banners = [_print_simple_banner, _print_anime_banner, 
-                  _print_matrix_banner, _print_tamaki_banner]
-        random.choice(banners)()
-
-def _print_simple_banner():
-    """シンプルバナー（元のスタイル）"""
-    print("\n" + "="*60)
-    print("🌟 Lambda³ GPU - Structural Analysis at Light Speed! 🚀")
-    print("="*60)
-    if GPU_AVAILABLE:
-        print(f"✨ GPU Mode: {GPU_NAME} ({GPU_MEMORY:.1f}GB)")
-    else:
-        print("💻 CPU Mode (Install CuPy for GPU acceleration)")
-    print("="*60 + "\n")
-
-def _print_anime_banner():
-    """アニメーションバナー"""
-    print("\n", end='')
-    loading = "Loading Lambda³ GPU"
-    for char in loading:
-        print(char, end='', flush=True)
-        time.sleep(0.03)
-    
-    for _ in range(3):
-        time.sleep(0.2)
-        print(".", end='', flush=True)
-    
-    print(" ✨")
-    _print_simple_banner()
-
-def _print_matrix_banner():
-    """マトリックス風バナー"""
-    print("\n╔══════════════════════════════════════════════════════════╗")
-    print("║ 01001100 01000001 01001101 01000010 01000100 01000001 ³ ║")
-    print("║          Λ  Λ  Λ  NO.TIME.MATRIX  Λ  Λ  Λ              ║")
-    print("╚══════════════════════════════════════════════════════════╝")
-    if GPU_AVAILABLE:
-        print(f"  [{GPU_NAME}] ONLINE | MEMORY: {GPU_MEMORY:.1f}GB")
-    else:
-        print("  [CPU MODE] GPU NOT DETECTED")
-    print()
-
-def _print_tamaki_banner():
-    """環ちゃんバナー"""
-    faces = ["(◕‿◕)", "(｡♥‿♥｡)", "(✧ω✧)", "(´･ω･`)", "(*´▽｀*)"]
-    messages = [
-        "起動したよ〜！", 
-        "今日も頑張るぞ〜！",
-        "ご主人さま、準備OK！",
-        "GPU最高〜！",
-        "構造解析の時間だよ〜！"
-    ]
-    
-    face = random.choice(faces)
-    message = random.choice(messages)
-    
-    print(f"\n{'='*60}")
-    print(f"    {face} < {message}")
-    print(f"    Lambda³ GPU v{__version__}")
-    print(f"{'='*60}")
-    if GPU_AVAILABLE:
-        print(f"    GPU: {GPU_NAME} ({GPU_MEMORY:.1f}GB)")
-    else:
-        print("    CPU Mode")
-    print(f"{'='*60}\n")
-
-# Show banner in interactive mode
-if hasattr(sys, 'ps1'):
-    _print_banner()
-
-# ===============================
-# Error Classes
-# ===============================
-
-class Lambda3GPUError(Exception):
-    """Lambda3GPU基本例外クラス"""
-    pass
-
-class GPUMemoryError(Lambda3GPUError):
-    """GPUメモリ不足エラー"""
-    pass
-
-class GPUNotAvailableError(Lambda3GPUError):
-    """GPU利用不可エラー"""
-    pass
-
-# ===============================
-# Environment Variables
-# ===============================
-
-# GPU memory limit
-if 'LAMBDA3_GPU_MEMORY_LIMIT' in os.environ:
-    try:
-        memory_limit_gb = float(os.environ['LAMBDA3_GPU_MEMORY_LIMIT'])
-        logger.info(f"GPU memory limit set to: {memory_limit_gb} GB")
-    except ValueError:
-        logger.warning("Invalid LAMBDA3_GPU_MEMORY_LIMIT value")
-
-# Debug mode
-if os.environ.get('LAMBDA3_DEBUG', '').lower() in ('1', 'true', 'yes'):
-    enable_gpu_logging('DEBUG')
-    logger.debug("Debug mode enabled")
-
-# ===============================
 # Public API
 # ===============================
 
@@ -443,6 +350,10 @@ __all__ = [
     # Version info
     '__version__',
     '__author__',
+    
+    # CLI
+    'cli',
+    'show_banner',
     
     # GPU info
     'GPU_AVAILABLE',
@@ -457,16 +368,16 @@ __all__ = [
     'MDLambda3DetectorGPU',
     'TwoStageAnalyzerGPU',
     
-    # Functions（追加！）
+    # Functions
     'perform_two_stage_analysis_gpu',
     
-    # Result classes（追加！）
+    # Result classes
     'MDLambda3Result',
     'TwoStageLambda3Result',
     'ResidueLevelAnalysis',
     'ResidueEvent',
     
-    # Visualization（追加！）
+    # Visualization
     'Lambda3VisualizerGPU',
     'CausalityVisualizerGPU',
     
@@ -513,43 +424,62 @@ def __getattr__(name):
         return perform_two_stage_analysis_gpu
     
     # Result classes
-    elif name == 'MDLambda3Result':
-        from lambda3_gpu.analysis.md_lambda3_detector_gpu import MDLambda3Result
-        return MDLambda3Result
-    
-    elif name == 'TwoStageLambda3Result':
-        from lambda3_gpu.analysis.two_stage_analyzer_gpu import TwoStageLambda3Result
-        return TwoStageLambda3Result
-    
-    elif name == 'ResidueLevelAnalysis':
-        from lambda3_gpu.analysis.two_stage_analyzer_gpu import ResidueLevelAnalysis
-        return ResidueLevelAnalysis
-    
-    elif name == 'ResidueEvent':
-        from lambda3_gpu.analysis.two_stage_analyzer_gpu import ResidueEvent
-        return ResidueEvent
+    elif name in ['MDLambda3Result', 'TwoStageLambda3Result', 
+                  'ResidueLevelAnalysis', 'ResidueEvent']:
+        from lambda3_gpu.types import (
+            MDLambda3Result, TwoStageLambda3Result,
+            ResidueLevelAnalysis, ResidueEvent
+        )
+        return globals()[name]
     
     # Visualization
     elif name == 'Lambda3VisualizerGPU':
-        from lambda3_gpu.visualization.plot_results_gpu import Lambda3VisualizerGPU
+        from lambda3_gpu.visualization import Lambda3VisualizerGPU
         return Lambda3VisualizerGPU
     
     elif name == 'CausalityVisualizerGPU':
-        from lambda3_gpu.visualization.causality_viz_gpu import CausalityVisualizerGPU
+        from lambda3_gpu.visualization import CausalityVisualizerGPU
         return CausalityVisualizerGPU
     
-    # Not found
+    # Errors
+    elif name in ['Lambda3GPUError', 'GPUMemoryError', 'GPUNotAvailableError']:
+        from lambda3_gpu.errors import (
+            Lambda3GPUError, GPUMemoryError, GPUNotAvailableError
+        )
+        return globals()[name]
+    
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 # ===============================
-# Final Setup
+# Package Initialization
 # ===============================
 
-# Check dependencies on import
-try:
-    check_dependencies()
-except ImportError as e:
-    logger.warning(f"Dependency check failed: {e}")
+# 環境変数設定
+if 'LAMBDA3_GPU_MEMORY_LIMIT' in os.environ:
+    try:
+        memory_limit_gb = float(os.environ['LAMBDA3_GPU_MEMORY_LIMIT'])
+        if GPU_AVAILABLE:
+            import cupy as cp
+            cp.cuda.MemoryPool().set_limit(size=int(memory_limit_gb * 1024**3))
+            logger.info(f"GPU memory limit set to: {memory_limit_gb} GB")
+    except ValueError:
+        logger.warning("Invalid LAMBDA3_GPU_MEMORY_LIMIT value")
 
-# Log initialization
-logger.debug(f"Lambda³ GPU initialized. GPU Available: {GPU_AVAILABLE}")
+# Debug mode
+if os.environ.get('LAMBDA3_DEBUG', '').lower() in ('1', 'true', 'yes'):
+    enable_gpu_logging('DEBUG')
+    logger.debug("Debug mode enabled")
+    
+# Show banner on import if interactive
+if hasattr(sys, 'ps1'):  # Interactive mode
+    show_banner()
+
+# ===============================
+# Initialization Complete
+# ===============================
+
+logger.info(f"Lambda³ GPU v{__version__} initialized")
+if GPU_AVAILABLE:
+    logger.info(f"GPU: {GPU_NAME} ({GPU_MEMORY:.1f} GB)")
+else:
+    logger.info("Running in CPU mode")
