@@ -68,11 +68,15 @@ __all__ = [
     'ResidueLevelAnalysis',
     'perform_two_stage_analysis_gpu',
     
-    # 🔺 Third Impact Analytics
+    # 🔺 Third Impact Analytics v3.0
     'ThirdImpactAnalyzer',
     'ThirdImpactResult',
     'AtomicQuantumTrace',
-    'ImpactPropagation',
+    'AtomicNetworkGPU',        # 追加！
+    'AtomicNetworkResult',      # 追加！
+    'AtomicNetworkLink',        # 追加！
+    'ResidueBridge',           # 追加！
+    'EventOrigin',             # 追加！
     'run_third_impact_analysis',
     
     # 評価
@@ -88,7 +92,7 @@ __all__ = [
     'generate_maximum_report_from_results_v4',
 ]
 
-__version__ = '1.4.0'  # v4.0 + Third Impact対応メジャーアップデート！
+__version__ = '1.5.0'  # v4.0 + Third Impact対応メジャーアップデート！
 
 # ========================================
 # 便利な一括実行関数
@@ -248,29 +252,36 @@ def max_report(results):
 
 def quick_quantum_check(trajectory_path: str, metadata_path: str, protein_indices_path: str):
     """
-    超高速量子チェック（Third Impact込み）
-    
-    Examples
-    --------
-    >>> from lambda3_gpu.analysis import quick_quantum_check
-    >>> quantum_atoms = quick_quantum_check('traj.npy', 'meta.json', 'protein.npy')
-    >>> print(f"Found {len(quantum_atoms)} quantum origin atoms!")
+    超高速量子チェック（Third Impact v3.0込み）
     """
     results = analyze_with_impact(
         trajectory_path, 
         metadata_path, 
         protein_indices_path,
-        enable_visualization=False,  # 可視化スキップで高速化
+        enable_visualization=False,
         verbose=False
     )
     
-    # Third Impact結果から起源原子を抽出
+    # Third Impact v3.0結果から起源原子を抽出
     quantum_atoms = []
+    network_hubs = []  # v3.0: ハブ原子も重要！
+    bridges = []       # v3.0: ブリッジ情報も！
+    
     if 'third_impact_results' in results and results['third_impact_results']:
         for impact_result in results['third_impact_results'].values():
-            quantum_atoms.extend(impact_result.genesis_atoms)
+            # v3.0: origin.genesis_atomsを使用
+            quantum_atoms.extend(impact_result.origin.genesis_atoms)
+            
+            # v3.0: ネットワーク情報も抽出
+            if impact_result.atomic_network:
+                network_hubs.extend(impact_result.atomic_network.hub_atoms[:3])
+                bridges.extend(impact_result.atomic_network.residue_bridges[:2])
     
-    return quantum_atoms
+    return {
+        'quantum_atoms': quantum_atoms,
+        'network_hubs': network_hubs,  # v3.0新機能！
+        'bridges': bridges              # v3.0新機能！
+    }
 
 # ========================================
 # バージョン情報
