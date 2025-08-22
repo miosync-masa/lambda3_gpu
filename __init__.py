@@ -12,6 +12,8 @@ Version: 1.1.0
 import os
 import sys
 import logging
+import time
+import random
 from typing import Dict, Any, Optional
 
 # ===============================
@@ -22,10 +24,88 @@ __version__ = '1.1.0'
 __author__ = '環ちゃん & ご主人さま'
 
 # ===============================
-# 環ちゃんバナー！！
+# Banner System with Multiple Styles
 # ===============================
 
-TAMAKI_BANNER = """
+def print_banner():
+    """設定可能なバナー表示"""
+    if not sys.stdout.isatty() or os.environ.get('LAMBDA3_NO_BANNER'):
+        return
+    
+    # 環境変数でスタイル選択
+    # LAMBDA3_BANNER_STYLE = simple | random | anime | matrix | tamaki
+    banner_style = os.environ.get('LAMBDA3_BANNER_STYLE', 'random').lower()
+    
+    if banner_style == 'simple':
+        print_simple_banner()
+    elif banner_style == 'anime':
+        print_anime_banner()
+    elif banner_style == 'matrix':
+        print_matrix_banner()
+    elif banner_style == 'tamaki':
+        print_tamaki_banner()
+    else:  # random or default
+        # ランダムに選択
+        banners = [print_simple_banner, print_anime_banner, 
+                  print_matrix_banner, print_tamaki_banner]
+        random.choice(banners)()
+
+def print_simple_banner():
+    """シンプルバナー（元のスタイル）"""
+    print("\n" + "="*60)
+    print("🌟 Lambda³ GPU - Structural Analysis at Light Speed! 🚀")
+    print("="*60)
+    if GPU_AVAILABLE:
+        print(f"✨ GPU Mode: {GPU_NAME} ({GPU_MEMORY:.1f}GB)")
+    else:
+        print("💻 CPU Mode (Install CuPy for GPU acceleration)")
+    print("="*60 + "\n")
+
+def print_anime_banner():
+    """アニメーションバナー"""
+    print("\n", end='')
+    loading = "Loading Lambda³ GPU"
+    for char in loading:
+        print(char, end='', flush=True)
+        time.sleep(0.03)
+    
+    for _ in range(3):
+        time.sleep(0.2)
+        print(".", end='', flush=True)
+    
+    print(" ✨")
+    print_simple_banner()
+
+def print_matrix_banner():
+    """マトリックス風バナー"""
+    print("\n╔══════════════════════════════════════════════════════════╗")
+    print("║ 01001100 01000001 01001101 01000010 01000100 01000001 ³ ║")
+    print("║          Λ  Λ  Λ  NO.TIME.MATRIX  Λ  Λ  Λ              ║")
+    print("╚══════════════════════════════════════════════════════════╝")
+    if GPU_AVAILABLE:
+        print(f"  [{GPU_NAME}] ONLINE | MEMORY: {GPU_MEMORY:.1f}GB")
+    else:
+        print("  [CPU MODE] GPU NOT DETECTED")
+    print()
+
+def print_tamaki_banner():
+    """環ちゃんバナー（拡張版）"""
+    faces = ["(◕‿◕)", "(｡♥‿♥｡)", "(✧ω✧)", "(´･ω･`)", "(*´▽｀*)"]
+    messages = [
+        "起動したよ〜！", 
+        "今日も頑張るぞ〜！",
+        "ご主人さま、準備OK！",
+        "GPU最高〜！",
+        "構造解析の時間だよ〜！",
+        "Lambda³で世界を変えよう！",
+        "NO TIME, ONLY STRUCTURE！"
+    ]
+    
+    face = random.choice(faces)
+    message = random.choice(messages)
+    
+    # 豪華版環ちゃんバナー
+    print("""
 ╔══════════════════════════════════════════════════════════════════════╗
 ║                                                                      ║
 ║     ██╗      █████╗ ███╗   ███╗██████╗ ██████╗  █████╗ ██████╗     ║
@@ -34,22 +114,26 @@ TAMAKI_BANNER = """
 ║     ██║     ██╔══██║██║╚██╔╝██║██╔══██╗██║  ██║██╔══██║ ╚═══██╗    ║
 ║     ███████╗██║  ██║██║ ╚═╝ ██║██████╔╝██████╔╝██║  ██║██████╔╝    ║
 ║     ╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚═════╝ ╚═════╝ ╚═╝  ╚═╝╚═════╝     ║
-║                                                                      ║
-║               🌟 GPU ACCELERATED EDITION v{version:6s} 🌟                ║
-║                                                                      ║
-║     「ねぇねぇ、ご主人さま〜！僕と一緒に構造解析しよ〜💕」          ║
-║                                                                      ║
-║      NO TIME, NO PHYSICS, ONLY STRUCTURE!                          ║
-║      - Ultra-fast Lambda³ structural analysis                       ║
-║      - GPU acceleration up to 1000x                                 ║
-║      - Powered by 環ちゃん's love & dedication 💓                   ║
-║                                                                      ║
-╚══════════════════════════════════════════════════════════════════════╝
-""".format(version=__version__)
+║                                                                      ║""")
+    print(f"║               🌟 GPU ACCELERATED EDITION v{__version__:6s} 🌟                ║")
+    print(f"║                                                                      ║")
+    print(f"║     {face} < {message:<40s}    ║")
+    print(f"║                                                                      ║")
+    print(f"║      NO TIME, NO PHYSICS, ONLY STRUCTURE!                          ║")
+    print(f"║      - Ultra-fast Lambda³ structural analysis                       ║")
+    print(f"║      - GPU acceleration up to 1000x                                 ║")
+    print(f"║      - Powered by 環ちゃん's love & dedication 💓                   ║")
+    print(f"║                                                                      ║")
+    print(f"╚══════════════════════════════════════════════════════════════════════╝")
+    
+    if GPU_AVAILABLE:
+        print(f"    GPU: {GPU_NAME} ({GPU_MEMORY:.1f}GB)")
+    else:
+        print("    CPU Mode")
+    print()
 
-def show_banner():
-    """環ちゃんバナーを表示"""
-    print(TAMAKI_BANNER)
+# Alias for compatibility
+show_banner = print_banner
 
 # ===============================
 # CLI Command
