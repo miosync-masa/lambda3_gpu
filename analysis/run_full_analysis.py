@@ -419,45 +419,98 @@ def run_quantum_validation_pipeline(
             traceback.print_exc()
     
     # ========================================
-    # Step 4.5: Third Impact Analysis（新規追加）
+    # Step 4.5: Third Impact Analysis（v3.0対応）
     # ========================================
     third_impact_results = None
     
     if enable_third_impact and two_stage_result is not None:
-        logger.info("\n🔺 Running Third Impact Analysis...")
+        logger.info("\n🔺 Running Third Impact Analysis v3.0...")
         
         try:
-            # Third Impact解析実行
+            # atom_mappingファイルの読み込み（NEW!）
+            atom_mapping = None
+            atom_mapping_path = kwargs.get('atom_mapping_path')
+            
+            if atom_mapping_path and Path(atom_mapping_path).exists():
+                if atom_mapping_path.endswith('.json'):
+                    with open(atom_mapping_path, 'r') as f:
+                        raw_mapping = json.load(f)
+                        # 文字列キーを整数に変換
+                        atom_mapping = {int(k): v for k, v in raw_mapping.items()}
+                elif atom_mapping_path.endswith('.npy'):
+                    # NumPy形式の場合
+                    atom_mapping = np.load(atom_mapping_path, allow_pickle=True).item()
+                logger.info(f"   Atom mapping loaded: {len(atom_mapping)} residues")
+            else:
+                logger.warning("   ⚠️ No atom mapping provided, using fallback (15 atoms/residue)")
+            
+            # Third Impact解析実行（v3.0パラメータ）
             third_impact_results = run_third_impact_analysis(
                 lambda_result=lambda_result,
                 two_stage_result=two_stage_result,
-                trajectory=trajectory[:, protein_indices, :],  # タンパク質部分のみ
+                trajectory=trajectory[:, protein_indices, :],
+                residue_mapping=atom_mapping,  # v3.0: residue_mapping
                 output_dir=output_path / 'third_impact',
-                top_n=10,  # 上位10残基を解析
-                enable_propagation=True,
-                use_gpu=True
+                use_network_analysis=True,     # v3.0: 原子ネットワーク解析ON
+                use_gpu=True,                   # GPU加速
+                top_n=kwargs.get('third_impact_top_n', 10),  # カスタマイズ可能
+                sigma_threshold=kwargs.get('sigma_threshold', 3.0)
             )
             
-            # 統計表示
+            # 統計表示（v3.0の新しい構造に対応）
             if third_impact_results:
-                total_genesis = sum(len(r.genesis_atoms) for r in third_impact_results.values())
+                # v3.0: origin.genesis_atomsを使用
+                total_genesis = sum(len(r.origin.genesis_atoms) for r in third_impact_results.values())
                 total_quantum_atoms = sum(r.n_quantum_atoms for r in third_impact_results.values())
                 
-                logger.info(f"   ✅ Third Impact analysis complete")
+                # v3.0: ネットワーク統計も追加
+                total_network_links = sum(r.n_network_links for r in third_impact_results.values())
+                total_bridges = sum(r.n_residue_bridges for r in third_impact_results.values())
+                
+                logger.info(f"   ✅ Third Impact v3.0 analysis complete")
                 logger.info(f"   Genesis atoms identified: {total_genesis}")
                 logger.info(f"   Total quantum atoms: {total_quantum_atoms}")
+                logger.info(f"   Network links: {total_network_links}")
+                logger.info(f"   Residue bridges: {total_bridges}")
                 
-                # 創薬ターゲット表示
+                # ネットワークパターンの分布
+                patterns = [r.atomic_network.network_pattern 
+                           for r in third_impact_results.values() 
+                           if r.atomic_network]
+                if patterns:
+                    from collections import Counter
+                    pattern_counts = Counter(patterns)
+                    logger.info(f"   Network patterns: {dict(pattern_counts)}")
+                
+                # 創薬ターゲット表示（v3.0: bridge_target_atomsも追加）
                 drug_targets = []
+                bridge_targets = []
+                
                 for result in third_impact_results.values():
                     drug_targets.extend(result.drug_target_atoms)
+                    if hasattr(result, 'bridge_target_atoms'):
+                        bridge_targets.extend(result.bridge_target_atoms)
                 
                 if drug_targets:
-                    unique_targets = list(set(drug_targets[:10]))
-                    logger.info(f"   Drug target atoms: {unique_targets}")
+                    unique_drug_targets = list(set(drug_targets[:10]))
+                    logger.info(f"   Drug target atoms: {unique_drug_targets}")
+                
+                if bridge_targets:
+                    unique_bridge_targets = list(set(bridge_targets[:10]))
+                    logger.info(f"   Bridge target atoms: {unique_bridge_targets}")
+                
+                # ハブ原子の表示（v3.0新機能）
+                hub_atoms = []
+                for result in third_impact_results.values():
+                    if result.atomic_network and result.atomic_network.hub_atoms:
+                        hub_atoms.extend(result.atomic_network.hub_atoms[:3])
+                
+                if hub_atoms:
+                    unique_hubs = list(set(hub_atoms[:10]))
+                    logger.info(f"   Hub atoms (network centers): {unique_hubs}")
             
         except Exception as e:
-            logger.error(f"Third Impact analysis failed: {e}")
+            logger.error(f"Third Impact v3.0 analysis failed: {e}")
             if verbose:
                 import traceback
                 traceback.print_exc()
