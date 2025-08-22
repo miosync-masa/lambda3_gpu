@@ -534,6 +534,7 @@ def run_quantum_validation_pipeline(
         # Version 4.0対応の呼び出し
         max_report = generate_maximum_report_from_results_v4(
             lambda_result=lambda_result,
+            sorted_events=sorted_events,  
             two_stage_result=two_stage_result if enable_two_stage else None,
             quantum_assessments=quantum_assessments,  # v4.0: quantum_eventsではなくassessments
             metadata=metadata,
