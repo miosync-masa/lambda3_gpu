@@ -64,17 +64,19 @@ logger = logging.getLogger('quantum_validation_v4')
 # ============================================
 # メイン実行関数（Version 4.0）
 # ============================================
-
 def run_quantum_validation_pipeline(
     trajectory_path: str,
     metadata_path: str,
     protein_indices_path: str,
     topology_path: Optional[str] = None,
     enable_two_stage: bool = True,
-    enable_third_impact: bool = True,  # ← これ追加！
+    enable_third_impact: bool = True,
     enable_visualization: bool = True,
     output_dir: str = './quantum_results_v4',
-    verbose: bool = False
+    verbose: bool = False,
+    atom_mapping_path: Optional[str] = None,  # 追加！
+    third_impact_top_n: int = 10,            # 追加！
+    **kwargs  # その他のパラメータ用
 ) -> Dict:
     """
     完全な量子検証パイプライン（Version 4.0）
@@ -1088,9 +1090,11 @@ Examples:
                        help='Path to protein indices file (.npy)')
     
     # オプション引数
-    parser.add_argument('--enable-third-impact', 
-                       action='store_true',
-                       help='Enable Third Impact atomic-level analysis') 
+    parser.add_argument('--atom-mapping',
+                   help='Path to atom mapping file (residue->atoms JSON)')
+    parser.add_argument('--third-impact-top-n',
+                       type=int, default=10,
+                       help='Number of top residues for Third Impact analysis'))
     parser.add_argument('--topology', '-t',
                        help='Path to topology file (optional)')
     parser.add_argument('--output', '-o', 
@@ -1119,9 +1123,13 @@ Examples:
             protein_indices_path=args.protein,
             topology_path=args.topology,
             enable_two_stage=not args.no_two_stage,
+            enable_third_impact=args.enable_third_impact,  # これも必要！
             enable_visualization=not args.no_viz,
             output_dir=args.output,
-            verbose=args.verbose
+            verbose=args.verbose,
+            # Third Impact用の追加パラメータ
+            atom_mapping_path=args.atom_mapping,
+            third_impact_top_n=args.third_impact_top_n
         )
         
         if results and results.get('success'):
