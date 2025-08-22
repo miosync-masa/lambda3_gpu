@@ -155,7 +155,32 @@ def run_quantum_validation_pipeline(
             logger.info(f"   Sequence: {protein_info.get('sequence', 'N/A')[:20]}...")
         
         logger.info(f"   ✅ Data validation passed")
+
+        # atom_mappingファイル読み込み（オプション）
+        atom_mapping = None
+        if atom_mapping_path and Path(atom_mapping_path).exists():
+            logger.info(f"   Loading atom mapping from {atom_mapping_path}")
             
+            if atom_mapping_path.endswith('.json'):
+                with open(atom_mapping_path, 'r') as f:
+                    raw_mapping = json.load(f)
+                    # 文字列キーを整数に変換
+                    atom_mapping = {int(k): v for k, v in raw_mapping.items()}
+            elif atom_mapping_path.endswith('.npy'):
+                atom_mapping = np.load(atom_mapping_path, allow_pickle=True).item()
+            
+            logger.info(f"   Atom mapping loaded: {len(atom_mapping)} residues")
+            
+            # 簡単な検証
+            if atom_mapping:
+                total_atoms = sum(len(atoms) for atoms in atom_mapping.values())
+                logger.info(f"   Total mapped atoms: {total_atoms}")
+        elif enable_third_impact:
+            logger.warning("   ⚠️ Third Impact enabled but no atom mapping provided")
+            logger.warning("   Will use fallback (15 atoms/residue)")
+        
+        logger.info(f"   ✅ Data validation passed")
+        
     except Exception as e:
         logger.error(f"Failed to load data: {e}")
         raise
@@ -429,34 +454,33 @@ def run_quantum_validation_pipeline(
         logger.info("\n🔺 Running Third Impact Analysis v3.0...")
         
         try:
-            # atom_mappingファイルの読み込み（NEW!）
-            atom_mapping = None
-            atom_mapping_path = kwargs.get('atom_mapping_path')
-            
-            if atom_mapping_path and Path(atom_mapping_path).exists():
-                if atom_mapping_path.endswith('.json'):
-                    with open(atom_mapping_path, 'r') as f:
-                        raw_mapping = json.load(f)
-                        # 文字列キーを整数に変換
-                        atom_mapping = {int(k): v for k, v in raw_mapping.items()}
-                elif atom_mapping_path.endswith('.npy'):
-                    # NumPy形式の場合
-                    atom_mapping = np.load(atom_mapping_path, allow_pickle=True).item()
-                logger.info(f"   Atom mapping loaded: {len(atom_mapping)} residues")
-            else:
-                logger.warning("   ⚠️ No atom mapping provided, using fallback (15 atoms/residue)")
+            # atom_mappingは既にStep 1で読み込み済みのはず！
+            # でもStep 1で読み込んでない場合のフォールバック
+            if 'atom_mapping' not in locals():
+                atom_mapping = None
+                
+                if atom_mapping_path and Path(atom_mapping_path).exists():
+                    if atom_mapping_path.endswith('.json'):
+                        with open(atom_mapping_path, 'r') as f:
+                            raw_mapping = json.load(f)
+                            atom_mapping = {int(k): v for k, v in raw_mapping.items()}
+                    elif atom_mapping_path.endswith('.npy'):
+                        atom_mapping = np.load(atom_mapping_path, allow_pickle=True).item()
+                    logger.info(f"   Atom mapping loaded: {len(atom_mapping)} residues")
+                else:
+                    logger.warning("   ⚠️ No atom mapping provided, using fallback (15 atoms/residue)")
             
             # Third Impact解析実行（v3.0パラメータ）
             third_impact_results = run_third_impact_analysis(
                 lambda_result=lambda_result,
                 two_stage_result=two_stage_result,
                 trajectory=trajectory[:, protein_indices, :],
-                residue_mapping=atom_mapping,  # v3.0: residue_mapping
+                residue_mapping=atom_mapping,
                 output_dir=output_path / 'third_impact',
                 use_network_analysis=True,     # v3.0: 原子ネットワーク解析ON
                 use_gpu=True,                   # GPU加速
-                top_n=kwargs.get('third_impact_top_n', 10),  # カスタマイズ可能
-                sigma_threshold=kwargs.get('sigma_threshold', 3.0)
+                top_n=third_impact_top_n,       # 引数から直接使用
+                sigma_threshold=3.0             # デフォルト値
             )
             
             # 統計表示（v3.0の新しい構造に対応）
