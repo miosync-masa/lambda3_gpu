@@ -44,43 +44,21 @@ def generate_maximum_report_from_results(
 def generate_maximum_report_from_results_v4(
     lambda_result,
     two_stage_result=None,
-    quantum_assessments=None,  # Version 4.0: QuantumAssessment型（quantum_eventsから変更）
+    quantum_assessments=None,
+    sorted_events=None,  # 🔴 NEW: スコア順イベントリスト [(start, end, score), ...]
     metadata=None,
     output_dir='./maximum_report_v4',
     verbose=True
 ) -> str:
     """
-    Version 4.0.3対応の最強レポート生成！（復元版）
+    Version 4.0.4対応 - スコア順解析対応版
     
     Parameters
     ----------
-    lambda_result : MDLambda3Result
-        Lambda³マクロ解析結果
-    two_stage_result : TwoStageLambda3Result, optional
-        残基レベル解析結果
-    quantum_assessments : List[QuantumAssessment], optional
-        Version 4.0の量子評価結果（quantum_eventsから変更）
-    metadata : dict, optional
-        システムメタデータ
-    output_dir : str
-        出力ディレクトリ
-    verbose : bool
-        詳細出力
-        
-    Returns
-    -------
-    str
-        生成されたレポート（Markdown形式）
-    
-    Version History
-    ---------------
-    4.0.0 : 初期リリース
-    4.0.1 : ResidueEvent修正、Bootstrap統合
-    4.0.2 : Propagation Pathway解析追加
-    4.0.3 : quantum_assessments対応、キーマッチング修正
+    sorted_events : List[Tuple[int, int, float]], optional
+        スコア順にソートされたイベントリスト
+        各要素は (start_frame, end_frame, score) のタプル
     """
-    # ========= 🔴 これを追加！！ =========
-    # 変数の事前初期化（後で使う変数を全部ここで定義）
     pattern_counts = {}
     sig_counts = {}
     confidences = []
@@ -93,7 +71,6 @@ def generate_maximum_report_from_results_v4(
     all_hub_residues = []
     total = 0
     quantum_count = 0
-    # ========= ここまで追加 =========
     
     output_path = Path(output_dir)
     output_path.mkdir(exist_ok=True)
@@ -252,28 +229,190 @@ def generate_maximum_report_from_results_v4(
         report += f"- {etype}: {count}\n"
     
     # ========================================
-    # 2.5. イベントごとのPathway解析（新規追加）
+    # 2.5. イベントごとのPathway解析（スコア順対応版）
     # ========================================
-    if lambda_result.critical_events and two_stage_result and hasattr(two_stage_result, 'residue_analyses'):
+    if sorted_events and two_stage_result and hasattr(two_stage_result, 'residue_analyses'):
         if verbose:
-            print("\n🔬 Extracting event pathways...")
+            print("\n🔬 Extracting event pathways (score-ordered)...")
         
-        report += "\n## 🔬 Structural Events with Propagation Pathways\n"
+        report += "\n## 🔬 Structural Events with Propagation Pathways (Score-Ordered)\n"
         
         # 実際に解析されたイベント数を取得
         n_analyzed_events = len(two_stage_result.residue_analyses)
+        n_total_events = len(sorted_events)
+        
+        # ========================================
+        # タイムライン表示（スコア順）
+        # ========================================
+        report += "\n### 📅 Events by Score (TOP 100):\n"
+        report += "| Rank | Frames | Duration | Score | Analyzed |\n"
+        report += "|------|--------|----------|-------|----------|\n"
+        
+        # スコア順で表示（TOP100まで）
+        for i, (start, end, score) in enumerate(sorted_events[:100]):
+            duration = end - start
+            # TOP50が解析対象
+            analyzed_mark = "✓" if i < 50 else ""
+            report += f"| {i+1} | {start:6d}-{end:6d} | {duration:5d} | {score:.3f} | {analyzed_mark} |\n"
+        
+        if n_total_events > 100:
+            report += f"\n*... and {n_total_events - 100} more events*\n"
+        
+        # ========================================
+        # TOP50イベントの詳細解析
+        # ========================================
+        report += f"\n### 🧬 Detailed Event Analysis (TOP 50 by Score):\n"
+        
+        # スコア順TOP50を解析
+        for i, (start, end, score) in enumerate(sorted_events[:50]):
+            if i >= n_analyzed_events:
+                # 解析データがない場合はスキップ
+                break
+                
+            # 正しいキー形式で探す（top_XX_score_Y.YY形式）
+            found_key = None
+            score_str = f"{score:.2f}"
+            
+            # キーパターンのバリエーションを試す
+            possible_keys = [
+                f"top_{i:02d}_score_{score_str}",
+                f"top_{i:02d}_score_{score:.2f}",
+                f"top_{i:02d}_score_{score:.3f}",
+                f"top_{i:02d}_{score_str}",
+            ]
+            
+            for key in possible_keys:
+                if key in two_stage_result.residue_analyses:
+                    found_key = key
+                    break
+            
+            # それでもなければ、top_XX_で始まるキーを探す
+            if not found_key:
+                for key in two_stage_result.residue_analyses.keys():
+                    if str(key).startswith(f"top_{i:02d}_"):
+                        found_key = key
+                        break
+            
+            report += f"\n#### Rank {i+1}: Event (frames {start}-{end}, score={score:.3f}):\n"
+            
+            if found_key:
+                analysis = two_stage_result.residue_analyses[found_key]
+                
+                # ========================================
+                # Initiator残基の抽出
+                # ========================================
+                initiators = []
+                if hasattr(analysis, 'initiator_residues'):
+                    initiators = analysis.initiator_residues[:5]  # Top 5
+                    initiators_str = ', '.join([f"R{r+1}" for r in initiators])
+                    report += f"- **🎯 Initiator residues**: {initiators_str}\n"
+                
+                # ========================================
+                # Propagation Pathwayの構築
+                # ========================================
+                if hasattr(analysis, 'network_result') and analysis.network_result:
+                    network = analysis.network_result
+                    if hasattr(network, 'causal_network') and network.causal_network:
+                        # パスウェイの構築
+                        pathways = _build_propagation_paths(
+                            network.causal_network,
+                            initiators
+                        )
+                        
+                        if pathways:
+                            report += f"- **🔄 Propagation Pathways**:\n"
+                            for j, path in enumerate(pathways[:3], 1):  # Top 3 paths
+                                path_str = ' → '.join([f"R{r+1}" for r in path])
+                                report += f"  - Path {j}: {path_str}\n"
+                    
+                    # ========================================
+                    # ネットワーク統計
+                    # ========================================
+                    n_residues = len(analysis.residue_events) if hasattr(analysis, 'residue_events') else 0
+                    n_causal = len(network.causal_network) if hasattr(network, 'causal_network') else 0
+                    n_sync = len(network.sync_network) if hasattr(network, 'sync_network') else 0
+                    n_async = len(network.async_strong_bonds) if hasattr(network, 'async_strong_bonds') else 0
+                else:
+                    # networkがない場合のデフォルト値
+                    n_residues = len(analysis.residue_events) if hasattr(analysis, 'residue_events') else 0
+                    n_causal = 0
+                    n_sync = 0
+                    n_async = 0
+                
+                report += f"- **📊 Statistics**:\n"
+                report += f"  - Residues involved: {n_residues}\n"
+                report += f"  - Causal links: {n_causal}\n"
+                report += f"  - Sync links: {n_sync}\n"
+                report += f"  - Async bonds: {n_async}\n"
+                
+                # ========================================
+                # Lambda変化の統計
+                # ========================================
+                if 'lambda_F_mag' in lambda_result.lambda_structures:
+                    lambda_vals = lambda_result.lambda_structures['lambda_F_mag'][
+                        start:min(end, len(lambda_result.lambda_structures['lambda_F_mag']))
+                    ]
+                    if len(lambda_vals) > 0:
+                        mean_lambda = np.mean(lambda_vals)
+                        max_lambda = np.max(lambda_vals)
+                        std_lambda = np.std(lambda_vals)
+                        report += f"  - Lambda stats: mean={mean_lambda:.3f}, max={max_lambda:.3f}, std={std_lambda:.3f}\n"
+                
+                # ========================================
+                # Bootstrap信頼区間（イベント単位）
+                # ========================================
+                if hasattr(analysis, 'confidence_results') and analysis.confidence_results:
+                    sig_pairs = sum(1 for r in analysis.confidence_results 
+                                  if r.get('is_significant', False))
+                    total_pairs = len(analysis.confidence_results)
+                    if total_pairs > 0:
+                        report += f"  - Significant correlations: {sig_pairs}/{total_pairs} "
+                        report += f"({sig_pairs/total_pairs*100:.1f}%)\n"
+            else:
+                report += f"- *Analysis data not found (check key format)*\n"
+                report += f"  - Expected key patterns: top_{i:02d}_score_{score:.2f}\n"
+        
+        # ========================================
+        # ハイスコアイベントの特別解析
+        # ========================================
+        if sorted_events:
+            # スコア10以上のイベントを特別に表示
+            high_score_events = [(s, e, sc) for s, e, sc in sorted_events if sc >= 10.0]
+            if high_score_events:
+                report += "\n### ⚡ Ultra High Score Events (≥10.0):\n"
+                for start, end, score in high_score_events[:10]:
+                    report += f"- **Frames {start}-{end}**: score={score:.2f} "
+                    
+                    # このイベントがTOP50に入っているか確認
+                    rank = next((i for i, (s, e, _) in enumerate(sorted_events[:50]) 
+                               if s == start and e == end), None)
+                    if rank is not None:
+                        report += f"(Rank {rank+1}, analyzed ✓)\n"
+                    else:
+                        report += "(not in TOP50)\n"
+    
+    # ========================================
+    # フォールバック：sorted_eventsがない場合は従来の時系列順処理
+    # ========================================
+    elif lambda_result.critical_events and two_stage_result and hasattr(two_stage_result, 'residue_analyses'):
+        if verbose:
+            print("\n⚠️ Using time-ordered events (sorted_events not provided)")
+        
+        report += "\n## 🔬 Structural Events with Propagation Pathways (Time-Ordered)\n"
+        report += "*Note: Events shown in chronological order. For score-based analysis, provide sorted_events parameter.*\n"
+        
+        # 従来の時系列順処理（互換性のため維持）
+        n_analyzed_events = len(two_stage_result.residue_analyses)
         n_total_events = len(lambda_result.critical_events)
         
-        # タイムライン（全イベント表示、ただし解析済みを明示）
         report += "\n### 📅 Events Timeline:\n"
         for i, event in enumerate(lambda_result.critical_events):
             if isinstance(event, tuple) and len(event) >= 2:
                 start, end = event[0], event[1]
                 duration = end - start
-                # 解析済みかどうかマーク
                 analyzed_mark = " ✓" if i < n_analyzed_events else ""
                 report += f"- **Event {i+1}**: frames {start:6d}-{end:6d} ({duration:5d} frames){analyzed_mark}\n"
-        
+                
         # 各イベントの詳細解析（解析済みの分だけ）
         report += f"\n### 🧬 Detailed Event Analysis (Top {n_analyzed_events} events):\n"
         
