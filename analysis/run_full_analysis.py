@@ -1070,14 +1070,18 @@ Examples:
   # Basic run
   %(prog)s trajectory.npy metadata.json protein.npy
   
+  # With Third Impact analysis
+  %(prog)s trajectory.npy metadata.json protein.npy --enable-third-impact --atom-mapping atom_map.json
+  
   # With topology
   %(prog)s trajectory.npy metadata.json protein.npy --topology topology.pdb
   
-  # Custom output directory
-  %(prog)s trajectory.npy metadata.json protein.npy --output ./results_v4
-  
-  # Skip visualizations
-  %(prog)s trajectory.npy metadata.json protein.npy --no-viz
+  # Full analysis with custom settings
+  %(prog)s trajectory.npy metadata.json protein.npy \\
+    --enable-third-impact \\
+    --atom-mapping atom_map.json \\
+    --third-impact-top-n 15 \\
+    --output ./results_v4
         """
     )
     
@@ -1090,11 +1094,14 @@ Examples:
                        help='Path to protein indices file (.npy)')
     
     # オプション引数
+    parser.add_argument('--enable-third-impact', 
+                       action='store_true',
+                       help='Enable Third Impact atomic-level analysis')
     parser.add_argument('--atom-mapping',
-                   help='Path to atom mapping file (residue->atoms JSON)')
+                       help='Path to atom mapping file (residue->atoms JSON)')
     parser.add_argument('--third-impact-top-n',
                        type=int, default=10,
-                       help='Number of top residues for Third Impact analysis'))
+                       help='Number of top residues for Third Impact analysis')
     parser.add_argument('--topology', '-t',
                        help='Path to topology file (optional)')
     parser.add_argument('--output', '-o', 
