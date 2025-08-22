@@ -11,13 +11,12 @@ Basic usage:
     >>> detector = MDLambda3DetectorGPU(config)
     >>> result = detector.analyze(trajectory)
 
-Full documentation at https://github.com/your-repo/lambda3-gpu
+Full documentation at https://github.com/miosync-masa/lambda3-gpu
 """
 
-__version__ = '3.0.0-gpu'
+__version__ = '4.0.0-gpu'
 __author__ = 'Lambda³ Project (GPU Edition by Tamaki)'
-__email__ = 'tamaki@miosync.inc'
-__license__ = 'MIT'
+__email__ = 'info@miosync.inc'
 
 import warnings
 import logging
@@ -35,18 +34,18 @@ LOG_FORMAT = '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
 DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
 
 REQUIRED_PACKAGES = {
-    'numpy': '1.19.0',
-    'scipy': '1.5.0',
-    'numba': '0.50.0',
-    'matplotlib': '3.2.0'
+    'numpy': '1.24.3',
+    'scipy': '1.10.1',
+    'numba': '0.58.1',
+    'matplotlib': '3.6.3'
 }
 
 OPTIONAL_PACKAGES = {
-    'cupy': '8.0.0',
+    'cupy': '12.1.0',
     'cupyx': None,
     'joblib': '0.16.0',
     'tqdm': '4.50.0',
-    'pylibraft-cu11': '25.6.0',  # 位相空間解析用
+    'pylibraft-cu12': '24.10.0',  # 位相空間解析用
 }
 
 # Default values for A100
