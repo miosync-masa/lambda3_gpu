@@ -603,10 +603,7 @@ def save_quantum_assessments_v4(assessments: List[QuantumAssessment],
                 'lambda_jump': float(assessment.lambda_anomaly.lambda_jump),
                 'lambda_zscore': float(assessment.lambda_anomaly.lambda_zscore),
                 'rho_t_spike': float(assessment.lambda_anomaly.rho_t_spike),
-                'sigma_s_value': float(assessment.lambda_anomaly.sigma_s_value),
-                'coordination': float(assessment.lambda_anomaly.coordination),
-                'statistical_rarity': float(assessment.lambda_anomaly.statistical_rarity),
-                'thermal_comparison': float(assessment.lambda_anomaly.thermal_comparison)
+                'sigma_s_value': float(assessment.lambda_anomaly.sigma_s_value)
             }
         
         # 原子レベル証拠
