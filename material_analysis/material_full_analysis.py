@@ -234,6 +234,7 @@ def run_material_analysis_pipeline(
         macro_result = detector.analyze(
             trajectory=trajectory,
             atom_types=atom_types,
+            cluster_atoms=cluster_atoms,  # ← これを追加！
             strain_field=strain_field
         )
         
