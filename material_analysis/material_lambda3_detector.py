@@ -346,37 +346,40 @@ class MaterialLambda3DetectorGPU(GPUBackend):
     
     def analyze(self,
                trajectory: np.ndarray,
-               atom_types: np.ndarray,  # ← atom_typesを2番目に
-               cluster_atoms: Optional[Dict[int, List[int]]] = None,  # ← オプショナルに
-               strain_field: Optional[np.ndarray] = None,  # ← 追加
-               **kwargs) -> MaterialLambda3Result:  # ← kwargsも追加
+               atom_types: np.ndarray,
+               cluster_atoms: Optional[Dict[int, List[int]]] = None,
+               strain_field: Optional[np.ndarray] = None,
+               **kwargs) -> MaterialLambda3Result:
         """
         材料トラジェクトリのLambda³解析
-        
-        Parameters
-        ----------
-        trajectory : np.ndarray
-            原子トラジェクトリ (n_frames, n_atoms, 3)
-        atom_types : np.ndarray
-            原子タイプ配列
-        cluster_atoms : Dict[int, List[int]], optional
-            クラスター定義（なければ自動生成）
-        strain_field : np.ndarray, optional
-            歪み場データ
         """
         start_time = time.time()
         
         # cluster_atomsがなければ自動生成
         if cluster_atoms is None:
             n_atoms = trajectory.shape[1]
-            # 全原子を1つのクラスターに（簡易版）
             cluster_atoms = {0: list(range(n_atoms))}
+        
+        # atom_typesが文字列の場合、数値に変換
+        if atom_types.dtype.kind == 'U' or atom_types.dtype.kind == 'S':
+            # 文字列を数値にマッピング
+            unique_types = np.unique(atom_types)
+            type_to_id = {atype: i for i, atype in enumerate(unique_types)}
+            atom_types_numeric = np.array([type_to_id[atype] for atype in atom_types])
+            
+            # 元の文字列型も保存しておく
+            self.atom_type_labels = unique_types
+            print(f"📝 Atom types mapped: {dict(zip(unique_types, range(len(unique_types))))}")
+        else:
+            atom_types_numeric = atom_types
         
         # GPU変換
         if self.is_gpu and cp is not None:
             print("📊 Converting arrays to GPU...")
             trajectory = cp.asarray(trajectory)
-            atom_types = cp.asarray(atom_types) if isinstance(atom_types, np.ndarray) else atom_types
+            atom_types = cp.asarray(atom_types_numeric)  # 数値配列をGPUへ
+        else:
+            atom_types = atom_types_numeric
         
         n_frames, n_atoms, _ = trajectory.shape
         n_clusters = len(cluster_atoms)
