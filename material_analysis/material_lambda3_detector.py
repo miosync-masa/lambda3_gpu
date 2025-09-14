@@ -346,8 +346,10 @@ class MaterialLambda3DetectorGPU(GPUBackend):
     
     def analyze(self,
                trajectory: np.ndarray,
-               cluster_atoms: Dict[int, List[int]],
-               atom_types: np.ndarray) -> MaterialLambda3Result:
+               atom_types: np.ndarray,  # ← atom_typesを2番目に
+               cluster_atoms: Optional[Dict[int, List[int]]] = None,  # ← オプショナルに
+               strain_field: Optional[np.ndarray] = None,  # ← 追加
+               **kwargs) -> MaterialLambda3Result:  # ← kwargsも追加
         """
         材料トラジェクトリのLambda³解析
         
@@ -355,17 +357,20 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         ----------
         trajectory : np.ndarray
             原子トラジェクトリ (n_frames, n_atoms, 3)
-        cluster_atoms : Dict[int, List[int]]
-            クラスター定義
         atom_types : np.ndarray
             原子タイプ配列
-            
-        Returns
-        -------
-        MaterialLambda3Result
-            解析結果
+        cluster_atoms : Dict[int, List[int]], optional
+            クラスター定義（なければ自動生成）
+        strain_field : np.ndarray, optional
+            歪み場データ
         """
         start_time = time.time()
+        
+        # cluster_atomsがなければ自動生成
+        if cluster_atoms is None:
+            n_atoms = trajectory.shape[1]
+            # 全原子を1つのクラスターに（簡易版）
+            cluster_atoms = {0: list(range(n_atoms))}
         
         # GPU変換
         if self.is_gpu and cp is not None:
