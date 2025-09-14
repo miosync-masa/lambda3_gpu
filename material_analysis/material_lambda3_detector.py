@@ -20,6 +20,10 @@ import logging
 
 logger = logging.getLogger('lambda3_gpu.material_analysis')
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
 # CuPyの条件付きインポート
 try:
     import cupy as cp
@@ -29,16 +33,16 @@ except ImportError:
     HAS_GPU = False
 
 # Lambda³ GPU imports
-from ..core.gpu_utils import GPUBackend
-from ..material.cluster_structures_gpu import ClusterStructuresGPU
-from ..material.cluster_network_gpu import ClusterNetworkGPU
-from ..material.cluster_causality_analysis_gpu import MaterialCausalityAnalyzerGPU
-from ..material.cluster_confidence_analysis_gpu import MaterialConfidenceAnalyzerGPU
+from lambda3_gpu.core.gpu_utils import GPUBackend
+from lambda3_gpu.material.cluster_structures_gpu import ClusterStructuresGPU
+from lambda3_gpu.material.cluster_network_gpu import ClusterNetworkGPU
+from lambda3_gpu.material.cluster_causality_analysis_gpu import MaterialCausalityAnalyzerGPU
+from lambda3_gpu.material.cluster_confidence_analysis_gpu import MaterialConfidenceAnalyzerGPU
 
 # 検出モジュール（MD版から流用）
-from ..detection.anomaly_detection_gpu import AnomalyDetectorGPU
-from ..detection.boundary_detection_gpu import BoundaryDetectorGPU
-from ..detection.topology_breaks_gpu import TopologyBreaksDetectorGPU
+from lambda3_gpu.detection.anomaly_detection_gpu import AnomalyDetectorGPU
+from lambda3_gpu.detection.boundary_detection_gpu import BoundaryDetectorGPU
+from lambda3_gpu.detection.topology_breaks_gpu import TopologyBreaksDetectorGPU
 
 # ===============================
 # Configuration
