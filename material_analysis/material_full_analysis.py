@@ -21,24 +21,28 @@ import matplotlib.pyplot as plt
 import warnings
 warnings.filterwarnings('ignore')
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
 # Lambda³ Material imports
 try:
-    from material_lambda3_detector import (
+    from lambda3_gpu.material_analysis.material_lambda3_detector import (
         MaterialLambda3DetectorGPU,
         MaterialLambda3Result,
         MaterialConfig
     )
-    from material_two_stage_analyzer import (
+    from lambda3_gpu.material_analysis.material_two_stage_analyzer import (
         MaterialTwoStageAnalyzerGPU,
         MaterialTwoStageResult,
         ClusterAnalysisConfig
     )
-    from material_impact_analytics import (
+    from lambda3_gpu.material_analysis.material_impact_analytics import (
         run_material_impact_analysis,
         MaterialImpactAnalyzer,
         MaterialImpactResult
     )
-    from material_report_generator import (
+    from lambda3_gpu.material_analysis.material_report_generator import (
         generate_material_report_from_results
     )
 except ImportError as e:
