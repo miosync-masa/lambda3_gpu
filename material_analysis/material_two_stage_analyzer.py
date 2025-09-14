@@ -10,6 +10,9 @@ MD版をベースに材料クラスター解析に特化
 
 by 環ちゃん - Material Edition v1.0
 """
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import numpy as np
 import time
@@ -32,13 +35,13 @@ except ImportError:
 from concurrent.futures import ThreadPoolExecutor
 
 # Lambda³ GPU imports
-from ..core.gpu_utils import GPUBackend
-from ..material.cluster_structures_gpu import ClusterStructuresGPU, ClusterStructureResult
-from ..material.cluster_network_gpu import ClusterNetworkGPU
-from ..material.cluster_causality_analysis_gpu import MaterialCausalityAnalyzerGPU
-from ..material.cluster_confidence_analysis_gpu import MaterialConfidenceAnalyzerGPU
-from .material_lambda3_detector import MaterialLambda3Result
-from ..types import ArrayType, NDArray
+from lambda3_gpu.core.gpu_utils import GPUBackend
+from lambda3_gpu.material.cluster_structures_gpu import ClusterStructuresGPU, ClusterStructureResult
+from lambda3_gpu.material.cluster_network_gpu import ClusterNetworkGPU
+from lambda3_gpu.material.cluster_causality_analysis_gpu import MaterialCausalityAnalyzerGPU
+from lambda3_gpu.material.cluster_confidence_analysis_gpu import MaterialConfidenceAnalyzerGPU
+from lambda3_gpu.material_analysis.material_lambda3_detector import MaterialLambda3Result
+from lambda3_gpu.types import ArrayType, NDArray
 
 # ===============================
 # Configuration
