@@ -655,6 +655,48 @@ class MaterialLambda3DetectorGPU(GPUBackend):
     # ヘルパーメソッド（MD版から流用）
     # ========================================
     
+    def detect_material_events(
+        trajectory: np.ndarray,
+        atom_types: np.ndarray,
+        config: Optional[MaterialConfig] = None,
+        cluster_atoms: Optional[Dict[int, List[int]]] = None,
+        **kwargs
+    ) -> List[Tuple[int, int, str]]:
+        """
+        材料イベントを検出する便利関数
+        
+        MaterialLambda3DetectorGPUのラッパー関数
+        """
+        config = config or MaterialConfig()
+        detector = MaterialLambda3DetectorGPU(config)
+        
+        # クラスター定義（指定なければ全原子を1クラスターに）
+        if cluster_atoms is None:
+            n_atoms = trajectory.shape[1]
+            cluster_atoms = {0: list(range(n_atoms))}
+        
+        # 解析実行
+        result = detector.analyze(
+            trajectory=trajectory,
+            atom_types=atom_types,
+            cluster_atoms=cluster_atoms,
+            **kwargs
+        )
+        
+        # material_eventsを返す（もしあれば）
+        if hasattr(result, 'material_events'):
+            return result.material_events
+        
+        # なければcritical_eventsから生成
+        events = []
+        if hasattr(result, 'critical_events'):
+            for event in result.critical_events:
+                if isinstance(event, tuple) and len(event) >= 2:
+                    # (start, end, type)形式に変換
+                    events.append((event[0], event[1], 'material_event'))
+        
+        return events
+    
     def _compute_initial_window(self, n_frames: int) -> int:
         """初期ウィンドウサイズ"""
         return min(50, n_frames // 10)  # 材料は短め
