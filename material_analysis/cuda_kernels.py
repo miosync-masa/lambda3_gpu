@@ -13,6 +13,7 @@ by 環ちゃん - CUDA Edition v1.0
 
 import numpy as np
 import logging
+from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger('lambda3_gpu.material_analysis.cuda')
 
