@@ -700,7 +700,7 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         print("\n2. Computing cluster structures...")
         window_size = self._compute_initial_window(n_frames)
         
-        # CPU配列に変換（ClusterStructuresGPUの期待する形式）
+        # CPU配列に変換
         if self.is_gpu and hasattr(trajectory, 'get'):
             trajectory_cpu = trajectory.get()
             atom_types_cpu = atom_types.get() if hasattr(atom_types, 'get') else atom_types
@@ -709,23 +709,17 @@ class MaterialLambda3DetectorGPU(GPUBackend):
             atom_types_cpu = atom_types
         
         cluster_result = self.structure_computer.compute_cluster_structures(
-            trajectory_cpu,
-            0,
-            n_frames - 1,
-            cluster_atoms,
-            atom_types_cpu,
-            window_size,
-            self.config.cutoff_distance
+            trajectory_cpu, 0, n_frames - 1, cluster_atoms,
+            atom_types_cpu, window_size, self.config.cutoff_distance
         )
         
-        # 2.5. トポロジカル解析（追加）
+        # 2.5. トポロジカル解析
         if self.config.use_topological:
             print("\n2.5. Computing topological charges...")
             topo_charge = self._compute_topological_charge(
                 trajectory_cpu, cluster_atoms, atom_types_cpu, self.config.cutoff_distance
             )
             
-            # 2.6. 構造一貫性計算（追加）
             print("\n2.6. Computing structural coherence...")
             structural_coherence = self._compute_structural_coherence(
                 material_features.get('coordination', np.zeros((n_frames, n_clusters))),
@@ -739,95 +733,52 @@ class MaterialLambda3DetectorGPU(GPUBackend):
             }
             structural_coherence = np.ones(n_frames)
         
-        # Lambda構造
-        lambda_structures = {
-            # material版のキー（np.array()で確実に配列化）
-            'lambda_f': np.array(cluster_result.cluster_lambda_f) if isinstance(cluster_result.cluster_lambda_f, list) else cluster_result.cluster_lambda_f,
-            'lambda_f_mag': np.array(cluster_result.cluster_lambda_f_mag) if isinstance(cluster_result.cluster_lambda_f_mag, list) else cluster_result.cluster_lambda_f_mag,
-            'rho_t': np.array(cluster_result.cluster_rho_t) if isinstance(cluster_result.cluster_rho_t, list) else cluster_result.cluster_rho_t,
-            'coupling': np.array(cluster_result.cluster_coupling) if isinstance(cluster_result.cluster_coupling, list) else cluster_result.cluster_coupling,
-            
-            # boundary_detectorが期待するキー（大文字版も配列化）
-            'lambda_F': np.array(cluster_result.cluster_lambda_f) if isinstance(cluster_result.cluster_lambda_f, list) else cluster_result.cluster_lambda_f,
-            'lambda_F_mag': np.array(cluster_result.cluster_lambda_f_mag) if isinstance(cluster_result.cluster_lambda_f_mag, list) else cluster_result.cluster_lambda_f_mag,
-            'rho_T': np.array(cluster_result.cluster_rho_t) if isinstance(cluster_result.cluster_rho_t, list) else cluster_result.cluster_rho_t,
-            
-            # トポロジカル解析（これらも念のため配列化）
-            'Q_lambda': np.array(topo_charge['Q_lambda']) if isinstance(topo_charge['Q_lambda'], list) else topo_charge['Q_lambda'],
-            'Q_cumulative': np.array(topo_charge['Q_cumulative']) if isinstance(topo_charge['Q_cumulative'], list) else topo_charge['Q_cumulative'],
-            'structural_coherence': np.array(structural_coherence) if isinstance(structural_coherence, list) else structural_coherence
-        }
-                
+        # Lambda構造（全クラスターの集約）
+        if isinstance(cluster_result.cluster_lambda_f_mag, list):
+            # 複数クラスター：最大値で集約（最悪ケースを追跡）
+            lambda_structures = {
+                'lambda_F': np.max(cluster_result.cluster_lambda_f, axis=0),
+                'lambda_F_mag': np.max(cluster_result.cluster_lambda_f_mag, axis=0),
+                'rho_T': np.max(cluster_result.cluster_rho_t, axis=0),
+                'coupling': np.mean(cluster_result.cluster_coupling, axis=0),  # 結合は平均
+                'Q_lambda': topo_charge['Q_lambda'],
+                'Q_cumulative': topo_charge['Q_cumulative'],
+                'structural_coherence': structural_coherence
+            }
+            # 元データも保存（Two-Stage用）
+            lambda_structures['_per_cluster_data'] = {
+                'lambda_f_mag': cluster_result.cluster_lambda_f_mag,
+                'rho_t': cluster_result.cluster_rho_t
+            }
+        else:
+            # 単一クラスター
+            lambda_structures = {
+                'lambda_F': cluster_result.cluster_lambda_f,
+                'lambda_F_mag': cluster_result.cluster_lambda_f_mag,
+                'rho_T': cluster_result.cluster_rho_t,
+                'coupling': cluster_result.cluster_coupling,
+                'Q_lambda': topo_charge['Q_lambda'],
+                'Q_cumulative': topo_charge['Q_cumulative'],
+                'structural_coherence': structural_coherence
+            }
+        
         # 3. 構造境界検出
         print("\n3. Detecting structural boundaries...")
         structural_boundaries = self.boundary_detector.detect_structural_boundaries(
             lambda_structures, window_size // 3
         )
         
-        # 4. トポロジカル破れ検出（クラスターごとに実行）
+        # 4. トポロジカル破れ検出（全体で1回だけ）
         print("\n4. Detecting topological breaks...")
-        
-        # クラスターごとのデータかチェック
-        if isinstance(cluster_result.cluster_lambda_f_mag, list):
-            # 各クラスターで個別に検出
-            all_breaks = []
-            max_break_strength = 0
-            critical_cluster = -1
-            
-            for cid in range(n_clusters):
-                # データ形状を確認しながら処理
-                lf_mag = cluster_result.cluster_lambda_f_mag[cid]
-                rho_t = cluster_result.cluster_rho_t[cid]
-                
-                # すでに配列なら直接使う、リストならnp.array()
-                if not isinstance(lf_mag, np.ndarray):
-                    lf_mag = np.array(lf_mag)
-                if not isinstance(rho_t, np.ndarray):
-                    rho_t = np.array(rho_t)
-                    
-                single_cluster_lambda = {
-                    'lambda_F_mag': lf_mag.flatten(),  # 余計な[]を削除
-                    'rho_T': rho_t.flatten(),
-                    'Q_cumulative': topo_charge['Q_cumulative'],
-                    'structural_coherence': structural_coherence
-                }
-                
-                try:
-                    breaks = self.topology_detector.detect_topological_breaks(
-                        single_cluster_lambda, window_size // 2
-                    )
-                    # break_strengthsの取得を安全に
-                    if 'break_strengths' in breaks and len(breaks['break_strengths']) > 0:
-                        break_strength = np.max(breaks['break_strengths'])
-                        if break_strength > max_break_strength:
-                            max_break_strength = break_strength
-                            critical_cluster = cid
-                    all_breaks.append(breaks)
-                except Exception as e:
-                    print(f"   Warning: Cluster {cid} failed: {e}")
-                    all_breaks.append({})
-            
-            # 最も異常なクラスターの結果を使用
-            if critical_cluster >= 0 and all_breaks:
-                topological_breaks = all_breaks[critical_cluster]
-                print(f"   Critical cluster: #{critical_cluster} (strength: {max_break_strength:.3f})")
-            else:
-                topological_breaks = {}
-                print("   No topological breaks detected")
-                
-        else:
-            # 通常のMD版と同じ処理
-            topological_breaks = self.topology_detector.detect_topological_breaks(
-                lambda_structures, window_size // 2
-            )
+        topological_breaks = self.topology_detector.detect_topological_breaks(
+            lambda_structures, window_size // 2
+        )
         
         # 5. 異常スコア計算
         print("\n5. Computing anomaly scores...")
         anomaly_scores = self._compute_material_anomalies(
-            lambda_structures,
-            material_features,
-            structural_boundaries,
-            topological_breaks
+            lambda_structures, material_features,
+            structural_boundaries, topological_breaks
         )
         
         # 6. ネットワーク解析
@@ -887,7 +838,7 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         )
         
         return result
-    
+       
     def _classify_material_events(self,
                                  critical_events: List,
                                  anomaly_scores: Dict,
