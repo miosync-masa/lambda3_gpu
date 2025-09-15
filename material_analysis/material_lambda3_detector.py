@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-Material Lambda³ Detector GPU
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Material Lambda³ Detector GPU - Enhanced with Topological Analysis
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 材料解析用Lambda³検出器のGPU実装
 金属・セラミックス・ポリマーの疲労・破壊を高速検出！💎
+トポロジカル欠陥の蓄積と構造一貫性を追跡
 
 MD版をベースに材料クラスター解析に特化
 
-by 環ちゃん - Material Edition v1.0
+by 環ちゃん - Material Edition v2.0
 """
 
 import numpy as np
@@ -17,6 +18,7 @@ from typing import Dict, List, Optional, Tuple, Any, Union
 from dataclasses import dataclass, field
 import warnings
 import logging
+from scipy.spatial import cKDTree
 
 logger = logging.getLogger('lambda3_gpu.material_analysis')
 
@@ -60,6 +62,7 @@ class MaterialConfig:
     use_coordination: bool = True  # 配位数解析
     use_strain: bool = True  # 歪み解析
     use_damage: bool = True  # 損傷解析
+    use_topological: bool = True  # トポロジカル解析（新規追加）
     detect_dislocations: bool = True  # 転位検出
     detect_cracks: bool = True  # 亀裂検出
     
@@ -94,6 +97,11 @@ class MaterialLambda3Result:
     strain_tensors: Optional[np.ndarray] = None
     damage_accumulation: Optional[np.ndarray] = None
     
+    # トポロジカル解析結果（新規追加）
+    topological_charge: Optional[np.ndarray] = None
+    topological_charge_cumulative: Optional[np.ndarray] = None
+    structural_coherence: Optional[np.ndarray] = None
+    
     # ネットワーク解析
     strain_network: Optional[List] = None
     dislocation_network: Optional[List] = None
@@ -103,6 +111,7 @@ class MaterialLambda3Result:
     anomaly_scores: Dict[str, np.ndarray] = field(default_factory=dict)
     detected_structures: List[Dict] = field(default_factory=list)
     critical_clusters: List[int] = field(default_factory=list)
+    material_events: List[Tuple[int, int, str]] = field(default_factory=list)  # 追加
     
     # メタデータ
     n_frames: int = 0
@@ -344,6 +353,160 @@ class MaterialLambda3DetectorGPU(GPUBackend):
                 'fracture_toughness': 20.0
             }
     
+    # ========================================
+    # トポロジカル解析メソッド（新規追加）
+    # ========================================
+    
+    def _compute_topological_charge(self, 
+                                   trajectory: np.ndarray,
+                                   cluster_atoms: Dict[int, List[int]],
+                                   atom_types: np.ndarray,
+                                   cutoff: float = 3.5) -> Dict[str, np.ndarray]:
+        """
+        材料のトポロジカルチャージ計算
+        転位・空孔・格子間原子のトポロジカル欠陥を定量化
+        """
+        n_frames = trajectory.shape[0]
+        n_clusters = len(cluster_atoms)
+        
+        # 各クラスターのトポロジカルチャージ
+        Q_lambda = np.zeros((n_frames-1, n_clusters))
+        
+        for frame in range(n_frames-1):
+            for cid, atoms in cluster_atoms.items():
+                if cid >= n_clusters:
+                    continue
+                    
+                # Burgers回路による転位検出（簡易版）
+                burgers_vector = self._compute_burgers_vector(
+                    trajectory[frame], atoms, cutoff
+                )
+                
+                # 配位数欠陥の変化率
+                coord_change = self._compute_coordination_change(
+                    trajectory[frame], trajectory[frame+1], atoms, cutoff
+                )
+                
+                # トポロジカルチャージ = 転位密度 + 配位欠陥変化
+                Q_lambda[frame, cid] = (
+                    np.linalg.norm(burgers_vector) / (len(atoms) + 1) +
+                    abs(coord_change) * 0.1  # 重み付け
+                )
+        
+        # 累積チャージ（欠陥の蓄積）
+        Q_cumulative = np.cumsum(np.sum(Q_lambda, axis=1))
+        
+        return {
+            'Q_lambda': Q_lambda,
+            'Q_cumulative': Q_cumulative
+        }
+    
+    def _compute_burgers_vector(self,
+                               positions: np.ndarray,
+                               atoms: List[int],
+                               cutoff: float) -> np.ndarray:
+        """Burgers vectorの計算（簡易版）"""
+        if len(atoms) < 10:
+            return np.zeros(3)
+        
+        # サンプル原子周りの回路を計算
+        center_atom = atoms[len(atoms)//2]
+        center_pos = positions[center_atom]
+        
+        # 近傍原子
+        distances = np.linalg.norm(positions[atoms] - center_pos, axis=1)
+        neighbors = [atoms[i] for i in range(len(atoms)) 
+                    if 0 < distances[i] < cutoff]
+        
+        if len(neighbors) < 6:
+            return np.zeros(3)
+        
+        # 簡易Burgers回路（6原子の閉路）
+        circuit = neighbors[:6]
+        burgers = np.zeros(3)
+        
+        for i in range(len(circuit)):
+            j = (i + 1) % len(circuit)
+            burgers += positions[circuit[j]] - positions[circuit[i]]
+        
+        # 理想的な閉路なら0になるはず
+        return burgers
+    
+    def _compute_coordination_change(self,
+                                    pos1: np.ndarray,
+                                    pos2: np.ndarray,
+                                    atoms: List[int],
+                                    cutoff: float) -> float:
+        """配位数変化の計算"""
+        if len(atoms) < 5:
+            return 0.0
+        
+        # サンプル原子の配位数変化
+        sample_atoms = atoms[:min(5, len(atoms))]
+        coord_change = 0.0
+        
+        for atom in sample_atoms:
+            # frame1での配位数
+            dist1 = np.linalg.norm(pos1 - pos1[atom], axis=1)
+            coord1 = np.sum((dist1 > 0) & (dist1 < cutoff))
+            
+            # frame2での配位数
+            dist2 = np.linalg.norm(pos2 - pos2[atom], axis=1)
+            coord2 = np.sum((dist2 > 0) & (dist2 < cutoff))
+            
+            coord_change += abs(coord2 - coord1)
+        
+        return coord_change / len(sample_atoms)
+    
+    def _compute_structural_coherence(self,
+                                     coordination: np.ndarray,
+                                     strain: np.ndarray,
+                                     ideal_coord: int = 8) -> np.ndarray:
+        """
+        構造一貫性の計算
+        熱ゆらぎと永続的構造変化を区別
+        """
+        n_frames, n_clusters = coordination.shape
+        coherence = np.ones(n_frames)
+        
+        window = min(50, n_frames // 4)  # 時間平均ウィンドウ
+        
+        for i in range(window, n_frames - window):
+            cluster_coherence = []
+            
+            for c in range(n_clusters):
+                # 配位数の時間的一貫性
+                local_coord = coordination[i-window:i+window, c]
+                coord_std = np.std(local_coord)
+                coord_mean = np.mean(local_coord)
+                
+                # 理想配位数からのずれの一貫性
+                if coord_std < 0.5 and abs(coord_mean - ideal_coord) < 1:
+                    # 安定して理想構造を保持
+                    cluster_coherence.append(1.0)
+                elif coord_std > 2.0:
+                    # 激しく揺らいでいる（熱的）
+                    cluster_coherence.append(0.3)
+                else:
+                    # 構造変化中
+                    cluster_coherence.append(1.0 - coord_std / 3.0)
+                
+                # 歪みによる補正
+                if strain[i, c] > 0.05:  # 5%以上の歪み
+                    cluster_coherence[-1] *= (1.0 - min(strain[i, c], 1.0))
+            
+            coherence[i] = np.mean(cluster_coherence)
+        
+        # エッジ処理
+        coherence[:window] = coherence[window]
+        coherence[-window:] = coherence[-window-1]
+        
+        return coherence
+    
+    # ========================================
+    # メイン解析メソッド
+    # ========================================
+    
     def analyze(self,
                trajectory: np.ndarray,
                atom_types: np.ndarray,
@@ -445,6 +608,27 @@ class MaterialLambda3DetectorGPU(GPUBackend):
             self.config.cutoff_distance
         )
         
+        # 2.5. トポロジカル解析（追加）
+        if self.config.use_topological:
+            print("\n2.5. Computing topological charges...")
+            topo_charge = self._compute_topological_charge(
+                trajectory_cpu, cluster_atoms, atom_types_cpu, self.config.cutoff_distance
+            )
+            
+            # 2.6. 構造一貫性計算（追加）
+            print("\n2.6. Computing structural coherence...")
+            structural_coherence = self._compute_structural_coherence(
+                material_features.get('coordination', np.zeros((n_frames, n_clusters))),
+                material_features.get('strain', np.zeros((n_frames, n_clusters))),
+                ideal_coord=8 if self.config.crystal_structure == 'BCC' else 12
+            )
+        else:
+            topo_charge = {
+                'Q_lambda': np.zeros((n_frames-1, n_clusters)),
+                'Q_cumulative': np.zeros(n_frames-1)
+            }
+            structural_coherence = np.ones(n_frames)
+        
         # Lambda構造を辞書形式に変換
         lambda_structures = {
             # material版のキー（そのまま）
@@ -457,8 +641,11 @@ class MaterialLambda3DetectorGPU(GPUBackend):
             'lambda_F': cluster_result.cluster_lambda_f,  # 大文字F
             'lambda_F_mag': cluster_result.cluster_lambda_f_mag,  # 大文字F
             'rho_T': cluster_result.cluster_rho_t,  # 大文字T
-            'Q_cumulative': np.zeros(len(cluster_result.cluster_rho_t)),
-            'structural_coherence': np.ones(len(cluster_result.cluster_rho_t))
+            
+            # トポロジカル解析（実装済み）
+            'Q_lambda': topo_charge['Q_lambda'],
+            'Q_cumulative': topo_charge['Q_cumulative'],
+            'structural_coherence': structural_coherence
         }
         
         # 3. 構造境界検出
@@ -496,6 +683,11 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         # 7. 臨界イベント検出
         critical_events = self._detect_critical_events(anomaly_scores)
         
+        # 8. 材料イベント分類
+        material_events = self._classify_material_events(
+            critical_events, anomaly_scores, structural_coherence
+        )
+        
         # 結果構築
         result = MaterialLambda3Result(
             cluster_structures=self._to_cpu_dict(lambda_structures),
@@ -505,6 +697,9 @@ class MaterialLambda3DetectorGPU(GPUBackend):
             coordination_defects=cluster_result.coordination_numbers,
             strain_tensors=cluster_result.local_strain,
             damage_accumulation=material_features.get('damage'),
+            topological_charge=topo_charge.get('Q_lambda'),
+            topological_charge_cumulative=topo_charge.get('Q_cumulative'),
+            structural_coherence=structural_coherence,
             strain_network=network_result.strain_network,
             dislocation_network=network_result.dislocation_network,
             damage_network=network_result.damage_network,
@@ -514,6 +709,7 @@ class MaterialLambda3DetectorGPU(GPUBackend):
             ),
             critical_clusters=network_result.critical_clusters,
             critical_events=critical_events,
+            material_events=material_events,
             n_frames=n_frames,
             n_atoms=n_atoms,
             n_clusters=n_clusters,
@@ -531,18 +727,65 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         
         return result
     
+    def _classify_material_events(self,
+                                 critical_events: List,
+                                 anomaly_scores: Dict,
+                                 structural_coherence: np.ndarray) -> List[Tuple[int, int, str]]:
+        """
+        材料イベントの分類
+        構造一貫性を使って熱ゆらぎと真の構造変化を区別
+        """
+        classified_events = []
+        
+        for event in critical_events:
+            if isinstance(event, tuple) and len(event) >= 2:
+                start, end = event[0], event[1]
+                
+                # 構造一貫性の平均値
+                coherence_mean = np.mean(structural_coherence[start:end+1])
+                
+                # 異常スコアの最大値
+                if 'strain' in anomaly_scores:
+                    strain_max = np.max(anomaly_scores['strain'][start:end+1])
+                else:
+                    strain_max = 0
+                
+                if 'damage' in anomaly_scores:
+                    damage_max = np.max(anomaly_scores['damage'][start:end+1])
+                else:
+                    damage_max = 0
+                
+                # イベント分類
+                if coherence_mean < 0.5:  # 構造一貫性が低い
+                    if damage_max > 0.7:
+                        event_type = 'crack_initiation'
+                    elif strain_max > 2.0:
+                        event_type = 'plastic_deformation'
+                    else:
+                        event_type = 'dislocation_nucleation'
+                elif coherence_mean > 0.8:  # 構造一貫性が高い
+                    event_type = 'elastic_deformation'
+                else:
+                    event_type = 'transition_state'
+                
+                classified_events.append((start, end, event_type))
+        
+        return classified_events
+    
+    # ... 既存のメソッド（省略）...
+    
     def _analyze_batched(self,
                         trajectory: np.ndarray,
                         cluster_atoms: Dict[int, List[int]],
                         atom_types: np.ndarray,
                         batch_size: int) -> MaterialLambda3Result:
         """バッチ処理による解析"""
+        # 既存の実装と同じ
         print("\n⚡ Running batched GPU analysis for materials...")
         
         n_frames = trajectory.shape[0]
         n_batches = (n_frames + batch_size - 1) // batch_size
         
-        # バッチ結果を蓄積
         batch_results = []
         
         for batch_idx in range(n_batches):
@@ -553,17 +796,14 @@ class MaterialLambda3DetectorGPU(GPUBackend):
             
             batch_trajectory = trajectory[start_idx:end_idx]
             
-            # バッチ解析
             batch_result = self._analyze_single_trajectory(
                 batch_trajectory, cluster_atoms, atom_types
             )
             batch_result.offset = start_idx
             batch_results.append(batch_result)
             
-            # メモリクリア
             self.memory_manager.clear_cache()
         
-        # 結果マージ
         print("\n[Step 2] Merging batch results...")
         merged_result = self._merge_batch_results(batch_results, trajectory.shape)
         
@@ -601,21 +841,30 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         if 'damage' in material_features:
             scores['damage'] = material_features['damage']
         
+        # トポロジカル異常（新規追加）
+        if 'Q_cumulative' in lambda_structures:
+            # 累積チャージの加速度（欠陥生成率）
+            q_cum = lambda_structures['Q_cumulative']
+            if len(q_cum) > 2:
+                q_acceleration = np.abs(np.gradient(np.gradient(q_cum)))
+                # サイズを合わせる
+                scores['topological'] = np.pad(q_acceleration, 
+                                              (0, len(scores.get('lambda', [])) - len(q_acceleration)),
+                                              mode='edge')
+            else:
+                scores['topological'] = np.zeros_like(scores.get('lambda', np.zeros(1)))
+        
         # 統合スコア
         combined = np.zeros_like(scores.get('lambda', np.zeros(1)))
         weights_sum = 0.0
         
-        if 'strain' in scores:
-            combined += self.config.w_strain * scores['strain']
-            weights_sum += self.config.w_strain
-        
-        if 'coordination' in scores:
-            combined += self.config.w_coordination * scores['coordination']
-            weights_sum += self.config.w_coordination
-        
-        if 'damage' in scores:
-            combined += self.config.w_damage * scores['damage']
-            weights_sum += self.config.w_damage
+        for key, weight in [('strain', self.config.w_strain),
+                            ('coordination', self.config.w_coordination),
+                            ('damage', self.config.w_damage),
+                            ('topological', 0.2)]:  # トポロジカルの重み
+            if key in scores:
+                combined += weight * scores[key]
+                weights_sum += weight
         
         if weights_sum > 0:
             combined /= weights_sum
@@ -734,6 +983,7 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         for batch in batch_results[1:]:
             merged.critical_clusters.extend(batch.critical_clusters)
             merged.critical_events.extend(batch.critical_events)
+            merged.material_events.extend(batch.material_events)
         
         merged.n_frames = original_shape[0]
         
@@ -778,6 +1028,7 @@ class MaterialLambda3DetectorGPU(GPUBackend):
             print(f"   Crystal: {self.config.crystal_structure}")
             print(f"   Device: {self.device}")
             print(f"   GPU Mode: {self.is_gpu}")
+            print(f"   Topological Analysis: {self.config.use_topological}")
             print(f"   Batch Size: {self.config.gpu_batch_size} frames")
     
     def _print_summary(self, result: MaterialLambda3Result):
@@ -799,8 +1050,29 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         print(f"\nDetected features:")
         print(f"  Critical clusters: {len(result.critical_clusters)}")
         print(f"  Critical events: {len(result.critical_events)}")
+        print(f"  Material events: {len(result.material_events)}")
+        
+        # イベントタイプ別統計
+        if result.material_events:
+            event_types = {}
+            for event in result.material_events:
+                if len(event) >= 3:
+                    event_type = event[2]
+                    event_types[event_type] = event_types.get(event_type, 0) + 1
+            
+            print(f"\nEvent classification:")
+            for etype, count in sorted(event_types.items(), key=lambda x: x[1], reverse=True):
+                print(f"  - {etype}: {count}")
+        
+        # トポロジカル解析結果
+        if result.topological_charge_cumulative is not None:
+            final_charge = result.topological_charge_cumulative[-1] if len(result.topological_charge_cumulative) > 0 else 0
+            print(f"\nTopological analysis:")
+            print(f"  Final cumulative charge: {final_charge:.3f}")
+            print(f"  Mean structural coherence: {np.mean(result.structural_coherence):.3f}")
         
         if result.strain_network:
+            print(f"\nNetwork analysis:")
             print(f"  Strain network links: {len(result.strain_network)}")
         if result.dislocation_network:
             print(f"  Dislocation links: {len(result.dislocation_network)}")
@@ -839,8 +1111,8 @@ def detect_material_events(
         **kwargs
     )
     
-    # material_eventsを返す（もしあれば）
-    if hasattr(result, 'material_events'):
+    # material_eventsを返す
+    if hasattr(result, 'material_events') and result.material_events:
         return result.material_events
     
     # なければcritical_eventsから生成
