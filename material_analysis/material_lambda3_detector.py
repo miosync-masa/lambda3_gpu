@@ -447,10 +447,18 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         
         # Lambda構造を辞書形式に変換
         lambda_structures = {
+            # material版のキー（そのまま）
             'lambda_f': cluster_result.cluster_lambda_f,
             'lambda_f_mag': cluster_result.cluster_lambda_f_mag,
             'rho_t': cluster_result.cluster_rho_t,
-            'coupling': cluster_result.cluster_coupling
+            'coupling': cluster_result.cluster_coupling,
+            
+            # boundary_detectorが期待するキー（追加）
+            'lambda_F': cluster_result.cluster_lambda_f,  # 大文字F
+            'lambda_F_mag': cluster_result.cluster_lambda_f_mag,  # 大文字F
+            'rho_T': cluster_result.cluster_rho_t,  # 大文字T
+            'Q_cumulative': np.zeros(len(cluster_result.cluster_rho_t)),
+            'structural_coherence': np.ones(len(cluster_result.cluster_rho_t))
         }
         
         # 3. 構造境界検出
