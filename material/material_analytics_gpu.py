@@ -82,6 +82,33 @@ class DefectAnalysisResult:
     coordination_defects: Optional[np.ndarray] = None  # 配位数欠陥
 
 @dataclass
+class CrystalDefectResult:
+    """結晶欠陥解析結果（簡易版）"""
+    defect_charge: np.ndarray           # 欠陥チャージ
+    cumulative_charge: np.ndarray       # 累積チャージ
+    max_charge: float                   # 最大チャージ
+    critical_frame: int                 # 臨界フレーム
+
+@dataclass
+class MaterialState:
+    """材料状態情報"""
+    state: str                          # 'healthy', 'damaged', 'critical', 'failed'
+    health_index: float                 # 健全性指標 (0.0-1.0)
+    max_damage: float                   # 最大損傷値
+    damage_distribution: Optional[np.ndarray] = None  # クラスター別損傷分布
+    critical_clusters: Optional[List[int]] = None     # 臨界クラスターリスト
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """辞書形式に変換（後方互換性のため）"""
+        return {
+            'state': self.state,
+            'health_index': self.health_index,
+            'max_damage': self.max_damage,
+            'damage_distribution': self.damage_distribution,
+            'critical_clusters': self.critical_clusters
+        }
+
+@dataclass
 class FailurePredictionResult:
     """破壊予測結果"""
     failure_probability: float
@@ -207,6 +234,103 @@ class MaterialAnalyticsGPU(GPUBackend):
             cumulative_charge=self.to_cpu(cumulative_charge),
             burgers_vectors=np.array(burgers_list) if burgers_list else None,
             coordination_defects=None
+        )
+    
+    # ===============================
+    # Material State Evaluation
+    # ===============================
+    
+    def evaluate_material_state(self,
+                               damage_scores: Optional[np.ndarray] = None,
+                               defect_charge: Optional[np.ndarray] = None,
+                               strain_history: Optional[np.ndarray] = None,
+                               critical_clusters: Optional[List[int]] = None) -> MaterialState:
+        """
+        材料の現在状態を評価
+        
+        Parameters
+        ----------
+        damage_scores : np.ndarray, optional
+            損傷スコア (n_frames,) or (n_frames, n_clusters)
+        defect_charge : np.ndarray, optional
+            欠陥チャージ
+        strain_history : np.ndarray, optional
+            歪み履歴
+        critical_clusters : List[int], optional
+            臨界クラスターリスト
+            
+        Returns
+        -------
+        MaterialState
+            材料状態
+        """
+        # 初期値
+        state = 'healthy'
+        health_index = 1.0
+        max_damage = 0.0
+        damage_distribution = None
+        
+        # 損傷評価
+        if damage_scores is not None:
+            damage_scores = self.to_gpu(damage_scores)
+            
+            if damage_scores.ndim > 1:
+                # クラスター別損傷
+                max_damage_per_cluster = self.xp.max(damage_scores, axis=0)
+                max_damage = float(self.xp.max(max_damage_per_cluster))
+                damage_distribution = self.to_cpu(max_damage_per_cluster)
+            else:
+                max_damage = float(self.xp.max(damage_scores))
+            
+            # 健全性指標
+            health_index = max(0.0, 1.0 - max_damage)
+        
+        # 欠陥蓄積評価
+        if defect_charge is not None:
+            defect_charge = self.to_gpu(defect_charge)
+            cumulative_defect = float(self.xp.sum(defect_charge))
+            
+            # 欠陥による健全性低下
+            defect_penalty = min(0.3, cumulative_defect / 100.0)
+            health_index = max(0.0, health_index - defect_penalty)
+        
+        # 歪み評価
+        if strain_history is not None:
+            strain_history = self.to_gpu(strain_history)
+            max_strain = float(self.xp.max(self.xp.abs(strain_history)))
+            
+            # 材料プロパティ
+            E = self.material_props['elastic_modulus']
+            yield_strain = self.material_props['yield_strength'] / E
+            
+            if max_strain > yield_strain:
+                # 塑性変形による健全性低下
+                plastic_penalty = min(0.4, (max_strain - yield_strain) * 5.0)
+                health_index = max(0.0, health_index - plastic_penalty)
+        
+        # 状態分類
+        if health_index > 0.8:
+            state = 'healthy'
+        elif health_index > 0.5:
+            state = 'damaged'
+        elif health_index > 0.2:
+            state = 'critical'
+        else:
+            state = 'failed'
+        
+        # 臨界クラスター情報を追加
+        if critical_clusters is None and damage_distribution is not None:
+            # 損傷の高いクラスターを臨界とみなす
+            threshold = max_damage * 0.7
+            critical_indices = np.where(damage_distribution > threshold)[0]
+            critical_clusters = critical_indices.tolist() if len(critical_indices) > 0 else None
+        
+        return MaterialState(
+            state=state,
+            health_index=health_index,
+            max_damage=max_damage,
+            damage_distribution=damage_distribution,
+            critical_clusters=critical_clusters
         )
     
     # ===============================
@@ -609,3 +733,76 @@ class MaterialAnalyticsGPU(GPUBackend):
             'device': str(self.device),
             'gpu_enabled': self.is_gpu
         }
+
+# ===============================
+# Export Functions
+# ===============================
+
+def compute_crystal_defect_charge(trajectory: np.ndarray,
+                                 cluster_atoms: Dict[int, List[int]],
+                                 material_type: str = 'SUJ2',
+                                 cutoff: float = 3.5,
+                                 use_gpu: bool = True) -> CrystalDefectResult:
+    """
+    結晶欠陥チャージを計算する便利関数
+    
+    Parameters
+    ----------
+    trajectory : np.ndarray
+        原子トラジェクトリ
+    cluster_atoms : Dict[int, List[int]]
+        クラスター定義
+    material_type : str
+        材料タイプ
+    cutoff : float
+        カットオフ距離
+    use_gpu : bool
+        GPU使用フラグ
+        
+    Returns
+    -------
+    CrystalDefectResult
+        結晶欠陥解析結果
+    """
+    analyzer = MaterialAnalyticsGPU(material_type, force_cpu=not use_gpu)
+    result = analyzer.compute_crystal_defect_charge(trajectory, cluster_atoms, cutoff)
+    
+    # CrystalDefectResult形式に変換
+    max_charge = float(np.max(result.cumulative_charge))
+    critical_frame = int(np.argmax(result.cumulative_charge))
+    
+    return CrystalDefectResult(
+        defect_charge=result.defect_charge,
+        cumulative_charge=result.cumulative_charge,
+        max_charge=max_charge,
+        critical_frame=critical_frame
+    )
+
+def compute_structural_coherence(coordination: np.ndarray,
+                                strain: np.ndarray,
+                                material_type: str = 'SUJ2',
+                                window: Optional[int] = None,
+                                use_gpu: bool = True) -> np.ndarray:
+    """
+    構造一貫性を計算する便利関数
+    
+    Parameters
+    ----------
+    coordination : np.ndarray
+        配位数時系列
+    strain : np.ndarray
+        歪み時系列
+    material_type : str
+        材料タイプ
+    window : int, optional
+        時間窓サイズ
+    use_gpu : bool
+        GPU使用フラグ
+        
+    Returns
+    -------
+    np.ndarray
+        構造一貫性スコア
+    """
+    analyzer = MaterialAnalyticsGPU(material_type, force_cpu=not use_gpu)
+    return analyzer.compute_structural_coherence(coordination, strain, window)
