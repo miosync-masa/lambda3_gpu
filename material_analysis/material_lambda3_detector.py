@@ -31,7 +31,7 @@ except ImportError:
 # Lambda³ GPU imports
 from ..core.gpu_utils import GPUBackend
 from ..structures.lambda_structures_gpu import LambdaStructuresGPU
-from ..structures.md_features_gpu import MDFeaturesGPU
+from ..material.material_md_features_gpu import MaterialMDFeaturesGPU  # 材料版MD特徴を使用
 from ..detection.anomaly_detection_gpu import AnomalyDetectorGPU
 from ..detection.boundary_detection_gpu import BoundaryDetectorGPU
 from ..detection.topology_breaks_gpu import TopologyBreaksDetectorGPU
@@ -148,9 +148,9 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         # force_cpuフラグを決定
         force_cpu_flag = not self.is_gpu
         
-        # MD版と同じコンポーネント構成
+        # MD版と同じコンポーネント構成（材料版に最適化）
         self.structure_computer = LambdaStructuresGPU(force_cpu_flag)
-        self.feature_extractor = MDFeaturesGPU(force_cpu_flag)
+        self.feature_extractor = MaterialMDFeaturesGPU(force_cpu_flag)  # 材料版MD特徴抽出
         self.anomaly_detector = AnomalyDetectorGPU(force_cpu_flag)
         self.boundary_detector = BoundaryDetectorGPU(force_cpu_flag)
         self.topology_detector = TopologyBreaksDetectorGPU(force_cpu_flag)
@@ -190,6 +190,7 @@ class MaterialLambda3DetectorGPU(GPUBackend):
                 trajectory: np.ndarray,
                 backbone_indices: Optional[np.ndarray] = None,
                 atom_types: Optional[np.ndarray] = None,
+                cluster_definition_path: Optional[str] = None,
                 **kwargs) -> MaterialLambda3Result:
         """
         材料軌道のLambda³解析（MD版と同じインターフェース）
@@ -199,9 +200,11 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         trajectory : np.ndarray
             材料軌道 (n_frames, n_atoms, 3)
         backbone_indices : np.ndarray, optional
-            重要原子のインデックス（材料では結晶格子点など）
+            重要原子のインデックス（材料では欠陥領域など）
         atom_types : np.ndarray, optional
             原子タイプ配列
+        cluster_definition_path : str, optional
+            クラスター定義ファイルパス（欠陥領域の自動検出に使用）
             
         Returns
         -------
@@ -242,10 +245,12 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         if n_batches > 1:
             print(f"Processing in {n_batches} batches of {batch_size} frames")
             result = self._analyze_batched(trajectory, backbone_indices, 
-                                          atom_types, batch_size)
+                                          atom_types, batch_size, 
+                                          cluster_definition_path)
         else:
             # 単一バッチ処理
-            result = self._analyze_single_trajectory(trajectory, backbone_indices, atom_types)
+            result = self._analyze_single_trajectory(trajectory, backbone_indices, 
+                                                    atom_types, cluster_definition_path)
         
         computation_time = time.time() - start_time
         result.computation_time = computation_time
@@ -257,14 +262,17 @@ class MaterialLambda3DetectorGPU(GPUBackend):
     def _analyze_single_trajectory(self,
                                  trajectory: np.ndarray,
                                  backbone_indices: Optional[np.ndarray],
-                                 atom_types: Optional[np.ndarray]) -> MaterialLambda3Result:
+                                 atom_types: Optional[np.ndarray],
+                                 cluster_definition_path: Optional[str] = None) -> MaterialLambda3Result:
         """単一軌道の解析（MD版と同じ構造）"""
         n_frames, n_atoms, _ = trajectory.shape
         
-        # 1. MD特徴抽出（MD版と同じ）
+        # 1. MD特徴抽出（材料版MD特徴抽出を使用）
         print("\n1. Extracting MD features on GPU...")
         md_features = self.feature_extractor.extract_md_features(
-            trajectory, backbone_indices
+            trajectory, backbone_indices,
+            cluster_definition_path=cluster_definition_path,
+            atom_types=atom_types
         )
         
         # 1.5. 材料特徴抽出（材料特有）
@@ -424,7 +432,8 @@ class MaterialLambda3DetectorGPU(GPUBackend):
                         trajectory: np.ndarray,
                         backbone_indices: Optional[np.ndarray],
                         atom_types: Optional[np.ndarray],
-                        batch_size: int) -> MaterialLambda3Result:
+                        batch_size: int,
+                        cluster_definition_path: Optional[str] = None) -> MaterialLambda3Result:
         """バッチ処理による解析（MD版の3段階処理を踏襲）"""
         print("\n⚡ Running batched GPU analysis...")
         
@@ -447,7 +456,8 @@ class MaterialLambda3DetectorGPU(GPUBackend):
             
             # バッチ解析（特徴抽出とLambda構造計算のみ）
             batch_result = self._analyze_single_batch(
-                batch_trajectory, backbone_indices, batch_atom_types, start_idx
+                batch_trajectory, backbone_indices, batch_atom_types, start_idx,
+                cluster_definition_path
             )
             
             batch_results.append(batch_result)
@@ -469,11 +479,14 @@ class MaterialLambda3DetectorGPU(GPUBackend):
                             batch_trajectory: np.ndarray,
                             backbone_indices: Optional[np.ndarray],
                             atom_types: Optional[np.ndarray],
-                            offset: int) -> Dict:
+                            offset: int,
+                            cluster_definition_path: Optional[str] = None) -> Dict:
         """単一バッチの解析（MD版と同じ - 特徴抽出とLambda構造計算のみ）"""
         # MD特徴抽出（重い処理）
         md_features = self.feature_extractor.extract_md_features(
-            batch_trajectory, backbone_indices
+            batch_trajectory, backbone_indices,
+            cluster_definition_path=cluster_definition_path,
+            atom_types=atom_types
         )
         
         # 材料特徴抽出（重い処理）
