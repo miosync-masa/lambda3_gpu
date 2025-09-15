@@ -6,8 +6,14 @@ Material Full Analysis Pipeline - Lambda³ GPU Material Edition
 材料解析の完全統合パイプライン
 転位・亀裂・相変態を階層的に解析
 
-Version: 2.0.0 - Material Edition (Updated for new detector)
+Version: 3.0.0 - Material Edition with Auto Defect Detection
 Authors: 環ちゃん
+
+Changes in v3.0:
+- 材料版MD特徴抽出（MaterialMDFeaturesGPU）を使用
+- 欠陥領域の自動検出（CUDAカーネル高速化）
+- backbone_indices不要（自動で欠陥領域を特定）
+- cluster_definition_pathでクラスター定義を指定可能
 """
 
 import numpy as np
@@ -226,15 +232,22 @@ def run_material_analysis_pipeline(
         logger.info("   Detector initialized on GPU")
         logger.info(f"   Material analytics: {config.use_material_analytics}")
         
-        # 解析実行（新版インターフェース - MD版と同じ）
+        # 解析実行（新版インターフェース - 自動欠陥検出）
+        # backbone_indices=Noneで材料版MD特徴抽出が自動的に欠陥領域を検出
         macro_result = detector.analyze(
             trajectory=trajectory,
-            backbone_indices=None,  # 材料では使わない（MD版インターフェース）
-            atom_types=atom_types
-            # cluster_atomsは渡さない（Two-Stageで使用）
+            backbone_indices=None,  # 自動で欠陥領域を検出！
+            atom_types=atom_types,
+            cluster_definition_path=cluster_definition_path  # クラスター定義を渡す
         )
         
         logger.info(f"   ✅ Macro analysis complete")
+        
+        # 欠陥領域の情報を表示
+        if hasattr(macro_result, 'md_features') and 'defect_indices' in macro_result.md_features:
+            n_defect_atoms = len(macro_result.md_features['defect_indices'])
+            defect_density = macro_result.md_features.get('defect_density', 0)
+            logger.info(f"   Defect region: {n_defect_atoms} atoms ({defect_density:.1%} of total)")
         
         # イベント取得（新版対応）
         material_events = []
