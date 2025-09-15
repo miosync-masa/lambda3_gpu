@@ -6,7 +6,7 @@ Material Full Analysis Pipeline - Lambda³ GPU Material Edition
 材料解析の完全統合パイプライン
 転位・亀裂・相変態を階層的に解析
 
-Version: 1.0.0 - Material Edition
+Version: 2.0.0 - Material Edition (Updated for new detector)
 Authors: 環ちゃん
 """
 
@@ -125,7 +125,7 @@ def run_material_analysis_pipeline(
     
     logger.info("="*70)
     logger.info(f"💎 MATERIAL ANALYSIS PIPELINE - {material_type}")
-    logger.info("   Lambda³ GPU Material Edition v1.0")
+    logger.info("   Lambda³ GPU Material Edition v2.0")
     logger.info("="*70)
     
     # ========================================
@@ -172,7 +172,7 @@ def run_material_analysis_pipeline(
         atom_types = np.load(atom_types_path)
         logger.info(f"   Atom types loaded: {len(np.unique(atom_types))} types")
         
-        # クラスター定義読み込み
+        # クラスター定義読み込み（Two-Stage用）
         if cluster_definition_path and Path(cluster_definition_path).exists():
             if cluster_definition_path.endswith('.json'):
                 with open(cluster_definition_path, 'r') as f:
@@ -200,65 +200,94 @@ def run_material_analysis_pipeline(
         raise
     
     # ========================================
-    # Step 2: マクロ材料解析
+    # Step 2: マクロ材料解析（新版detector対応）
     # ========================================
     logger.info(f"\n🔬 Running Macro Material Analysis ({material_type})...")
     
     try:
-        # MaterialConfig設定
+        # MaterialConfig設定（新版に対応）
         config = MaterialConfig()
         config.material_type = material_type
-        config.loading_type = loading_type
-        config.detect_dislocations = True
-        config.detect_cracks = True
-        config.detect_phase_transitions = True
-        config.sensitivity = 2.0
-        config.gpu_batch_size = 50000
-        config.verbose = verbose
+        config.use_material_analytics = True  # 材料解析を有効化
+        config.adaptive_window = True
+        config.use_phase_space = False  # 必要に応じて有効化
+        config.sensitivity = 1.5  # 材料は低めに
+        config.gpu_batch_size = 10000
         
-        # 材料パラメータ設定
+        # 材料パラメータ取得（MaterialAnalyticsGPUで使用される）
         material_params = get_material_parameters(material_type)
-        config.elastic_modulus = material_params['E']
-        config.yield_strength = material_params['yield']
-        config.fracture_toughness = material_params['K_IC']
         
-        logger.info(f"   E = {config.elastic_modulus} GPa")
-        logger.info(f"   σ_y = {config.yield_strength} GPa")
-        logger.info(f"   K_IC = {config.fracture_toughness} MPa√m")
+        logger.info(f"   E = {material_params['E']} GPa")
+        logger.info(f"   σ_y = {material_params['yield']} GPa")
+        logger.info(f"   K_IC = {material_params['K_IC']} MPa√m")
         
-        # 検出器初期化
+        # 検出器初期化（新版）
         detector = MaterialLambda3DetectorGPU(config)
         logger.info("   Detector initialized on GPU")
+        logger.info(f"   Material analytics: {config.use_material_analytics}")
         
-        # 解析実行
+        # 解析実行（新版インターフェース - MD版と同じ）
         macro_result = detector.analyze(
             trajectory=trajectory,
-            atom_types=atom_types,
-            cluster_atoms=cluster_atoms,  # ← これを追加！
-            strain_field=strain_field
+            backbone_indices=None,  # 材料では使わない（MD版インターフェース）
+            atom_types=atom_types
+            # cluster_atomsは渡さない（Two-Stageで使用）
         )
         
         logger.info(f"   ✅ Macro analysis complete")
-        logger.info(f"   Material events detected: {len(macro_result.material_events)}")
+        
+        # イベント取得（新版対応）
+        material_events = []
+        if hasattr(macro_result, 'material_events') and macro_result.material_events:
+            material_events = macro_result.material_events
+            logger.info(f"   Material events detected: {len(material_events)}")
+        elif hasattr(macro_result, 'critical_events') and macro_result.critical_events:
+            # フォールバック：critical_eventsから生成
+            for i, event in enumerate(macro_result.critical_events):
+                if isinstance(event, tuple) and len(event) >= 2:
+                    start, end = event[0], event[1]
+                    material_events.append((start, end, f'event_{i:02d}'))
+            logger.info(f"   Critical events converted: {len(material_events)}")
+        else:
+            logger.warning("   No events detected")
         
         # イベントタイプ別統計
         event_types = Counter()
-        for event in macro_result.material_events:
+        for event in material_events:
             if isinstance(event, tuple) and len(event) >= 3:
                 event_types[event[2]] += 1
         
-        for etype, count in event_types.most_common():
-            logger.info(f"     - {etype}: {count}")
+        if event_types:
+            for etype, count in event_types.most_common():
+                logger.info(f"     - {etype}: {count}")
+        
+        # 破壊予測結果表示（新版の結果構造）
+        if hasattr(macro_result, 'failure_prediction') and macro_result.failure_prediction:
+            fp = macro_result.failure_prediction
+            logger.info(f"   Failure probability: {fp['failure_probability']:.1%}")
+            logger.info(f"   Reliability index: {fp['reliability_index']:.2f}")
+            if 'failure_mode' in fp:
+                logger.info(f"   Failure mode: {fp['failure_mode']}")
         
         # 結果保存
         result_summary = {
             'material_type': material_type,
             'n_frames': macro_result.n_frames,
             'n_atoms': macro_result.n_atoms,
-            'n_events': len(macro_result.material_events),
+            'n_events': len(material_events),
             'event_types': dict(event_types),
             'computation_time': macro_result.computation_time
         }
+        
+        # 新版の追加情報
+        if hasattr(macro_result, 'structural_coherence') and macro_result.structural_coherence is not None:
+            result_summary['mean_coherence'] = float(np.mean(macro_result.structural_coherence))
+        
+        if hasattr(macro_result, 'defect_analysis') and macro_result.defect_analysis:
+            result_summary['defect_analysis'] = {
+                'has_defect_charge': macro_result.defect_analysis.get('defect_charge') is not None,
+                'has_cumulative_charge': macro_result.defect_analysis.get('cumulative_charge') is not None
+            }
         
         with open(output_path / 'macro_result_summary.json', 'w') as f:
             json.dump(result_summary, f, indent=2)
@@ -273,12 +302,12 @@ def run_material_analysis_pipeline(
     two_stage_result = None
     sorted_events = []
     
-    if enable_two_stage and len(macro_result.material_events) > 0:
+    if enable_two_stage and len(material_events) > 0:
         logger.info("\n🔬 Running Two-Stage Cluster Analysis...")
         
         try:
             # イベントのスコア付けとソート
-            for event in macro_result.material_events:
+            for event in material_events:
                 if isinstance(event, tuple) and len(event) >= 3:
                     start, end, event_type = event[:3]
                     
@@ -288,25 +317,33 @@ def run_material_analysis_pipeline(
                         'crack_propagation': 9.0,
                         'plastic_deformation': 7.0,
                         'dislocation_nucleation': 6.0,
+                        'dislocation_avalanche': 6.5,  # 新版で追加
                         'phase_transition': 8.0,
                         'elastic_deformation': 3.0,
+                        'uniform_deformation': 3.5,     # 新版で追加
+                        'defect_migration': 5.5,        # 新版で追加
+                        'transition_state': 4.0,        # 新版で追加
                         'fatigue_damage': 5.0
                     }
                     base_score = type_scores.get(event_type, 1.0)
                     
                     # 異常スコアがあれば追加
-                    if hasattr(macro_result, 'anomaly_scores'):
-                        if 'damage' in macro_result.anomaly_scores:
-                            damage_score = np.max(
-                                macro_result.anomaly_scores['damage'][start:end+1]
-                            )
-                            score = base_score * (1 + damage_score)
+                    if hasattr(macro_result, 'anomaly_scores') and macro_result.anomaly_scores:
+                        if 'combined' in macro_result.anomaly_scores:
+                            # combinedスコアの該当フレーム範囲の最大値
+                            combined_scores = macro_result.anomaly_scores['combined']
+                            if len(combined_scores) > start:
+                                score_range = combined_scores[start:min(end+1, len(combined_scores))]
+                                anomaly_max = np.max(score_range) if len(score_range) > 0 else 0
+                                score = base_score * (1 + anomaly_max * 0.5)
+                            else:
+                                score = base_score
                         else:
                             score = base_score
                     else:
                         score = base_score
                     
-                    sorted_events.append((start, end, score))
+                    sorted_events.append((start, end, score, event_type))
             
             # スコア順ソート
             sorted_events.sort(key=lambda x: x[2], reverse=True)
@@ -317,17 +354,9 @@ def run_material_analysis_pipeline(
             
             logger.info(f"   Selected TOP {len(selected_events)} events")
             
-            # イベントリスト作成（名前付き）
+            # イベントリスト作成（Two-Stage用の3要素タプル）
             detected_events = []
-            for i, (start, end, score) in enumerate(selected_events):
-                # イベントタイプも含める
-                event_type = 'unknown'
-                for event in macro_result.material_events:
-                    if isinstance(event, tuple) and len(event) >= 3:
-                        if event[0] == start and event[1] == end:
-                            event_type = event[2]
-                            break
-                
+            for i, (start, end, score, event_type) in enumerate(selected_events):
                 event_name = f"{event_type}_{i:02d}_score_{score:.2f}"
                 detected_events.append((start, end, event_name))
             
@@ -338,7 +367,7 @@ def run_material_analysis_pipeline(
             cluster_config.detect_phase_transitions = True
             cluster_config.use_confidence = True
             cluster_config.gpu_batch_clusters = 30
-            cluster_config.verbose = verbose
+            cluster_config.adaptive_window = True
             
             # TwoStageAnalyzer初期化
             logger.info("   Initializing Two-Stage Analyzer...")
@@ -347,13 +376,13 @@ def run_material_analysis_pipeline(
                 material_type=material_type
             )
             
-            # 解析実行
+            # 解析実行（cluster_atomsはここで使用）
             logger.info(f"   Analyzing {len(detected_events)} events...")
             two_stage_result = two_stage_analyzer.analyze_trajectory(
                 trajectory=trajectory,
                 macro_result=macro_result,
                 detected_events=detected_events,
-                cluster_atoms=cluster_atoms,
+                cluster_atoms=cluster_atoms,  # ここで使用
                 atom_types=atom_types
             )
             
@@ -446,11 +475,14 @@ def run_material_analysis_pipeline(
     logger.info("\n📝 Generating comprehensive material report...")
     
     try:
+        # sorted_eventsを元の形式に変換（3要素タプルに）
+        sorted_events_for_report = [(s, e, sc) for s, e, sc, _ in sorted_events]
+        
         report = generate_material_report_from_results(
             macro_result=macro_result,
             two_stage_result=two_stage_result,
             impact_results=impact_results,
-            sorted_events=sorted_events,
+            sorted_events=sorted_events_for_report,
             metadata=metadata,
             material_type=material_type,
             output_dir=str(output_path),
@@ -472,7 +504,7 @@ def run_material_analysis_pipeline(
         logger.info("\n📊 Creating visualizations...")
         
         try:
-            # 応力-歪み曲線
+            # 応力-歪み曲線（もしあれば）
             if hasattr(macro_result, 'stress_strain_curve'):
                 visualize_stress_strain(
                     macro_result.stress_strain_curve,
@@ -483,7 +515,7 @@ def run_material_analysis_pipeline(
             
             # イベントタイムライン
             visualize_event_timeline(
-                macro_result.material_events,
+                material_events,
                 save_path=str(output_path / 'event_timeline.png')
             )
             logger.info("   Event timeline visualized")
@@ -519,7 +551,9 @@ def run_material_analysis_pipeline(
     logger.info(f"   Key findings:")
     
     if macro_result:
-        logger.info(f"     - {len(macro_result.material_events)} material events")
+        logger.info(f"     - {len(material_events)} material events")
+        if hasattr(macro_result, 'failure_prediction') and macro_result.failure_prediction:
+            logger.info(f"     - Failure probability: {macro_result.failure_prediction['failure_probability']:.1%}")
     if two_stage_result:
         if hasattr(two_stage_result, 'material_state'):
             logger.info(f"     - Material state: {two_stage_result.material_state['state']}")
@@ -540,7 +574,7 @@ def run_material_analysis_pipeline(
     }
 
 # ============================================
-# ヘルパー関数
+# ヘルパー関数（変更なし）
 # ============================================
 
 def get_material_parameters(material_type: str) -> Dict:
@@ -604,7 +638,7 @@ def create_spatial_clusters(positions: np.ndarray, n_clusters: int) -> Dict[int,
     return cluster_atoms
 
 # ============================================
-# 可視化関数
+# 可視化関数（変更なし）
 # ============================================
 
 def visualize_stress_strain(curve_data: Dict, material_type: str,
@@ -650,11 +684,15 @@ def visualize_event_timeline(events: List, save_path: Optional[str] = None) -> p
     # イベントタイプ別の色
     colors = {
         'elastic_deformation': 'green',
+        'uniform_deformation': 'lightgreen',
         'plastic_deformation': 'yellow',
         'dislocation_nucleation': 'orange',
+        'dislocation_avalanche': 'darkorange',
+        'defect_migration': 'coral',
         'crack_initiation': 'red',
         'crack_propagation': 'darkred',
         'phase_transition': 'purple',
+        'transition_state': 'mediumpurple',
         'fatigue_damage': 'brown'
     }
     
@@ -792,7 +830,7 @@ def visualize_defect_network(impact_results: Dict,
     return fig
 
 # ============================================
-# CLI Interface
+# CLI Interface（変更なし）
 # ============================================
 
 def main():
