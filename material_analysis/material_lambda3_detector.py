@@ -764,11 +764,44 @@ class MaterialLambda3DetectorGPU(GPUBackend):
             lambda_structures, window_size // 3
         )
         
-        # 4. トポロジカル破れ検出
+        # 4. トポロジカル破れ検出（クラスターごとに実行）
         print("\n4. Detecting topological breaks...")
-        topological_breaks = self.topology_detector.detect_topological_breaks(
-            lambda_structures, window_size // 2
-        )
+        
+        # クラスターごとのデータかチェック
+        if isinstance(cluster_result.cluster_lambda_f_mag, list):
+            # 各クラスターで個別に検出
+            all_breaks = []
+            max_break_strength = 0
+            critical_cluster = -1
+            
+            for cid in range(n_clusters):
+                single_cluster_lambda = {
+                    'lambda_F_mag': np.array([cluster_result.cluster_lambda_f_mag[cid]]).flatten(),
+                    'rho_T': np.array([cluster_result.cluster_rho_t[cid]]).flatten(),
+                    'Q_cumulative': topo_charge['Q_cumulative'],  # これは全体
+                    'structural_coherence': structural_coherence  # これも全体
+                }
+                
+                try:
+                    breaks = self.topology_detector.detect_topological_breaks(
+                        single_cluster_lambda, window_size // 2
+                    )
+                    if breaks.get('break_strengths', [0])[0] > max_break_strength:
+                        max_break_strength = breaks['break_strengths'][0]
+                        critical_cluster = cid
+                    all_breaks.append(breaks)
+                except:
+                    pass
+            
+            # 最も異常なクラスターの結果を使用
+            topological_breaks = all_breaks[critical_cluster] if all_breaks else {}
+            print(f"   Critical cluster: #{critical_cluster} (strength: {max_break_strength:.3f})")
+            
+        else:
+            # 通常のMD版と同じ処理
+            topological_breaks = self.topology_detector.detect_topological_breaks(
+                lambda_structures, window_size // 2
+            )
         
         # 5. 異常スコア計算
         print("\n5. Computing anomaly scores...")
