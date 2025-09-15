@@ -735,33 +735,41 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         
         # Lambda構造（全クラスターの集約）
         if isinstance(cluster_result.cluster_lambda_f_mag, list):
-            # 複数クラスター：最大値で集約（最悪ケースを追跡）
+            # リストの各要素を配列化してから最大値
+            lambda_f_mag_arrays = [np.array(x) for x in cluster_result.cluster_lambda_f_mag]
+            lambda_f_arrays = [np.array(x) for x in cluster_result.cluster_lambda_f]
+            rho_t_arrays = [np.array(x) for x in cluster_result.cluster_rho_t]
+            
+            # スタックして最大値を取る
             lambda_structures = {
-                'lambda_F': np.max(cluster_result.cluster_lambda_f, axis=0),
-                'lambda_F_mag': np.max(cluster_result.cluster_lambda_f_mag, axis=0),
-                'rho_T': np.max(cluster_result.cluster_rho_t, axis=0),
-                'coupling': np.mean(cluster_result.cluster_coupling, axis=0),  # 結合は平均
+                'lambda_F': np.max(np.stack(lambda_f_arrays), axis=0),
+                'lambda_F_mag': np.max(np.stack(lambda_f_mag_arrays), axis=0),
+                'rho_T': np.max(np.stack(rho_t_arrays), axis=0),
+                'coupling': np.mean(np.array(cluster_result.cluster_coupling), axis=0) if isinstance(cluster_result.cluster_coupling, list) else cluster_result.cluster_coupling,
                 'Q_lambda': topo_charge['Q_lambda'],
                 'Q_cumulative': topo_charge['Q_cumulative'],
                 'structural_coherence': structural_coherence
             }
-            # 元データも保存（Two-Stage用）
+            
+            # 元データも保存（Two-Stage用）←これ追加！
             lambda_structures['_per_cluster_data'] = {
                 'lambda_f_mag': cluster_result.cluster_lambda_f_mag,
-                'rho_t': cluster_result.cluster_rho_t
+                'rho_t': cluster_result.cluster_rho_t,
+                'lambda_f': cluster_result.cluster_lambda_f,
+                'coupling': cluster_result.cluster_coupling
             }
         else:
-            # 単一クラスター
+            # 単一クラスター（既存の処理）
             lambda_structures = {
-                'lambda_F': cluster_result.cluster_lambda_f,
-                'lambda_F_mag': cluster_result.cluster_lambda_f_mag,
-                'rho_T': cluster_result.cluster_rho_t,
-                'coupling': cluster_result.cluster_coupling,
+                'lambda_F': np.array(cluster_result.cluster_lambda_f),
+                'lambda_F_mag': np.array(cluster_result.cluster_lambda_f_mag),
+                'rho_T': np.array(cluster_result.cluster_rho_t),
+                'coupling': np.array(cluster_result.cluster_coupling),
                 'Q_lambda': topo_charge['Q_lambda'],
                 'Q_cumulative': topo_charge['Q_cumulative'],
                 'structural_coherence': structural_coherence
             }
-        
+                
         # 3. 構造境界検出
         print("\n3. Detecting structural boundaries...")
         structural_boundaries = self.boundary_detector.detect_structural_boundaries(
