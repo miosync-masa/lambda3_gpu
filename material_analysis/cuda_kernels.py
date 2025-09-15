@@ -310,21 +310,21 @@ class MaterialCUDAKernels:
             self.strain_kernel = cp.RawKernel(
                 STRAIN_TENSOR_KERNEL_CODE,
                 'compute_strain_tensor_kernel',
-                options=('--use_fast_math', '-O3')
+                options=('--use_fast_math',)
             )
             
             # 配位数カーネル
             self.coord_kernel = cp.RawKernel(
                 COORDINATION_NUMBER_KERNEL_CODE,
                 'compute_coordination_kernel',
-                options=('--use_fast_math', '-O3')
+                options=('--use_fast_math',)
             )
             
             # 損傷度カーネル
             self.damage_kernel = cp.RawKernel(
                 DAMAGE_SCORE_KERNEL_CODE,
-                'compute_damage_kernel',
-                options=('--use_fast_math', '-O3')
+                'compute_damage_kernel',  
+                options=('--use_fast_math',)
             )
             
             self.compiled = True
