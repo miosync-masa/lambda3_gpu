@@ -36,6 +36,12 @@ except ImportError:
 
 # Lambda³ GPU imports
 from lambda3_gpu.core.gpu_utils import GPUBackend
+try:
+    from lambda3_gpu.material_analysis.cuda_kernels import MaterialCUDAKernels
+    HAS_CUDA_KERNELS = True
+except ImportError:
+    MaterialCUDAKernels = None
+    HAS_CUDA_KERNELS = False
 from lambda3_gpu.material.cluster_structures_gpu import ClusterStructuresGPU
 from lambda3_gpu.material.cluster_network_gpu import ClusterNetworkGPU
 from lambda3_gpu.material.cluster_causality_analysis_gpu import MaterialCausalityAnalyzerGPU
@@ -82,6 +88,10 @@ class MaterialConfig:
     w_strain: float = 0.4  # 歪み異常の重み
     w_coordination: float = 0.3  # 配位数異常の重み
     w_damage: float = 0.3  # 損傷異常の重み
+
+    # CUDA最適化設定
+    use_cuda_kernels: bool = True  # CUDAカーネル使用
+    cuda_kernel_fallback: bool = True  # 失敗時は標準実装にフォールバック
 
 @dataclass
 class MaterialLambda3Result:
@@ -132,10 +142,21 @@ class MaterialLambda3Result:
 # ===============================
 
 class MaterialFeaturesGPU(GPUBackend):
-    """材料特徴抽出のGPU実装"""
+    """材料特徴抽出のGPU実装（CUDA最適化版）"""
     
-    def __init__(self, force_cpu: bool = False):
+    def __init__(self, force_cpu: bool = False, use_cuda: bool = True):
         super().__init__(force_cpu=force_cpu)
+        
+        # CUDAカーネル初期化
+        self.cuda_kernels = None
+        if use_cuda and HAS_CUDA_KERNELS and not force_cpu:
+            try:
+                from lambda3_gpu.material_analysis.cuda_kernels import MaterialCUDAKernels
+                self.cuda_kernels = MaterialCUDAKernels()
+                if self.cuda_kernels.compiled:
+                    logger.info("🚀 CUDA kernels enabled for material features")
+            except Exception as e:
+                logger.warning(f"CUDA kernels disabled: {e}")
     
     def extract_material_features(self,
                                  trajectory: np.ndarray,
@@ -167,29 +188,114 @@ class MaterialFeaturesGPU(GPUBackend):
         
         # 配位数計算
         if config.use_coordination:
-            features['coordination'] = self._compute_coordination_numbers(
-                trajectory, cluster_atoms, config.cutoff_distance
-            )
+            if config.use_cuda_kernels and self.cuda_kernels and self.cuda_kernels.compiled:
+                features['coordination'] = self._compute_coordination_cuda(
+                    trajectory, cluster_atoms, config.cutoff_distance
+                )
+            else:
+                features['coordination'] = self._compute_coordination_numbers(
+                    trajectory, cluster_atoms, config.cutoff_distance
+                )
         
-        # 歪み計算（簡易版）
+        # 歪み計算
         if config.use_strain:
-            features['strain'] = self._compute_strain_tensors(
-                trajectory, cluster_atoms
-            )
+            if config.use_cuda_kernels and self.cuda_kernels and self.cuda_kernels.compiled:
+                features['strain'] = self._compute_strain_tensors_cuda(
+                    trajectory, cluster_atoms
+                )
+            else:
+                features['strain'] = self._compute_strain_tensors(
+                    trajectory, cluster_atoms
+                )
         
-        # 損傷度計算（簡易版）
+        # 損傷度計算
         if config.use_damage:
-            features['damage'] = self._compute_damage_scores(
-                trajectory, cluster_atoms, atom_types
-            )
+            if config.use_cuda_kernels and self.cuda_kernels and self.cuda_kernels.compiled:
+                features['damage'] = self._compute_damage_scores_cuda(
+                    trajectory, cluster_atoms, atom_types
+                )
+            else:
+                features['damage'] = self._compute_damage_scores(
+                    trajectory, cluster_atoms, atom_types
+                )
         
         return features
+    
+    # ========================================
+    # CUDA版メソッド
+    # ========================================
+    
+    def _compute_coordination_cuda(self,
+                                  trajectory: np.ndarray,
+                                  cluster_atoms: Dict[int, List[int]],
+                                  cutoff: float) -> np.ndarray:
+        """CUDA版配位数計算"""
+        n_frames = trajectory.shape[0]
+        n_clusters = len(cluster_atoms)
+        coordination = np.zeros((n_frames, n_clusters))
+        
+        for frame in range(n_frames):
+            positions_gpu = cp.asarray(trajectory[frame])
+            coord_gpu = self.cuda_kernels.compute_coordination_cuda(
+                positions_gpu, cluster_atoms, cutoff
+            )
+            coordination[frame] = cp.asnumpy(coord_gpu)
+        
+        return coordination
+    
+    def _compute_strain_tensors_cuda(self,
+                                    trajectory: np.ndarray,
+                                    cluster_atoms: Dict[int, List[int]]) -> np.ndarray:
+        """CUDA版歪みテンソル計算"""
+        n_frames = trajectory.shape[0]
+        n_clusters = len(cluster_atoms)
+        strain = np.zeros((n_frames, n_clusters))
+        
+        if n_frames < 2:
+            return strain
+        
+        ref_pos_gpu = cp.asarray(trajectory[0])
+        
+        for frame in range(1, n_frames):
+            curr_pos_gpu = cp.asarray(trajectory[frame])
+            strain_gpu = self.cuda_kernels.compute_strain_tensors_cuda(
+                ref_pos_gpu, curr_pos_gpu, cluster_atoms, n_frames
+            )
+            # Voigt記法から主歪みの最大値を抽出
+            max_strain = cp.max(cp.abs(strain_gpu), axis=1)
+            strain[frame] = cp.asnumpy(max_strain)
+        
+        return strain
+    
+    def _compute_damage_scores_cuda(self,
+                                   trajectory: np.ndarray,
+                                   cluster_atoms: Dict[int, List[int]],
+                                   atom_types: np.ndarray) -> np.ndarray:
+        """CUDA版損傷度計算"""
+        n_frames = trajectory.shape[0]
+        n_clusters = len(cluster_atoms)
+        damage = np.zeros((n_frames, n_clusters))
+        
+        ref_pos_gpu = cp.asarray(trajectory[0])
+        
+        for frame in range(n_frames):
+            curr_pos_gpu = cp.asarray(trajectory[frame])
+            damage_gpu = self.cuda_kernels.compute_damage_cuda(
+                ref_pos_gpu, curr_pos_gpu, cluster_atoms
+            )
+            damage[frame] = cp.asnumpy(damage_gpu)
+        
+        return damage
+    
+    # ========================================
+    # 標準版メソッド（フォールバック用）
+    # ========================================
     
     def _compute_coordination_numbers(self,
                                      trajectory: np.ndarray,
                                      cluster_atoms: Dict[int, List[int]],
                                      cutoff: float) -> np.ndarray:
-        """配位数計算"""
+        """配位数計算（標準版）"""
         n_frames = trajectory.shape[0]
         n_clusters = len(cluster_atoms)
         coordination = self.zeros((n_frames, n_clusters))
@@ -215,7 +321,7 @@ class MaterialFeaturesGPU(GPUBackend):
     def _compute_strain_tensors(self,
                                trajectory: np.ndarray,
                                cluster_atoms: Dict[int, List[int]]) -> np.ndarray:
-        """歪みテンソル計算（簡易版）"""
+        """歪みテンソル計算（標準版）"""
         n_frames = trajectory.shape[0]
         n_clusters = len(cluster_atoms)
         strain = self.zeros((n_frames, n_clusters))
@@ -246,7 +352,7 @@ class MaterialFeaturesGPU(GPUBackend):
                               trajectory: np.ndarray,
                               cluster_atoms: Dict[int, List[int]],
                               atom_types: np.ndarray) -> np.ndarray:
-        """損傷度計算（簡易版）"""
+        """損傷度計算（標準版）"""
         n_frames = trajectory.shape[0]
         n_clusters = len(cluster_atoms)
         damage = self.zeros((n_frames, n_clusters))
@@ -269,7 +375,7 @@ class MaterialFeaturesGPU(GPUBackend):
                 damage[frame, cluster_id] = self.xp.tanh(rmsd / 2.0)  # 0-1に正規化
         
         return self.to_cpu(damage)
-
+                                  
 # ===============================
 # Material Lambda³ Detector GPU
 # ===============================
@@ -300,7 +406,11 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         
         # 材料版コンポーネント
         self.structure_computer = ClusterStructuresGPU()
-        self.feature_extractor = MaterialFeaturesGPU(force_cpu_flag)
+        self.structure_computer = ClusterStructuresGPU()
+        self.feature_extractor = MaterialFeaturesGPU(
+            force_cpu=force_cpu_flag,
+            use_cuda=config.use_cuda_kernels  # CUDAカーネル設定を渡す
+        )
         self.network_analyzer = ClusterNetworkGPU()
         self.causality_analyzer = MaterialCausalityAnalyzerGPU()
         self.confidence_analyzer = MaterialConfidenceAnalyzerGPU()
