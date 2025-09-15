@@ -120,14 +120,11 @@ from .material_analytics_gpu import (
 # ===============================
 # Material Features
 # ===============================
-from .material_features_gpu import (
-    # Classes
-    MaterialFeaturesGPU,
-    
-    # Functions
-    extract_material_features,
-    compute_coordination_numbers_gpu,
-    compute_local_strain_gpu,
+from .material_md_features_gpu import (
+    MaterialMDFeaturesGPU,  
+    extract_material_md_features,
+    get_defect_region_indices,
+    MaterialMDFeatureConfig,
 )
 
 # ===============================
