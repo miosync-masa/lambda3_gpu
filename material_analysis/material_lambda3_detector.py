@@ -882,8 +882,6 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         
         return classified_events
     
-    # ... 既存のメソッド（省略）...
-    
     def _analyze_batched(self,
                         trajectory: np.ndarray,
                         cluster_atoms: Dict[int, List[int]],
