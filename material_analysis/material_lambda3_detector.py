@@ -775,28 +775,46 @@ class MaterialLambda3DetectorGPU(GPUBackend):
             critical_cluster = -1
             
             for cid in range(n_clusters):
+                # データ形状を確認しながら処理
+                lf_mag = cluster_result.cluster_lambda_f_mag[cid]
+                rho_t = cluster_result.cluster_rho_t[cid]
+                
+                # すでに配列なら直接使う、リストならnp.array()
+                if not isinstance(lf_mag, np.ndarray):
+                    lf_mag = np.array(lf_mag)
+                if not isinstance(rho_t, np.ndarray):
+                    rho_t = np.array(rho_t)
+                    
                 single_cluster_lambda = {
-                    'lambda_F_mag': np.array([cluster_result.cluster_lambda_f_mag[cid]]).flatten(),
-                    'rho_T': np.array([cluster_result.cluster_rho_t[cid]]).flatten(),
-                    'Q_cumulative': topo_charge['Q_cumulative'],  # これは全体
-                    'structural_coherence': structural_coherence  # これも全体
+                    'lambda_F_mag': lf_mag.flatten(),  # 余計な[]を削除
+                    'rho_T': rho_t.flatten(),
+                    'Q_cumulative': topo_charge['Q_cumulative'],
+                    'structural_coherence': structural_coherence
                 }
                 
                 try:
                     breaks = self.topology_detector.detect_topological_breaks(
                         single_cluster_lambda, window_size // 2
                     )
-                    if breaks.get('break_strengths', [0])[0] > max_break_strength:
-                        max_break_strength = breaks['break_strengths'][0]
-                        critical_cluster = cid
+                    # break_strengthsの取得を安全に
+                    if 'break_strengths' in breaks and len(breaks['break_strengths']) > 0:
+                        break_strength = np.max(breaks['break_strengths'])
+                        if break_strength > max_break_strength:
+                            max_break_strength = break_strength
+                            critical_cluster = cid
                     all_breaks.append(breaks)
-                except:
-                    pass
+                except Exception as e:
+                    print(f"   Warning: Cluster {cid} failed: {e}")
+                    all_breaks.append({})
             
             # 最も異常なクラスターの結果を使用
-            topological_breaks = all_breaks[critical_cluster] if all_breaks else {}
-            print(f"   Critical cluster: #{critical_cluster} (strength: {max_break_strength:.3f})")
-            
+            if critical_cluster >= 0 and all_breaks:
+                topological_breaks = all_breaks[critical_cluster]
+                print(f"   Critical cluster: #{critical_cluster} (strength: {max_break_strength:.3f})")
+            else:
+                topological_breaks = {}
+                print("   No topological breaks detected")
+                
         else:
             # 通常のMD版と同じ処理
             topological_breaks = self.topology_detector.detect_topological_breaks(
