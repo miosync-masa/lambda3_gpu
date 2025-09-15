@@ -739,25 +739,25 @@ class MaterialLambda3DetectorGPU(GPUBackend):
             }
             structural_coherence = np.ones(n_frames)
         
-        # Lambda構造を辞書形式に変換
+        # Lambda構造
         lambda_structures = {
-            # material版のキー（そのまま）
-            'lambda_f': cluster_result.cluster_lambda_f,
-            'lambda_f_mag': cluster_result.cluster_lambda_f_mag,
-            'rho_t': cluster_result.cluster_rho_t,
-            'coupling': cluster_result.cluster_coupling,
+            # material版のキー（np.array()で確実に配列化）
+            'lambda_f': np.array(cluster_result.cluster_lambda_f) if isinstance(cluster_result.cluster_lambda_f, list) else cluster_result.cluster_lambda_f,
+            'lambda_f_mag': np.array(cluster_result.cluster_lambda_f_mag) if isinstance(cluster_result.cluster_lambda_f_mag, list) else cluster_result.cluster_lambda_f_mag,
+            'rho_t': np.array(cluster_result.cluster_rho_t) if isinstance(cluster_result.cluster_rho_t, list) else cluster_result.cluster_rho_t,
+            'coupling': np.array(cluster_result.cluster_coupling) if isinstance(cluster_result.cluster_coupling, list) else cluster_result.cluster_coupling,
             
-            # boundary_detectorが期待するキー（追加）
-            'lambda_F': cluster_result.cluster_lambda_f,  # 大文字F
-            'lambda_F_mag': cluster_result.cluster_lambda_f_mag,  # 大文字F
-            'rho_T': cluster_result.cluster_rho_t,  # 大文字T
+            # boundary_detectorが期待するキー（大文字版も配列化）
+            'lambda_F': np.array(cluster_result.cluster_lambda_f) if isinstance(cluster_result.cluster_lambda_f, list) else cluster_result.cluster_lambda_f,
+            'lambda_F_mag': np.array(cluster_result.cluster_lambda_f_mag) if isinstance(cluster_result.cluster_lambda_f_mag, list) else cluster_result.cluster_lambda_f_mag,
+            'rho_T': np.array(cluster_result.cluster_rho_t) if isinstance(cluster_result.cluster_rho_t, list) else cluster_result.cluster_rho_t,
             
-            # トポロジカル解析（実装済み）
-            'Q_lambda': topo_charge['Q_lambda'],
-            'Q_cumulative': topo_charge['Q_cumulative'],
-            'structural_coherence': structural_coherence
+            # トポロジカル解析（これらも念のため配列化）
+            'Q_lambda': np.array(topo_charge['Q_lambda']) if isinstance(topo_charge['Q_lambda'], list) else topo_charge['Q_lambda'],
+            'Q_cumulative': np.array(topo_charge['Q_cumulative']) if isinstance(topo_charge['Q_cumulative'], list) else topo_charge['Q_cumulative'],
+            'structural_coherence': np.array(structural_coherence) if isinstance(structural_coherence, list) else structural_coherence
         }
-        
+                
         # 3. 構造境界検出
         print("\n3. Detecting structural boundaries...")
         structural_boundaries = self.boundary_detector.detect_structural_boundaries(
