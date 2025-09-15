@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 Lambda³ GPU Material Analysis Package
 ======================================
@@ -14,6 +15,7 @@ Authors: 環ちゃん
 
 __version__ = '3.0.0'
 __author__ = '環ちゃん'
+__email__ = 'tamaki@lambda3.ai'
 
 # ========================================
 # Main Pipeline
@@ -27,17 +29,26 @@ from .material_full_analysis import (
 # ========================================
 # MD Features for Materials (v3.0 新機能)
 # ========================================
-from .material_md_features_gpu import (
-    MaterialMDFeaturesGPU,
-    MaterialMDFeatureConfig,
-    extract_material_md_features,
-    get_defect_region_indices
-)
+try:
+    from .material_md_features_gpu import (
+        MaterialMDFeaturesGPU,
+        MaterialMDFeatureConfig,
+        extract_material_md_features,
+        get_defect_region_indices
+    )
+except ImportError:
+    # material/サブディレクトリにある場合
+    from ..material.material_md_features_gpu import (
+        MaterialMDFeaturesGPU,
+        MaterialMDFeatureConfig,
+        extract_material_md_features,
+        get_defect_region_indices
+    )
 
 # ========================================
 # Macro Analysis
 # ========================================
-from .material_lambda3_detector_gpu import (
+from .material_lambda3_detector import (
     MaterialLambda3DetectorGPU,
     MaterialLambda3Result,
     MaterialConfig,
@@ -53,15 +64,17 @@ try:
         STRAIN_TENSOR_KERNEL_CODE,
         COORDINATION_NUMBER_KERNEL_CODE,
         DAMAGE_SCORE_KERNEL_CODE,
-        # v3.0 - Material MD Features用カーネル
-        COORDINATION_KERNEL,
-        DEFECT_DETECTION_KERNEL,
-        LOCAL_STRAIN_KERNEL
+        compile_material_kernels,
+        check_cuda_status
     )
     HAS_CUDA_KERNELS = True
 except ImportError:
     HAS_CUDA_KERNELS = False
     MaterialCUDAKernels = None
+    
+    # ダミー関数
+    def check_cuda_status():
+        return {'available': False, 'reason': 'CUDA kernels module not found'}
 
 # ========================================
 # Two-Stage Analysis
@@ -98,25 +111,37 @@ from .material_report_generator import (
 )
 
 # ========================================
-# Material Analytics
+# Material Analytics (optional)
 # ========================================
-from .material_analytics_gpu import (
-    MaterialAnalyticsGPU,
-    CrystalDefectResult,
-    MaterialState,
-    compute_crystal_defect_charge,
-    compute_structural_coherence
-)
+try:
+    from .material_analytics_gpu import (
+        MaterialAnalyticsGPU,
+        CrystalDefectResult,
+        MaterialState,
+        compute_crystal_defect_charge,
+        compute_structural_coherence
+    )
+except ImportError:
+    MaterialAnalyticsGPU = None
+    CrystalDefectResult = None
+    MaterialState = None
 
 # ========================================
-# Material Features
+# Material Features (optional)
 # ========================================
-from .material_features_gpu import (
-    MaterialFeaturesGPU,
-    extract_material_features,
-    compute_coordination_numbers_gpu,
-    compute_local_strain_gpu
-)
+try:
+    from .material_features_gpu import (
+        MaterialFeaturesGPU,
+        extract_material_features,
+        compute_coordination_numbers_gpu,
+        compute_local_strain_gpu
+    )
+except ImportError:
+    MaterialFeaturesGPU = None
+    
+    # ダミー関数
+    def extract_material_features(*args, **kwargs):
+        raise NotImplementedError("Material features module not available")
 
 # ========================================
 # Material Database
@@ -125,7 +150,7 @@ MATERIAL_DATABASE = {
     'SUJ2': {
         'name': 'Bearing Steel (SUJ2)',
         'E': 210.0,      # GPa
-        'nu': 0.3,       # Poisson's ratio
+        'nu': 0.3,       # Poisson's ratio  
         'yield': 1.5,    # GPa
         'ultimate': 2.0, # GPa
         'K_IC': 30.0,    # MPa√m
@@ -142,7 +167,7 @@ MATERIAL_DATABASE = {
         'density': 2.81,
         'crystal': 'FCC'
     },
-    'Ti6Al4V': {
+    'TI6AL4V': {
         'name': 'Titanium Alloy (Ti-6Al-4V)',
         'E': 113.8,
         'nu': 0.342,
@@ -165,144 +190,65 @@ MATERIAL_DATABASE = {
 }
 
 # ========================================
-# Package Information
+# Convenience Functions
 # ========================================
-def get_package_info():
-    """パッケージ情報を取得"""
-    cuda_status = "Enabled" if HAS_CUDA_KERNELS else "Disabled"
-    
-    return {
-        'name': 'material_analysis',
-        'version': __version__,
-        'description': 'Lambda³ GPU Material Analysis Package',
-        'features': [
-            'Macro material event detection',
-            'Two-stage cluster analysis',
-            'Atomic-level defect analysis',
-            'Topological charge analysis (v2.0)',
-            'Structural coherence detection (v2.0)',
-            'CUDA kernel optimization (v2.0)',
-            'Automatic defect region detection (v3.0)',  # 新機能
-            'Material MD features extraction (v3.0)',    # 新機能
-            'Comprehensive report generation',
-            'GPU acceleration support'
-        ],
-        'cuda_kernels': cuda_status,
-        'materials': list(MATERIAL_DATABASE.keys()),
-        'author': __author__
-    }
 
-def list_available_materials():
-    """利用可能な材料リスト"""
-    print("\n💎 Available Materials:")
-    print("="*50)
-    for key, props in MATERIAL_DATABASE.items():
-        print(f"\n{key}: {props['name']}")
-        print(f"  - Elastic modulus: {props['E']} GPa")
-        print(f"  - Yield strength: {props['yield']} GPa")
-        print(f"  - Fracture toughness: {props['K_IC']} MPa√m")
-        print(f"  - Crystal structure: {props['crystal']}")
-
-def check_cuda_status():
-    """CUDAカーネルの状態確認"""
-    print("\n🚀 CUDA Kernel Status:")
-    print("="*50)
-    
-    if HAS_CUDA_KERNELS:
-        print("✅ CUDA kernels are available")
-        
-        try:
-            import cupy as cp
-            kernels = MaterialCUDAKernels()
-            if kernels.compiled:
-                print("✅ All kernels compiled successfully")
-                print("  - Strain tensor kernel: Ready")
-                print("  - Coordination number kernel: Ready")
-                print("  - Damage score kernel: Ready")
-                print("  - Defect detection kernel: Ready (v3.0)")
-                print("  - Local strain kernel: Ready (v3.0)")
-            else:
-                print("⚠️ Kernel compilation failed")
-        except Exception as e:
-            print(f"❌ Runtime error: {e}")
-    else:
-        print("❌ CUDA kernels not available")
-        print("   Install CuPy to enable GPU acceleration")
-
-# ========================================
-# Quick Start Function (v3.0改良版)
-# ========================================
-def quick_analysis(trajectory_path, atom_types_path, material_type='SUJ2', **kwargs):
+def quick_analysis(trajectory, atom_types, material_type='SUJ2', **kwargs):
     """
-    クイック材料解析（v3.0 - 欠陥自動検出対応）
-    
-    最小限のパラメータで解析を実行
+    クイック材料解析
     
     Parameters
     ----------
-    trajectory_path : str
-        トラジェクトリファイルパス
-    atom_types_path : str
-        原子タイプファイルパス
+    trajectory : np.ndarray
+        トラジェクトリ (n_frames, n_atoms, 3)
+    atom_types : np.ndarray
+        原子タイプ配列
     material_type : str
         材料タイプ
-    **kwargs
-        追加パラメータ
-        - cluster_definition_path : str (クラスター定義ファイル)
-        - auto_detect_defects : bool (default: True)
-        - use_cuda_kernels : bool (default: True)
-        - use_topological : bool (default: True)
-    
+        
     Returns
     -------
     dict
         解析結果
     """
-    from pathlib import Path
+    import tempfile
     import numpy as np
+    from pathlib import Path
     
-    # v3.0: 自動欠陥検出オプション
-    auto_detect = kwargs.get('auto_detect_defects', True)
-    cluster_path = kwargs.get('cluster_definition_path', None)
-    
-    # メタデータ自動生成
+    # 一時ファイル作成
+    with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as f:
+        metadata_path = f.name
+        
     metadata = {
-        'system_name': f'{material_type}_quick_analysis',
-        'material_type': material_type,
-        'temperature': kwargs.get('temperature', 300.0),
-        'strain_rate': kwargs.get('strain_rate', 1e-3),
-        'loading_type': kwargs.get('loading_type', 'tensile'),
-        'use_cuda_kernels': kwargs.get('use_cuda_kernels', True),
-        'use_topological': kwargs.get('use_topological', True),
-        'auto_detect_defects': auto_detect  # v3.0
+        'material': material_type,
+        'properties': MATERIAL_DATABASE.get(material_type, {}),
+        'n_frames': trajectory.shape[0],
+        'n_atoms': trajectory.shape[1]
     }
     
-    # 一時メタデータファイル作成
-    import tempfile
-    import json
-    
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+    with open(metadata_path, 'w') as f:
+        import json
         json.dump(metadata, f)
-        metadata_path = f.name
     
     try:
-        # v3.0: backbone_indices不要（自動検出）
+        # パイプライン実行
         results = run_material_analysis_pipeline(
-            trajectory_path=trajectory_path,
+            trajectory_path=trajectory,  # numpy配列を直接渡す
             metadata_path=metadata_path,
-            atom_types_path=atom_types_path,
+            atom_types_path=atom_types,  
             material_type=material_type,
-            cluster_definition_path=cluster_path,  # v3.0
-            output_dir=kwargs.get('output_dir', f'./{material_type}_results'),
-            verbose=kwargs.get('verbose', False)
+            enable_two_stage=kwargs.get('enable_two_stage', True),
+            enable_impact=kwargs.get('enable_impact', False),
+            enable_visualization=kwargs.get('enable_visualization', False),
+            output_dir=kwargs.get('output_dir', './quick_results')
         )
         
-        # v3.0: 欠陥情報を結果に追加
-        if results and 'macro_result' in results:
-            macro = results['macro_result']
-            if hasattr(macro, 'md_features') and 'defect_indices' in macro.md_features:
-                n_defects = len(macro.md_features['defect_indices'])
-                density = macro.md_features.get('defect_density', 0)
+        # v3.0: 欠陥検出情報を追加
+        if hasattr(results.get('macro_result'), 'md_features'):
+            md_features = results['macro_result'].md_features
+            if 'defect_indices' in md_features:
+                n_defects = len(md_features['defect_indices'])
+                density = n_defects / trajectory.shape[1]
                 print(f"\n🎯 Defect Detection Results:")
                 print(f"   Defect atoms: {n_defects}")
                 print(f"   Defect density: {density:.1%}")
@@ -375,8 +321,44 @@ def analyze_with_defect_detection(trajectory, atom_types, material_type='SUJ2',
     }
 
 # ========================================
+# Package Information
+# ========================================
+
+def get_package_info():
+    """パッケージ情報を取得"""
+    cuda_status = "Enabled" if HAS_CUDA_KERNELS else "Disabled"
+    
+    return {
+        'name': 'material_analysis',
+        'version': __version__,
+        'description': 'Lambda³ GPU Material Analysis Package',
+        'features': [
+            'Auto defect detection (v3.0)',
+            'Multi-scale analysis',
+            'CUDA acceleration',
+            'Material database'
+        ],
+        'cuda_kernels': cuda_status,
+        'materials': list(MATERIAL_DATABASE.keys())
+    }
+
+def list_available_materials():
+    """利用可能な材料リスト"""
+    materials = []
+    for key, props in MATERIAL_DATABASE.items():
+        materials.append({
+            'code': key,
+            'name': props['name'],
+            'crystal': props['crystal'],
+            'yield_strength': props['yield'],
+            'fracture_toughness': props['K_IC']
+        })
+    return materials
+
+# ========================================
 # Export List (v3.0更新)
 # ========================================
+
 __all__ = [
     # Main pipeline
     'run_material_analysis_pipeline',
@@ -415,25 +397,27 @@ __all__ = [
     'AtomicDefectTrace',
     'DefectOrigin',
     'MaterialDefectNetwork',
+    'MaterialDefectNetworkGPU',
     
     # CUDA kernels
     'MaterialCUDAKernels',
     'HAS_CUDA_KERNELS',
+    'check_cuda_status',
     
     # Functions
     'detect_material_events',
     'perform_material_two_stage_analysis_gpu',
     'run_material_impact_analysis',
     'generate_material_report_from_results',
+    'prepare_vtk_export_data',
+    'generate_material_comparison_report',
     'get_material_parameters',
     'create_spatial_clusters',
-    'prepare_vtk_export_data',
     'compute_crystal_defect_charge',
     'compute_structural_coherence',
     'extract_material_features',
     'compute_coordination_numbers_gpu',
     'compute_local_strain_gpu',
-    'check_cuda_status',
     
     # Database and info
     'MATERIAL_DATABASE',
@@ -441,12 +425,14 @@ __all__ = [
     'list_available_materials',
     
     # Version
-    '__version__'
+    '__version__',
+    '__author__'
 ]
 
 # ========================================
-# Package Initialization Message
+# Package Initialization
 # ========================================
+
 if __name__ != '__main__':
     import logging
     logger = logging.getLogger(__name__)
@@ -462,3 +448,4 @@ if __name__ != '__main__':
     logger.info("✨ New in v3.0: Automatic defect region detection with CUDA acceleration")
     logger.info("   - MaterialMDFeaturesGPU for efficient feature extraction")
     logger.info("   - Reduced computation from 50000 to ~2000 atoms automatically")
+    logger.info("   - Crystal structure aware defect detection")
