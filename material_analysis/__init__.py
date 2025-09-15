@@ -5,11 +5,13 @@ Lambda³ GPU Material Analysis Package
 材料解析用Lambda³ GPUパッケージ
 転位・亀裂・相変態の階層的解析
 
-Version: 1.0.0
+トポロジカル欠陥解析とCUDAカーネル最適化対応
+
+Version: 2.0.0
 Authors: 環ちゃん
 """
 
-__version__ = '1.0.0'
+__version__ = '2.0.0'
 __author__ = '環ちゃん'
 
 # ========================================
@@ -30,6 +32,21 @@ from .material_lambda3_detector import (
     MaterialConfig,
     detect_material_events
 )
+
+# ========================================
+# CUDA Kernels (v2.0 新機能)
+# ========================================
+try:
+    from .cuda_kernels import (
+        MaterialCUDAKernels,
+        STRAIN_TENSOR_KERNEL_CODE,
+        COORDINATION_NUMBER_KERNEL_CODE,
+        DAMAGE_SCORE_KERNEL_CODE
+    )
+    HAS_CUDA_KERNELS = True
+except ImportError:
+    HAS_CUDA_KERNELS = False
+    MaterialCUDAKernels = None
 
 # ========================================
 # Two-Stage Analysis
@@ -116,6 +133,8 @@ MATERIAL_DATABASE = {
 # ========================================
 def get_package_info():
     """パッケージ情報を取得"""
+    cuda_status = "Enabled" if HAS_CUDA_KERNELS else "Disabled"
+    
     return {
         'name': 'material_analysis',
         'version': __version__,
@@ -124,9 +143,13 @@ def get_package_info():
             'Macro material event detection',
             'Two-stage cluster analysis',
             'Atomic-level defect analysis',
+            'Topological charge analysis (v2.0)',
+            'Structural coherence detection (v2.0)',
+            'CUDA kernel optimization (v2.0)',
             'Comprehensive report generation',
             'GPU acceleration support'
         ],
+        'cuda_kernels': cuda_status,
         'materials': list(MATERIAL_DATABASE.keys()),
         'author': __author__
     }
@@ -141,6 +164,30 @@ def list_available_materials():
         print(f"  - Yield strength: {props['yield']} GPa")
         print(f"  - Fracture toughness: {props['K_IC']} MPa√m")
         print(f"  - Crystal structure: {props['crystal']}")
+
+def check_cuda_status():
+    """CUDAカーネルの状態確認"""
+    print("\n🚀 CUDA Kernel Status:")
+    print("="*50)
+    
+    if HAS_CUDA_KERNELS:
+        print("✅ CUDA kernels are available")
+        
+        try:
+            import cupy as cp
+            kernels = MaterialCUDAKernels()
+            if kernels.compiled:
+                print("✅ All kernels compiled successfully")
+                print("  - Strain tensor kernel: Ready")
+                print("  - Coordination number kernel: Ready")
+                print("  - Damage score kernel: Ready")
+            else:
+                print("⚠️ Kernel compilation failed")
+        except Exception as e:
+            print(f"❌ Runtime error: {e}")
+    else:
+        print("❌ CUDA kernels not available")
+        print("   Install CuPy to enable GPU acceleration")
 
 # ========================================
 # Quick Start Function
@@ -161,6 +208,8 @@ def quick_analysis(trajectory_path, atom_types_path, material_type='SUJ2', **kwa
         材料タイプ
     **kwargs
         追加パラメータ
+        - use_cuda_kernels : bool (default: True)
+        - use_topological : bool (default: True)
     
     Returns
     -------
@@ -175,7 +224,9 @@ def quick_analysis(trajectory_path, atom_types_path, material_type='SUJ2', **kwa
         'material_type': material_type,
         'temperature': kwargs.get('temperature', 300.0),
         'strain_rate': kwargs.get('strain_rate', 1e-3),
-        'loading_type': kwargs.get('loading_type', 'tensile')
+        'loading_type': kwargs.get('loading_type', 'tensile'),
+        'use_cuda_kernels': kwargs.get('use_cuda_kernels', True),
+        'use_topological': kwargs.get('use_topological', True)
     }
     
     # 一時メタデータファイル作成
@@ -230,6 +281,10 @@ __all__ = [
     'DefectOrigin',
     'MaterialDefectNetwork',
     
+    # CUDA kernels (v2.0)
+    'MaterialCUDAKernels',
+    'HAS_CUDA_KERNELS',
+    
     # Functions
     'detect_material_events',
     'perform_material_two_stage_analysis_gpu',
@@ -238,6 +293,7 @@ __all__ = [
     'get_material_parameters',
     'create_spatial_clusters',
     'prepare_vtk_export_data',
+    'check_cuda_status',
     
     # Database and info
     'MATERIAL_DATABASE',
@@ -256,3 +312,11 @@ if __name__ != '__main__':
     logger = logging.getLogger(__name__)
     logger.info(f"Lambda³ GPU Material Analysis Package v{__version__} loaded")
     logger.info(f"Available materials: {', '.join(MATERIAL_DATABASE.keys())}")
+    
+    if HAS_CUDA_KERNELS:
+        logger.info("🚀 CUDA kernels enabled for acceleration")
+    else:
+        logger.info("⚠️ CUDA kernels not available - using standard GPU/CPU computation")
+    
+    # v2.0 新機能のアナウンス
+    logger.info("✨ New in v2.0: Topological charge analysis & Structural coherence detection")
