@@ -127,21 +127,9 @@ except ImportError:
     MaterialState = None
 
 # ========================================
-# Material Features (optional)
+# Material Features (存在しない)
 # ========================================
-try:
-    from .material_features_gpu import (
-        MaterialFeaturesGPU,
-        extract_material_features,
-        compute_coordination_numbers_gpu,
-        compute_local_strain_gpu
-    )
-except ImportError:
-    MaterialFeaturesGPU = None
-    
-    # ダミー関数
-    def extract_material_features(*args, **kwargs):
-        raise NotImplementedError("Material features module not available")
+MaterialFeaturesGPU = None  # material_features_gpu.pyは存在しない
 
 # ========================================
 # Material Database
