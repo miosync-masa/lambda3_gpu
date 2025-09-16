@@ -883,11 +883,12 @@ class MaterialTwoStageAnalyzerGPU(GPUBackend):
         return cluster_analyses
     
     def _analyze_events_sequential(self,
-                                  trajectory: np.ndarray,
-                                  detected_events: List[Tuple[int, int, str]],
-                                  cluster_atoms: Dict[int, List[int]],
-                                  cluster_names: Dict[int, str],
-                                  atom_types: np.ndarray) -> Dict[str, ClusterLevelAnalysis]:
+                              trajectory: np.ndarray,
+                              detected_events: List[Tuple[int, int, str]],
+                              cluster_atoms: Dict[int, List[int]],
+                              cluster_names: Dict[int, str],
+                              atom_types: np.ndarray,
+                              stress_history: Optional[np.ndarray] = None) -> Dict[str, ClusterLevelAnalysis]:
         """イベントの逐次解析"""
         print("\n⚙️ Processing material events sequentially on GPU...")
         
@@ -897,155 +898,14 @@ class MaterialTwoStageAnalyzerGPU(GPUBackend):
             print(f"\n  → Analyzing {event_name}...")
             analysis = self._analyze_single_event_gpu(
                 trajectory, event_name, start, end,
-                cluster_atoms, cluster_names, atom_types
+                cluster_atoms, cluster_names, atom_types,
+                stress_history  # ← 追加！
             )
             cluster_analyses[event_name] = analysis
             print(f"    GPU time: {analysis.gpu_time:.2f}s")
         
         return cluster_analyses
-    
-    def _analyze_single_event_gpu(self,
-                                 trajectory: np.ndarray,
-                                 event_name: str,
-                                 start_frame: int,
-                                 end_frame: int,
-                                 cluster_atoms: Dict[int, List[int]],
-                                 cluster_names: Dict[int, str],
-                                 atom_types: np.ndarray) -> ClusterLevelAnalysis:
-        """単一イベントのGPU解析"""
-        event_start_time = time.time()
-        
-        # フレーム範囲検証
-        if end_frame <= start_frame:
-            end_frame = min(start_frame + 1, trajectory.shape[0])
-        
-        event_frames = end_frame - start_frame
-        event_trajectory = trajectory[start_frame:end_frame]
-        
-        with self.memory_manager.batch_context(event_frames * len(cluster_atoms) * 3 * 4):
-            
-            # 1. クラスター構造計算
-            structures = self.cluster_structures.compute_cluster_structures(
-                event_trajectory, 0, event_frames - 1,
-                cluster_atoms, atom_types,
-                window_size=self.config.base_window
-            )
-            
-            # 2. 異常検出
-            anomaly_scores = self._detect_cluster_anomalies_gpu(
-                structures, event_name
-            )
-            
-            # 3. ネットワーク解析
-            network_results = self.cluster_network.analyze_network(
-                anomaly_scores,
-                structures.cluster_coupling,
-                structures.cluster_centers,
-                structures.coordination_numbers,
-                structures.local_strain
-            )
-            
-            # 4. クラスターイベント構築
-            cluster_events = self._build_cluster_events_gpu(
-                structures, anomaly_scores, cluster_names,
-                start_frame, network_results
-            )
-            
-            # 5. 因果解析
-            causality_chains = []
-            initiators = []
-            propagation_paths = []
-            
-            if self.config.detect_dislocations and network_results.dislocation_network:
-                # 転位伝播解析
-                causality_result = self.causality_analyzer.detect_causal_pairs(
-                    anomaly_scores,
-                    structures.coordination_numbers,
-                    structures.local_strain,
-                    threshold=self.config.min_causality_strength
-                )
-                
-                causality_chains = [
-                    (r.pair[0], r.pair[1], r.causality_strength)
-                    for r in causality_result[:self.config.max_causal_links]
-                ]
-                
-                initiators = self._find_dislocation_sources(
-                    cluster_events, causality_chains
-                )
-                
-                propagation_paths = self._trace_dislocation_paths(
-                    initiators, causality_chains
-                )
-            
-            elif self.config.detect_cracks and network_results.damage_network:
-                # 亀裂伝播解析
-                initiators = self._find_crack_initiation_sites(
-                    cluster_events, network_results.damage_network
-                )
-                
-                propagation_paths = self._trace_crack_paths(
-                    initiators, network_results.damage_network
-                )
-            
-            # 6. 信頼性解析
-            confidence_results = []
-            if self.config.use_confidence and causality_chains:
-                cluster_data = {
-                    i: {
-                        'strain': structures.local_strain[:, i],
-                        'coordination': structures.coordination_numbers[:, i],
-                        'anomaly': scores
-                    }
-                    for i, scores in anomaly_scores.items()
-                }
-                
-                confidence_results = self.confidence_analyzer.analyze_material_reliability(
-                    causality_chains[:10],
-                    cluster_data,
-                    analysis_type='strain',
-                    n_bootstrap=self.config.n_bootstrap
-                )
-            
-            # 7. 破壊確率計算
-            failure_prob = self._compute_failure_probability(
-                structures.local_strain
-            )
-            
-            # 8. 信頼性指標
-            reliability_idx = self._compute_reliability_index(
-                structures.local_strain
-            )
-        
-        gpu_time = time.time() - event_start_time
-        
-        # 結果構築
-        network_stats = network_results.network_stats.copy()
-        network_stats.update({
-            'n_strain_links': len(network_results.strain_network),
-            'n_dislocation_links': len(network_results.dislocation_network),
-            'n_damage_links': len(network_results.damage_network),
-            'mean_coordination': float(np.mean(structures.coordination_numbers))
-        })
-        
-        return ClusterLevelAnalysis(
-            event_name=event_name,
-            macro_start=start_frame,
-            macro_end=end_frame,
-            cluster_events=cluster_events,
-            causality_chain=causality_chains,
-            initiator_clusters=initiators,
-            propagation_paths=propagation_paths[:5],
-            strain_network=network_results.strain_network,
-            dislocation_network=network_results.dislocation_network,
-            damage_network=network_results.damage_network,
-            network_stats=network_stats,
-            confidence_results=confidence_results,
-            failure_probability=failure_prob,
-            reliability_index=reliability_idx,
-            gpu_time=gpu_time
-        )
-    
+      
     def _detect_cluster_anomalies_gpu(self,
                                      structures: ClusterStructureResult,
                                      event_type: str) -> Dict[int, np.ndarray]:
@@ -1083,57 +943,6 @@ class MaterialTwoStageAnalyzerGPU(GPUBackend):
                     cluster_anomaly_scores[cluster_id] = np.ones(n_frames) * 0.5
         
         return cluster_anomaly_scores
-    
-    def _build_cluster_events_gpu(self,
-                                 structures: ClusterStructureResult,
-                                 anomaly_scores: Dict[int, np.ndarray],
-                                 cluster_names: Dict[int, str],
-                                 start_frame: int,
-                                 network_results) -> List[ClusterEvent]:
-        """クラスターイベント構築"""
-        events = []
-        
-        for cluster_id, scores in anomaly_scores.items():
-            # ピーク検出
-            peak_idx = np.argmax(scores)
-            peak_score = scores[peak_idx]
-            
-            # 歪みと損傷の取得
-            strain_values = structures.local_strain[:, cluster_id]
-            von_mises_strain = np.sqrt(np.sum(strain_values**2, axis=-1))
-            peak_strain = float(np.max(von_mises_strain))
-            
-            # 損傷度（簡易計算）
-            peak_damage = peak_strain * self.material_props['elastic_modulus'] / \
-                         self.material_props['ultimate_strength']
-            
-            # 転位密度推定
-            coord_defect = np.abs(structures.coordination_numbers[:, cluster_id] - 12.0)
-            dislocation_density = 1e14 * np.mean(coord_defect)**2  # /cm^2
-            
-            # 役割決定
-            role = self._determine_cluster_role(
-                cluster_id, network_results
-            )
-            
-            event = ClusterEvent(
-                cluster_id=cluster_id,
-                cluster_name=cluster_names.get(cluster_id, f"C{cluster_id}"),
-                start_frame=start_frame + peak_idx,
-                end_frame=start_frame + min(peak_idx + 10, len(scores) - 1),
-                peak_strain=peak_strain,
-                peak_damage=float(peak_damage),
-                propagation_delay=peak_idx,
-                role=role,
-                adaptive_window=self.config.base_window,
-                dislocation_density=float(dislocation_density),
-                coordination_defect=float(np.mean(coord_defect)),
-                von_mises_stress=peak_strain * self.material_props['elastic_modulus']
-            )
-            
-            events.append(event)
-        
-        return events
     
     def _determine_cluster_role(self, cluster_id: int, network_results) -> str:
         """クラスターの役割決定"""
