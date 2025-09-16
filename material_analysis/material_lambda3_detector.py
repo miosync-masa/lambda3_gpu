@@ -40,7 +40,6 @@ from ..detection.phase_space_gpu import PhaseSpaceAnalyzerGPU
 
 # Material specific imports
 from ..material.material_analytics_gpu import MaterialAnalyticsGPU
-from ..material.material_features_gpu import MaterialFeaturesGPU
 
 # Logger設定
 logger = logging.getLogger(__name__)
@@ -163,9 +162,7 @@ class MaterialLambda3DetectorGPU(GPUBackend):
                 material_type=self.config.material_type,
                 force_cpu=force_cpu_flag
             )
-            self.material_feature_extractor = MaterialFeaturesGPU(
-                force_cpu=force_cpu_flag
-            )
+            self.material_feature_extractor = None
         else:
             self.material_analytics = None
             self.material_feature_extractor = None
