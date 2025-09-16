@@ -12,15 +12,16 @@ Components:
     - MaterialCausalityAnalyzerGPU: 因果関係解析（歪み伝播）
     - MaterialConfidenceAnalyzerGPU: 統計的信頼性（ワイブル統計）
     - MaterialMDFeaturesGPU: MD特徴抽出（欠陥領域フォーカス）
+    - MaterialFailurePhysicsGPU: 物理原理による破損予測（RMSF発散・相転移）
 
-by 環ちゃん - Material Edition v1.0
+by 環ちゃん - Material Edition v1.1.0
 """
 
 # ===============================
 # Version and Metadata
 # ===============================
 
-__version__ = '1.0.0'
+__version__ = '1.1.0'  # Updated for physics integration
 __author__ = '環ちゃん'
 __email__ = 'tamaki@lambda3.ai'
 
@@ -114,6 +115,30 @@ from .material_md_features_gpu import (
 )
 
 # ===============================
+# Material Failure Physics
+# ===============================
+
+from .material_failure_physics_gpu import (
+    # Classes
+    MaterialFailurePhysicsGPU,
+    
+    # Data Classes
+    FailurePhysicsResult,
+    RMSFAnalysisResult,
+    EnergyBalanceResult,
+    DamageNucleusResult,
+    FatigueCycleResult,
+    
+    # Main Functions
+    detect_failure_precursor,
+    predict_fatigue_life,
+    
+    # Physical Constants
+    MATERIAL_CONSTANTS,
+    K_B,  # Boltzmann constant
+)
+
+# ===============================
 # Material Properties Database
 # ===============================
 
@@ -127,6 +152,9 @@ SUJ2_PROPERTIES = {
     'fracture_toughness': 30.0,       # MPa√m
     'density': 7.85,                  # g/cm³
     'crystal_structure': 'BCC',       # Body-Centered Cubic
+    'lattice_constant': 2.87,         # Å (from MATERIAL_CONSTANTS)
+    'melting_temp': 1811,            # K
+    'lindemann_criterion': 0.10,     # Lindemann melting criterion
 }
 
 # アルミニウム合金 (A7075-T6)
@@ -139,6 +167,9 @@ AL7075_PROPERTIES = {
     'fracture_toughness': 23.0,       # MPa√m
     'density': 2.81,                  # g/cm³
     'crystal_structure': 'FCC',       # Face-Centered Cubic
+    'lattice_constant': 4.05,         # Å
+    'melting_temp': 933,             # K
+    'lindemann_criterion': 0.12,     # FCC adjusted
 }
 
 # チタン合金 (Ti-6Al-4V)
@@ -151,6 +182,9 @@ TI6AL4V_PROPERTIES = {
     'fracture_toughness': 75.0,       # MPa√m
     'density': 4.43,                  # g/cm³
     'crystal_structure': 'HCP',       # Hexagonal Close-Packed
+    'lattice_constant': 3.23,         # Å
+    'melting_temp': 1941,            # K
+    'lindemann_criterion': 0.11,     # HCP adjusted
 }
 
 # ===============================
@@ -274,6 +308,49 @@ def quick_fatigue_analysis(trajectory, cluster_atoms, atom_types,
         'material_type': material_type
     }
 
+def quick_physics_analysis(trajectory, stress_history=None,
+                         material_type='SUJ2', temperature=300.0):
+    """
+    物理ベース破損解析の高速実行
+    
+    水の沸点研究から生まれた理論による破損予測！
+    
+    Parameters
+    ----------
+    trajectory : np.ndarray
+        原子トラジェクトリ (n_frames, n_atoms, 3)
+    stress_history : np.ndarray, optional
+        応力履歴
+    material_type : str
+        材料タイプ
+    temperature : float
+        基礎温度 (K)
+        
+    Returns
+    -------
+    dict
+        物理解析結果
+    """
+    # 物理解析器初期化
+    physics = MaterialFailurePhysicsGPU(material_type=material_type)
+    
+    # 解析実行
+    result = physics.analyze_failure_physics(
+        trajectory=trajectory,
+        stress_history=stress_history,
+        temperature=temperature
+    )
+    
+    return {
+        'mechanism': result.failure_mechanism,
+        'time_to_failure': result.time_to_failure,
+        'critical_atoms': result.failure_location,
+        'lindemann_ratio': result.rmsf_analysis.lindemann_ratio,
+        'phase_state': result.energy_balance.phase_state,
+        'confidence': result.confidence,
+        'material_type': material_type
+    }
+
 # ===============================
 # Module Export
 # ===============================
@@ -322,6 +399,18 @@ __all__ = [
     'extract_material_md_features',
     'get_defect_region_indices',
     
+    # ===== Material Failure Physics =====
+    'MaterialFailurePhysicsGPU',
+    'FailurePhysicsResult',
+    'RMSFAnalysisResult',
+    'EnergyBalanceResult',
+    'DamageNucleusResult',
+    'FatigueCycleResult',
+    'detect_failure_precursor',
+    'predict_fatigue_life',
+    'MATERIAL_CONSTANTS',
+    'K_B',
+    
     # ===== Material Properties =====
     'SUJ2_PROPERTIES',
     'AL7075_PROPERTIES',
@@ -330,6 +419,7 @@ __all__ = [
     # ===== Quick Analysis =====
     'quick_analyze_suj2',
     'quick_fatigue_analysis',
+    'quick_physics_analysis',  # NEW!
 ]
 
 # ===============================
@@ -348,7 +438,8 @@ try:
         'device_count': cp.cuda.runtime.getDeviceCount(),
         'current_device': cp.cuda.runtime.getDevice(),
     }
-    logger.info(f"Lambda³ GPU Material module initialized with {GPU_INFO['device_count']} GPU(s)")
+    logger.info(f"Lambda³ GPU Material module v{__version__} initialized with {GPU_INFO['device_count']} GPU(s)")
+    logger.info("Physics-based failure prediction module loaded 💫")
 except ImportError:
     HAS_GPU = False
     GPU_INFO = {
@@ -363,10 +454,10 @@ except ImportError:
 # ===============================
 
 def test_module():
-    """モジュールテスト"""
+    """モジュールテスト（物理解析を含む）"""
     import numpy as np
     
-    logger.info("Testing Lambda³ GPU Material module...")
+    logger.info(f"Testing Lambda³ GPU Material module v{__version__}...")
     
     # ダミーデータ
     n_frames = 100
@@ -405,7 +496,20 @@ def test_module():
         logger.error(f"✗ Network analysis failed: {e}")
         return False
     
-    logger.info("All tests passed! 💎")
+    # 物理解析テスト（NEW!）
+    try:
+        physics_result = detect_failure_precursor(
+            trajectory[:50],  # Short trajectory for test
+            material_type='SUJ2',
+            temperature=300.0
+        )
+        logger.info(f"✓ Physics analysis: {physics_result['mechanism']} mechanism detected")
+        logger.info(f"  Lindemann ratio: {physics_result['lindemann_ratio']:.3f}")
+    except Exception as e:
+        logger.error(f"✗ Physics analysis failed: {e}")
+        return False
+    
+    logger.info("All tests passed! 💎✨")
     return True
 
 if __name__ == '__main__':
