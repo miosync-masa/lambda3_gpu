@@ -495,36 +495,32 @@ class MaterialMDFeaturesGPU(MDFeaturesGPU):
         return defect_atoms
     
     def _expand_defect_region(self,
-                            positions: np.ndarray,
-                            defect_atoms: Union[List[int], np.ndarray],
-                            radius: float) -> Set[int]:
+                         positions: np.ndarray,
+                         defect_atoms: Union[List[int], np.ndarray],
+                         radius: float) -> Set[int]:
         """
         欠陥領域を周辺原子まで拡張
-        
-        Parameters
-        ----------
-        positions : np.ndarray
-            原子位置
-        defect_atoms : array-like
-            欠陥原子のインデックス
-        radius : float
-            拡張半径
-            
-        Returns
-        -------
-        Set[int]
-            拡張された原子インデックスのセット
         """
         if not HAS_SCIPY:
             return set(defect_atoms)
         
-        tree = cKDTree(positions)
+        # CuPy配列の場合はNumPyに変換
+        if hasattr(positions, 'get'):  # CuPy配列かチェック
+            positions_cpu = positions.get()
+        else:
+            positions_cpu = positions
+        
+        # defect_atomsもCuPy配列の可能性あり
+        if hasattr(defect_atoms, 'get'):
+            defect_atoms = defect_atoms.get()
+        
+        tree = cKDTree(positions_cpu)  # CPU版を使用
         expanded = set(defect_atoms)
         
         # 各欠陥原子の周辺を追加
         for atom in defect_atoms:
-            if atom < len(positions):
-                neighbors = tree.query_ball_point(positions[atom], r=radius)
+            if atom < len(positions_cpu):
+                neighbors = tree.query_ball_point(positions_cpu[atom], r=radius)
                 expanded.update(neighbors)
         
         logger.debug(f"   Expanded from {len(defect_atoms)} to {len(expanded)} atoms")
