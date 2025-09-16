@@ -84,23 +84,21 @@ class MaterialConfig:
 @dataclass
 class MaterialLambda3Result:
     """材料Lambda³解析結果（MD版と同じ構造）"""
-    # Core Lambda³構造（MD版と同じ）
+    # Core Lambda³構造（MD版と同じ）- デフォルト値なし
     lambda_structures: Dict[str, np.ndarray]
     structural_boundaries: Dict[str, Any]
     topological_breaks: Dict[str, np.ndarray]
     
-    # MD/材料特徴
+    # MD/材料特徴 - デフォルト値なし
     md_features: Dict[str, np.ndarray]
-    material_features: Optional[Dict[str, np.ndarray]] = None
     
-    # 解析結果
+    # 解析結果 - デフォルト値なし
     anomaly_scores: Dict[str, np.ndarray]
     detected_structures: List[Dict]
     
-    # 位相空間解析（オプション）
+    # ここから下はデフォルト値あり
+    material_features: Optional[Dict[str, np.ndarray]] = None
     phase_space_analysis: Optional[Dict] = None
-    
-    # 材料特有の結果
     defect_analysis: Optional[Dict] = None
     structural_coherence: Optional[np.ndarray] = None
     failure_prediction: Optional[Dict] = None
