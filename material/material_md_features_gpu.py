@@ -161,6 +161,16 @@ class MaterialMDFeatureConfig(MDFeatureConfig):
     calculate_coordination_distribution: bool = True
 
 # ===============================
+# Helper Functions
+# ===============================
+
+def _ensure_numpy(arr):
+    """CuPy配列をNumPy配列に変換（必要な場合のみ）"""
+    if hasattr(arr, 'get'):
+        return arr.get()
+    return arr
+
+# ===============================
 # Material MD Features GPU Class
 # ===============================
 
@@ -311,7 +321,7 @@ class MaterialMDFeaturesGPU(MDFeaturesGPU):
             features['n_defect_atoms'] = len(backbone_indices)
         
         if self.material_config.calculate_coordination_distribution:
-            features['coordination_distribution'] = self._calculate_coordination_distribution(
+            features['coordination_distribution'] = self.(
                 trajectory, backbone_indices
             )
         
@@ -447,7 +457,8 @@ class MaterialMDFeaturesGPU(MDFeaturesGPU):
         # CPU版（scipy使用）
         elif HAS_SCIPY:
             logger.debug("Using scipy for coordination calculation")
-            
+
+            positions_cpu = _ensure_numpy(positions) 
             tree = cKDTree(positions)
             neighbors = tree.query_ball_tree(tree, cutoff)
             coord_numbers = np.array([len(n) - 1 for n in neighbors])  # -1 for self
@@ -557,6 +568,7 @@ class MaterialMDFeaturesGPU(MDFeaturesGPU):
         # フレームごとに配位数分布を計算
         for frame in range(0, n_frames, 10):  # 10フレームごとにサンプリング
             positions = trajectory[frame]
+            positions_cpu = _ensure_numpy(positions)
             tree = cKDTree(positions)
             
             for atom_idx in defect_indices[:100]:  # 最初の100原子のみ（計算量削減）
