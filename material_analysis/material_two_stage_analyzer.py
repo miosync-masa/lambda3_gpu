@@ -850,11 +850,12 @@ class MaterialTwoStageAnalyzerGPU(GPUBackend):
             print(f"   ⏰ Time to failure: {predicted_failure_time:.1f} ps")
         
     def _analyze_events_parallel(self,
-                                trajectory: np.ndarray,
-                                detected_events: List[Tuple[int, int, str]],
-                                cluster_atoms: Dict[int, List[int]],
-                                cluster_names: Dict[int, str],
-                                atom_types: np.ndarray) -> Dict[str, ClusterLevelAnalysis]:
+                            trajectory: np.ndarray,
+                            detected_events: List[Tuple[int, int, str]],
+                            cluster_atoms: Dict[int, List[int]],
+                            cluster_names: Dict[int, str],
+                            atom_types: np.ndarray,
+                            stress_history: Optional[np.ndarray] = None) -> Dict:
         """イベントの並列解析"""
         print("\n⚡ Processing material events in parallel on GPU...")
         
@@ -867,7 +868,7 @@ class MaterialTwoStageAnalyzerGPU(GPUBackend):
                 future = executor.submit(
                     self._analyze_single_event_gpu,
                     trajectory, event_name, start, end,
-                    cluster_atoms, cluster_names, atom_types
+                    cluster_atoms, cluster_names, atom_types, stress_history
                 )
                 futures.append((event_name, future))
             
