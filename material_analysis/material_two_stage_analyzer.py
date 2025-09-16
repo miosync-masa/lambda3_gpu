@@ -630,7 +630,8 @@ class MaterialTwoStageAnalyzerGPU(GPUBackend):
                                      cluster_names: Dict[int, str],
                                      start_frame: int,
                                      network_results,
-                                     event_physics: Optional[FailurePhysicsResult]) -> List[ClusterEvent]:
+                                     event_physics: Optional[FailurePhysicsResult],
+                                     cluster_atoms: Dict[int, List[int]] = None) -> List[ClusterEvent]:  # 追加！
         """クラスターイベント構築（物理情報追加）"""
         events = []
         
