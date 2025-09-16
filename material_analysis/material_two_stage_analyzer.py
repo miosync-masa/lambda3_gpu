@@ -202,18 +202,23 @@ class MaterialTwoStageAnalyzerGPU(GPUBackend):
         # 材料プロパティ設定
         self._set_material_properties()
         
-        # GPU版コンポーネント初期化
-        self.cluster_structures = ClusterStructuresGPU(**self.material_props)
-        self.cluster_network = ClusterNetworkGPU(**self.material_props)
-        self.causality_analyzer = MaterialCausalityAnalyzerGPU(**self.material_props)
-        self.confidence_analyzer = MaterialConfidenceAnalyzerGPU(**self.material_props)
+        # GPU版コンポーネント初期化（材料プロパティは渡さない）
+        self.cluster_structures = ClusterStructuresGPU()
+        self.cluster_network = ClusterNetworkGPU()
+        self.causality_analyzer = MaterialCausalityAnalyzerGPU()
+        self.confidence_analyzer = MaterialConfidenceAnalyzerGPU()
         
-        # 物理ベース破損予測器を追加（水の沸点研究から生まれた理論！）
+        # 材料プロパティを後から設定
+        for component in [self.cluster_structures, self.cluster_network,
+                         self.causality_analyzer, self.confidence_analyzer]:
+            component.material_props = self.material_props
+        
+        # 物理ベース破損予測器を追加
         if self.config.use_physics_prediction:
             self.failure_physics = MaterialFailurePhysicsGPU(
                 material_type=material_type
             )
-            logger.info("💫 Physics-based failure prediction enabled (from water boiling research!)")
+            logger.info("💫 Physics-based failure prediction enabled!")
         else:
             self.failure_physics = None
         
