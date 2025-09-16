@@ -79,7 +79,7 @@ except ImportError:
 # ========================================
 # Material Failure Physics (NEW! v3.1)
 # ========================================
-from .material_failure_physics_gpu import (
+from ..material.material_failure_physics_gpu import (
     MaterialFailurePhysicsGPU,
     FailurePhysicsResult,
     RMSFAnalysisResult,
