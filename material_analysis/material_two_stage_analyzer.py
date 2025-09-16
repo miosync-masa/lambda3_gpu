@@ -715,13 +715,13 @@ class MaterialTwoStageAnalyzerGPU(GPUBackend):
         return events
     
     def _identify_critical_clusters_physics(self,
-                                           importance_scores: Dict[int, float],
-                                           cluster_analyses: Dict,
-                                           global_physics: Optional[FailurePhysicsResult]) -> List[int]:
+                                       importance_scores: Dict[int, float],
+                                       cluster_analyses: Dict,
+                                       global_physics: Optional[FailurePhysicsResult]) -> List[int]:
         """臨界クラスター特定（物理情報統合）"""
         critical = []
         
-        # 従来の方法
+        # 従来の方法（そのまま）
         if importance_scores:
             sorted_clusters = sorted(
                 importance_scores.items(),
@@ -742,17 +742,15 @@ class MaterialTwoStageAnalyzerGPU(GPUBackend):
                                 critical.append(cluster_id)
                                 break
         
-        # 物理予測からの臨界原子（NEW!）
-        if global_physics and global_physics.failure_location:
-            # 原子IDからクラスターIDへマッピング（簡易版）
+        # 物理予測からの臨界原子（修正！）
+        if global_physics and global_physics.failure_location and importance_scores:  # ← ここ追加
             for atom_id in global_physics.failure_location[:5]:
-                # TODO: 正確なマッピングが必要
-                estimated_cluster = atom_id % len(importance_scores)
+                estimated_cluster = atom_id % max(len(importance_scores), 1)  # ← ゼロ除算防止
                 if estimated_cluster not in critical:
                     critical.append(estimated_cluster)
         
         return list(set(critical))[:15]
-    
+        
     def _evaluate_material_state_physics(self,
                                         cluster_analyses: Dict,
                                         critical_clusters: List,
