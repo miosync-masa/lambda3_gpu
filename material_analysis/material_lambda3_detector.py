@@ -182,11 +182,11 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         self._print_initialization_info()
     
     def analyze(self,
-                trajectory: np.ndarray,
-                backbone_indices: Optional[np.ndarray] = None,
-                atom_types: Optional[np.ndarray] = None,
-                cluster_definition_path: Optional[str] = None,
-                **kwargs) -> MaterialLambda3Result:
+            trajectory: np.ndarray,
+            backbone_indices: Optional[np.ndarray] = None,
+            atom_types: Optional[np.ndarray] = None,
+            cluster_definition_path: Optional[str] = None,
+            **kwargs) -> MaterialLambda3Result:
         """
         材料軌道のLambda³解析（MD版と同じインターフェース）
         
@@ -208,14 +208,21 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         """
         start_time = time.time()
         
-        # NumPy配列をGPU（CuPy配列）に変換（MD版と同じ）
+        # 原子タイプの前処理（文字列→数値変換）
+        atom_type_names = None
+        if atom_types is not None and atom_types.dtype.kind == 'U':  # 文字列の場合
+            atom_type_names = np.unique(atom_types)  # 元の名前を保存
+            type_map = {t: i for i, t in enumerate(atom_type_names)}
+            atom_types = np.array([type_map[t] for t in atom_types], dtype=np.int32)
+        
+        # NumPy配列をGPU（CuPy配列）に変換
         if self.is_gpu and cp is not None:
             print("📊 Converting arrays to GPU...")
             trajectory = cp.asarray(trajectory)
             if backbone_indices is not None:
                 backbone_indices = cp.asarray(backbone_indices)
             if atom_types is not None:
-                atom_types = cp.asarray(atom_types)
+                atom_types = cp.asarray(atom_types) 
         
         n_frames, n_atoms, _ = trajectory.shape
         
