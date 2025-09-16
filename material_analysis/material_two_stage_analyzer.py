@@ -907,8 +907,8 @@ class MaterialTwoStageAnalyzerGPU(GPUBackend):
         return cluster_analyses
       
     def _detect_cluster_anomalies_gpu(self,
-                                     structures: ClusterStructureResult,
-                                     event_type: str) -> Dict[int, np.ndarray]:
+                                 structures: ClusterStructureResult,
+                                 event_type: str) -> Dict[int, np.ndarray]:
         """クラスター異常検出"""
         n_frames, n_clusters = structures.cluster_rho_t.shape
         
@@ -921,11 +921,12 @@ class MaterialTwoStageAnalyzerGPU(GPUBackend):
         # 各クラスターの異常スコア計算
         for cluster_id in range(n_clusters):
             # 歪み異常
-            strain_values = structures.local_strain[:, cluster_id]
-            von_mises = np.sqrt(np.sum(strain_values**2, axis=-1))
+            strain_values = structures.local_strain[:, cluster_id]  # (n_frames, 3, 3)
+            # ↓ ここを修正！
+            von_mises = np.sqrt(np.sum(strain_values**2, axis=(1,2)))  # axis=(1,2)に変更
             strain_anomaly = self._compute_anomaly_score(von_mises)
             
-            # 配位数異常
+            # 配位数異常（そのまま）
             coord_values = structures.coordination_numbers[:, cluster_id]
             ideal_coord = 12.0 if hasattr(structures, 'crystal_structure') else 8.0
             coord_anomaly = np.abs(coord_values - ideal_coord) / ideal_coord
