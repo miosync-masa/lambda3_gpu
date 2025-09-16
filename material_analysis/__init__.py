@@ -94,7 +94,7 @@ from ..material.material_failure_physics_gpu import (
 # ========================================
 # Two-Stage Analysis
 # ========================================
-from .material_two_stage_analyzer_v2 import (
+from .material_two_stage_analyzer import (
     MaterialTwoStageAnalyzerGPU,
     MaterialTwoStageResult,
     ClusterAnalysisConfig,
