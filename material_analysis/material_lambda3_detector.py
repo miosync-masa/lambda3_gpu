@@ -55,7 +55,7 @@ class MaterialConfig:
     adaptive_window: bool = True
     extended_detection: bool = True
     use_extended_detection: bool = True
-    use_phase_space: bool = False
+    use_phase_space: bool = True
     sensitivity: float = 1.5  # 材料は低めに
     min_boundary_gap: int = 50  # 材料は短い時間スケール
     
