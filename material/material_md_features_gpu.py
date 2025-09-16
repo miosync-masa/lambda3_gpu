@@ -573,7 +573,7 @@ class MaterialMDFeaturesGPU(MDFeaturesGPU):
             
             for atom_idx in defect_indices[:100]:  # 最初の100原子のみ（計算量削減）
                 if atom_idx < len(positions_cpu):
-                    neighbors = tree.query_ball_point(positions[atom_idx], cutoff)
+                    neighbors = tree.query_ball_point(positions_cpu[atom_idx], cutoff)
                     coord = len(neighbors) - 1  # -1 for self
                     if 0 <= coord <= max_coord:
                         coord_dist[frame, coord] += 1
