@@ -186,6 +186,7 @@ class MaterialLambda3DetectorGPU(GPUBackend):
             backbone_indices: Optional[np.ndarray] = None,
             atom_types: Optional[np.ndarray] = None,
             cluster_definition_path: Optional[str] = None,
+            cluster_atoms: Optional[Dict[int, List[int]]] = None,  # ← 追加！
             **kwargs) -> MaterialLambda3Result:
         """
         材料軌道のLambda³解析（MD版と同じインターフェース）
@@ -260,12 +261,13 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         self._print_summary(result)
         
         return result
-    
+
     def _analyze_single_trajectory(self,
-                                 trajectory: np.ndarray,
-                                 backbone_indices: Optional[np.ndarray],
-                                 atom_types: Optional[np.ndarray],
-                                 cluster_definition_path: Optional[str] = None) -> MaterialLambda3Result:
+                             trajectory: np.ndarray,
+                             backbone_indices: Optional[np.ndarray],
+                             atom_types: Optional[np.ndarray],
+                             cluster_definition_path: Optional[str] = None,
+                             cluster_atoms: Optional[Dict[int, List[int]]] = None) -> MaterialLambda3Result:  # ← 追加
         """単一軌道の解析（MD版と同じ構造）"""
         n_frames, n_atoms, _ = trajectory.shape
         
@@ -281,14 +283,22 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         material_features = None
         if self.config.use_material_analytics and self.material_feature_extractor:
             print("\n1.5. Extracting material-specific features...")
-            # 簡易クラスター定義（Two-Stageで詳細化）
-            simple_clusters = {0: list(range(n_atoms))}
+            
+            # クラスター定義が渡されていればそれを使う、なければ簡易定義
+            if cluster_atoms is not None:
+                clusters_for_features = cluster_atoms
+                print(f"    Using provided clusters: {len(clusters_for_features)} clusters")
+            else:
+                # 簡易クラスター定義（Two-Stageで詳細化）
+                clusters_for_features = {0: list(range(n_atoms))}
+                print("    Using simple cluster definition (all atoms)")
+            
             material_features = self.material_feature_extractor.extract_material_features(
                 self.to_cpu(trajectory) if self.is_gpu else trajectory,
-                simple_clusters,
+                clusters_for_features,  # ← 修正
                 self.to_cpu(atom_types) if atom_types is not None and self.is_gpu else atom_types,
                 self.config
-            )
+        )
         
         # 2. 初期ウィンドウサイズ（MD版と同じ）
         initial_window = self._compute_initial_window(n_frames)
