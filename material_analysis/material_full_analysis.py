@@ -216,7 +216,7 @@ def run_material_analysis_pipeline(
         config.material_type = material_type
         config.use_material_analytics = True  # 材料解析を有効化
         config.adaptive_window = True
-        config.use_phase_space = False  # 必要に応じて有効化
+        config.use_phase_space = True
         config.sensitivity = 1.5  # 材料は低めに
         config.gpu_batch_size = 10000
         
@@ -238,7 +238,8 @@ def run_material_analysis_pipeline(
             trajectory=trajectory,
             backbone_indices=None,  # 自動で欠陥領域を検出！
             atom_types=atom_types,
-            cluster_definition_path=cluster_definition_path  # クラスター定義を渡す
+            cluster_definition_path=cluster_definition_path,  # パスだけ渡してる
+            cluster_atoms=cluster_atoms  # ← これを追加！実際のデータも渡す
         )
         
         logger.info(f"   ✅ Macro analysis complete")
