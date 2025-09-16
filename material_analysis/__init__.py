@@ -77,9 +77,24 @@ except ImportError:
         return {'available': False, 'reason': 'CUDA kernels module not found'}
 
 # ========================================
+# Material Failure Physics (NEW! v3.1)
+# ========================================
+from .material_failure_physics_gpu import (
+    MaterialFailurePhysicsGPU,
+    FailurePhysicsResult,
+    RMSFAnalysisResult,
+    EnergyBalanceResult,
+    DamageNucleusResult,
+    FatigueCycleResult,
+    detect_failure_precursor,
+    predict_fatigue_life,
+    MATERIAL_CONSTANTS
+)
+
+# ========================================
 # Two-Stage Analysis
 # ========================================
-from .material_two_stage_analyzer import (
+from .material_two_stage_analyzer_v2 import (
     MaterialTwoStageAnalyzerGPU,
     MaterialTwoStageResult,
     ClusterAnalysisConfig,
@@ -367,6 +382,17 @@ __all__ = [
     # Analytics and Features
     'MaterialAnalyticsGPU',
     'MaterialFeaturesGPU',
+
+     # Physics-based failure prediction (NEW!)
+    'MaterialFailurePhysicsGPU',
+    'FailurePhysicsResult',
+    'RMSFAnalysisResult',
+    'EnergyBalanceResult', 
+    'DamageNucleusResult',
+    'FatigueCycleResult',
+    'detect_failure_precursor',
+    'predict_fatigue_life',
+    'MATERIAL_CONSTANTS',
     
     # Results
     'MaterialLambda3Result',
@@ -437,3 +463,7 @@ if __name__ != '__main__':
     logger.info("   - MaterialMDFeaturesGPU for efficient feature extraction")
     logger.info("   - Reduced computation from 50000 to ~2000 atoms automatically")
     logger.info("   - Crystal structure aware defect detection")
+    logger.info("🔬 New in v3.1: Physics-based failure prediction from water boiling research!")
+    logger.info("   - RMSF divergence detection for failure precursors")
+    logger.info("   - Energy balance analysis for phase transitions")
+    logger.info("   - Anti-nucleation theory for damage growth")
