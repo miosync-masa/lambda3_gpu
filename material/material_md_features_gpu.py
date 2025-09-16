@@ -321,7 +321,7 @@ class MaterialMDFeaturesGPU(MDFeaturesGPU):
             features['n_defect_atoms'] = len(backbone_indices)
         
         if self.material_config.calculate_coordination_distribution:
-            features['coordination_distribution'] = self.(
+            features['coordination_distribution'] = self._calculate_coordination_distribution(
                 trajectory, backbone_indices
             )
         
