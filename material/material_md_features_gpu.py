@@ -459,7 +459,7 @@ class MaterialMDFeaturesGPU(MDFeaturesGPU):
             logger.debug("Using scipy for coordination calculation")
 
             positions_cpu = _ensure_numpy(positions) 
-            tree = cKDTree(positions)
+            tree = cKDTree(positions_cpu)
             neighbors = tree.query_ball_tree(tree, cutoff)
             coord_numbers = np.array([len(n) - 1 for n in neighbors])  # -1 for self
             
@@ -569,10 +569,10 @@ class MaterialMDFeaturesGPU(MDFeaturesGPU):
         for frame in range(0, n_frames, 10):  # 10フレームごとにサンプリング
             positions = trajectory[frame]
             positions_cpu = _ensure_numpy(positions)
-            tree = cKDTree(positions)
+            tree = cKDTree(positions_cpu)
             
             for atom_idx in defect_indices[:100]:  # 最初の100原子のみ（計算量削減）
-                if atom_idx < len(positions):
+                if atom_idx < len(positions_cpu):
                     neighbors = tree.query_ball_point(positions[atom_idx], cutoff)
                     coord = len(neighbors) - 1  # -1 for self
                     if 0 <= coord <= max_coord:
