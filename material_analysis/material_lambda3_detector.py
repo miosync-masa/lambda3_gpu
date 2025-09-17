@@ -270,7 +270,16 @@ class MaterialLambda3DetectorGPU(GPUBackend):
                              cluster_atoms: Optional[Dict[int, List[int]]] = None) -> MaterialLambda3Result:  # ← 追加
         """単一軌道の解析（MD版と同じ構造）"""
         n_frames, n_atoms, _ = trajectory.shape
-        
+
+        if cluster_atoms is not None:
+            # Cluster 0以外を欠陥として扱う
+            defect_indices = []
+            for cid, atoms in cluster_atoms.items():
+                if str(cid) != "0":  # Cluster 0（健全領域）以外
+                    defect_indices.extend(atoms)
+            backbone_indices = np.array(sorted(defect_indices))
+            print(f"   Using {len(backbone_indices)} defect atoms from clusters")
+
         # 1. MD特徴抽出（材料版MD特徴抽出を使用）
         print("\n1. Extracting MD features on GPU...")
         md_features = self.feature_extractor.extract_md_features(
