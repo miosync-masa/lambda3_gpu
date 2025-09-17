@@ -209,6 +209,84 @@ def run_material_analysis_pipeline(
     # Step 2: マクロ材料解析（新版detector対応）
     # ========================================
     logger.info(f"\n🔬 Running Macro Material Analysis ({material_type})...")
+    # ========================================
+    # Helper function for event classification
+    # ========================================
+    def classify_material_event(start: int, 
+                               end: int, 
+                               anomaly_scores: Optional[np.ndarray],
+                               trajectory_frames: int) -> str:
+        """
+        物理的特性からイベントタイプを分類
+        
+        Parameters
+        ----------
+        start : int
+            イベント開始フレーム
+        end : int
+            イベント終了フレーム
+        anomaly_scores : np.ndarray, optional
+            異常スコア配列
+        trajectory_frames : int
+            全フレーム数
+            
+        Returns
+        -------
+        str
+            推定されたイベントタイプ
+        """
+        # デフォルトタイプ
+        event_type = 'elastic_deformation'
+        
+        # イベント特性を計算
+        duration = end - start
+        relative_position = start / trajectory_frames  # 時系列上の位置（0-1）
+        
+        # 異常スコアベースの分類
+        if anomaly_scores is not None and len(anomaly_scores) > end:
+            event_scores = anomaly_scores[start:end+1]
+            if len(event_scores) > 0:
+                max_score = np.max(event_scores)
+                mean_score = np.mean(event_scores)
+                
+                # スコアと継続時間による分類
+                if max_score > 3.0:
+                    if duration < 20:
+                        event_type = 'crack_initiation'
+                    else:
+                        event_type = 'crack_propagation'
+                elif max_score > 2.5:
+                    if duration < 50:
+                        event_type = 'plastic_deformation'
+                    else:
+                        event_type = 'fatigue_damage'
+                elif max_score > 2.0:
+                    event_type = 'dislocation_nucleation'
+                elif max_score > 1.5:
+                    if mean_score > 1.8:
+                        event_type = 'dislocation_avalanche'
+                    else:
+                        event_type = 'uniform_deformation'
+                elif max_score > 1.0:
+                    event_type = 'elastic_deformation'
+        
+        # 継続時間による補正
+        if duration > 200:  # 長期イベント
+            if event_type in ['elastic_deformation', 'uniform_deformation']:
+                event_type = 'fatigue_damage'
+        elif duration < 5:  # 瞬間的イベント
+            if event_type == 'uniform_deformation':
+                event_type = 'defect_migration'
+        
+        # 位置による補正（疲労サイクル考慮）
+        if relative_position > 0.8:  # 後期
+            if event_type == 'elastic_deformation':
+                event_type = 'transition_state'
+        elif relative_position < 0.2:  # 初期
+            if event_type == 'crack_initiation':
+                event_type = 'dislocation_nucleation'  # 初期は転位が先
+        
+        return event_type
     
     try:
         # MaterialConfig設定（新版に対応）
@@ -337,85 +415,6 @@ def run_material_analysis_pipeline(
     except Exception as e:
         logger.error(f"Macro analysis failed: {e}")
         raise
-    
-    # ========================================
-    # Helper function for event classification
-    # ========================================
-    def classify_material_event(start: int, 
-                               end: int, 
-                               anomaly_scores: Optional[np.ndarray],
-                               trajectory_frames: int) -> str:
-        """
-        物理的特性からイベントタイプを分類
-        
-        Parameters
-        ----------
-        start : int
-            イベント開始フレーム
-        end : int
-            イベント終了フレーム
-        anomaly_scores : np.ndarray, optional
-            異常スコア配列
-        trajectory_frames : int
-            全フレーム数
-            
-        Returns
-        -------
-        str
-            推定されたイベントタイプ
-        """
-        # デフォルトタイプ
-        event_type = 'elastic_deformation'
-        
-        # イベント特性を計算
-        duration = end - start
-        relative_position = start / trajectory_frames  # 時系列上の位置（0-1）
-        
-        # 異常スコアベースの分類
-        if anomaly_scores is not None and len(anomaly_scores) > end:
-            event_scores = anomaly_scores[start:end+1]
-            if len(event_scores) > 0:
-                max_score = np.max(event_scores)
-                mean_score = np.mean(event_scores)
-                
-                # スコアと継続時間による分類
-                if max_score > 3.0:
-                    if duration < 20:
-                        event_type = 'crack_initiation'
-                    else:
-                        event_type = 'crack_propagation'
-                elif max_score > 2.5:
-                    if duration < 50:
-                        event_type = 'plastic_deformation'
-                    else:
-                        event_type = 'fatigue_damage'
-                elif max_score > 2.0:
-                    event_type = 'dislocation_nucleation'
-                elif max_score > 1.5:
-                    if mean_score > 1.8:
-                        event_type = 'dislocation_avalanche'
-                    else:
-                        event_type = 'uniform_deformation'
-                elif max_score > 1.0:
-                    event_type = 'elastic_deformation'
-        
-        # 継続時間による補正
-        if duration > 200:  # 長期イベント
-            if event_type in ['elastic_deformation', 'uniform_deformation']:
-                event_type = 'fatigue_damage'
-        elif duration < 5:  # 瞬間的イベント
-            if event_type == 'uniform_deformation':
-                event_type = 'defect_migration'
-        
-        # 位置による補正（疲労サイクル考慮）
-        if relative_position > 0.8:  # 後期
-            if event_type == 'elastic_deformation':
-                event_type = 'transition_state'
-        elif relative_position < 0.2:  # 初期
-            if event_type == 'crack_initiation':
-                event_type = 'dislocation_nucleation'  # 初期は転位が先
-        
-        return event_type
     
     # ========================================
     # Step 3: 2段階クラスター解析
