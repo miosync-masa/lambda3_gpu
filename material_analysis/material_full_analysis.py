@@ -6,10 +6,15 @@ Material Full Analysis Pipeline - Lambda³ GPU Material Edition (REFACTORED)
 材料解析の完全統合パイプライン - リファクタリング版
 全ての解析結果が適切にレポート生成に渡るように修正
 
-Version: 3.1.0 - Refactored for Complete Data Flow
+Version: 3.2.0 - With Automatic Strain Field Generation
 Authors: 環ちゃん
 
-主な修正内容：
+主な修正内容 v3.2:
+- strain_fieldが未指定の場合、トラジェクトリから自動生成
+- 材料タイプごとの格子定数を考慮
+- イベントベースの歪み補正
+
+主な修正内容 v3.1:
 - Step 3-5のデータフロー完全修正
 - macro_resultへの全データ統合
 - two_stage_resultとimpact_resultsの適切な処理
@@ -327,8 +332,9 @@ def run_material_analysis_pipeline(
     output_path.mkdir(parents=True, exist_ok=True)
     
     logger.info("="*70)
-    logger.info(f"💎 MATERIAL ANALYSIS PIPELINE v3.1 (REFACTORED)")
+    logger.info(f"💎 MATERIAL ANALYSIS PIPELINE v3.2 (REFACTORED)")
     logger.info(f"   Material: {material_type}")
+    logger.info(f"   Auto strain field generation: ENABLED")
     logger.info("="*70)
     
     # ========================================
@@ -386,6 +392,9 @@ def run_material_analysis_pipeline(
         if strain_field_path and Path(strain_field_path).exists():
             strain_field = np.load(strain_field_path)
             logger.info(f"   Strain field loaded: shape {strain_field.shape}")
+        else:
+            # 歪み場が指定されていない場合は後で自動生成
+            logger.info("   Strain field will be auto-generated from trajectory")
         
         logger.info("   ✅ Data validation passed")
         
@@ -455,6 +464,40 @@ def run_material_analysis_pipeline(
                     material_events.append((start, end, event_type))
         
         logger.info(f"   Material events: {len(material_events)}")
+        
+        # ========================================
+        # strain_fieldの自動生成（必要な場合）
+        # ========================================
+        if strain_field is None and len(material_events) > 0:
+            logger.info("   Generating strain field from trajectory...")
+            
+            # 材料タイプに応じた格子定数
+            lattice_constants = {
+                'SUJ2': 2.87,      # BCC鉄
+                'AL7075': 4.05,    # FCC アルミニウム
+                'Ti6Al4V': 2.95,   # HCP チタン（a軸）
+                'SS316L': 3.58     # FCC ステンレス鋼
+            }
+            lattice = lattice_constants.get(material_type, 2.87)
+            
+            # 歪み場計算
+            strain_field = compute_strain_field_from_trajectory(
+                trajectory=trajectory,
+                material_events=material_events,
+                lattice_constant=lattice
+            )
+            
+            # 統計情報
+            logger.info(f"   Generated strain field:")
+            logger.info(f"     - Mean strain: {np.mean(strain_field):.4f}")
+            logger.info(f"     - Max strain: {np.max(strain_field):.4f}")
+            logger.info(f"     - Atoms > 1% strain: {np.sum(strain_field > 0.01)}")
+            logger.info(f"     - Atoms > 5% strain: {np.sum(strain_field > 0.05)}")
+            
+            # 保存（オプション）
+            if save_intermediate:
+                np.save(output_path / 'strain_field_auto.npy', strain_field)
+                logger.info("   Saved: strain_field_auto.npy")
         
         # ========================================
         # 重要: macro_resultの強化
@@ -898,6 +941,70 @@ def create_spatial_clusters(positions: np.ndarray, n_clusters: int) -> Dict[int,
         cluster_atoms[i] = np.where(labels == i)[0].tolist()
     
     return cluster_atoms
+
+def compute_strain_field_from_trajectory(
+    trajectory: np.ndarray,
+    material_events: List[Tuple[int, int, str]],
+    lattice_constant: float = 2.87  # BCC鉄のデフォルト
+) -> np.ndarray:
+    """
+    トラジェクトリから歪み場を簡易計算
+    
+    Parameters
+    ----------
+    trajectory : np.ndarray
+        原子トラジェクトリ (n_frames, n_atoms, 3)
+    material_events : List[Tuple[int, int, str]]
+        材料イベントリスト（歪み推定の参考）
+    lattice_constant : float
+        格子定数（Å）- 正規化用
+    
+    Returns
+    -------
+    np.ndarray
+        各原子の平均歪み場 (n_atoms,)
+    """
+    n_frames, n_atoms = trajectory.shape[:2]
+    strain_field = np.zeros(n_atoms)
+    
+    # フレーム間の累積歪み計算
+    for i in range(1, n_frames):
+        # 各原子のフレーム間変位
+        displacement = trajectory[i] - trajectory[i-1]
+        displacement_norm = np.linalg.norm(displacement, axis=1)
+        
+        # 格子定数で正規化して歪みに変換
+        frame_strain = displacement_norm / lattice_constant
+        
+        # 累積
+        strain_field += frame_strain
+    
+    # 平均化
+    strain_field = strain_field / (n_frames - 1) if n_frames > 1 else strain_field
+    
+    # イベントベースの補正（オプション）
+    if material_events:
+        # 塑性・転位イベントがある領域を強調
+        event_mask = np.zeros(n_frames, dtype=bool)
+        for start, end, event_type in material_events:
+            if any(key in event_type for key in ['plastic', 'dislocation', 'crack']):
+                event_mask[start:min(end+1, n_frames)] = True
+        
+        # イベント発生フレームでの追加歪み
+        if np.any(event_mask):
+            event_frames = np.where(event_mask)[0]
+            for frame in event_frames:
+                if frame > 0 and frame < n_frames:
+                    event_displacement = np.linalg.norm(
+                        trajectory[frame] - trajectory[frame-1], axis=1
+                    )
+                    # イベント領域は歪みを増幅
+                    strain_field += event_displacement / lattice_constant * 0.5
+    
+    # クリッピング（物理的に妥当な範囲）
+    strain_field = np.clip(strain_field, 0, 0.5)  # 最大50%歪み
+    
+    return strain_field
 
 # 可視化関数（既存のものをそのまま使用）
 def visualize_stress_strain(curve_data: Dict, material_type: str,
