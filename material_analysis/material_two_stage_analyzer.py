@@ -527,7 +527,8 @@ class MaterialTwoStageAnalyzerGPU(GPUBackend):
             # 5. クラスターイベント構築（物理情報追加）
             cluster_events = self._build_cluster_events_physics(
                 structures, anomaly_scores, cluster_names,
-                start_frame, network_results, event_physics
+                start_frame, network_results, event_physics,
+                cluster_atoms
             )
             
             # 6. 因果解析（従来通り）
