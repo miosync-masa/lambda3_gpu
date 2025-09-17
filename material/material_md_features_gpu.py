@@ -558,28 +558,31 @@ class MaterialMDFeaturesGPU(MDFeaturesGPU):
         """
         if not HAS_SCIPY:
             return np.array([])
+    
+        # defect_indicesもNumPyに変換！
+        defect_indices = _ensure_numpy(defect_indices)  # ← 追加！
         
         n_frames = trajectory.shape[0]
-        max_coord = 20  # 最大配位数
+        max_coord = 20
         coord_dist = np.zeros((n_frames, max_coord + 1))
         
         cutoff = self.material_config.coordination_cutoff
         
         # フレームごとに配位数分布を計算
-        for frame in range(0, n_frames, 10):  # 10フレームごとにサンプリング
+        for frame in range(0, n_frames, 10):
             positions = trajectory[frame]
             positions_cpu = _ensure_numpy(positions)
             tree = cKDTree(positions_cpu)
             
-            for atom_idx in defect_indices[:100]:  # 最初の100原子のみ（計算量削減）
+            for atom_idx in defect_indices[:100]:
                 if atom_idx < len(positions_cpu):
                     neighbors = tree.query_ball_point(positions_cpu[atom_idx], cutoff)
-                    coord = len(neighbors) - 1  # -1 for self
+                    coord = len(neighbors) - 1
                     if 0 <= coord <= max_coord:
                         coord_dist[frame, coord] += 1
         
         return coord_dist
-    
+        
     def _calculate_local_strain(self,
                               trajectory: np.ndarray,
                               defect_indices: np.ndarray) -> np.ndarray:
