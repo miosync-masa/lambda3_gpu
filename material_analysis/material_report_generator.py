@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """
-Material Report Generator from Lambda³ GPU Results - Version 1.0.2 (FIXED)
+Material Report Generator from Lambda³ GPU Results - Version 1.0.3 (FIXED)
 ==================================================================
 
 材料解析結果から最大限の情報を抽出してレポート生成！
 転位・亀裂・相変態の完全解析対応版
 
-Version: 1.0.2 - Material Edition (Bug Fixed)
+Version: 1.0.3 - Material Edition (Bug Fixed)
 Authors: 環ちゃん
+
+修正内容 v1.0.3:
+- plastic_zone_sizeとestimated_k_icのNoneチェック追加
+- フォーマット文字列エラーの修正
 
 修正内容 v1.0.2:
 - hasattr()チェックだけでなく、is not None チェックも追加
@@ -77,7 +81,7 @@ def generate_material_report_from_results(
     
     if verbose:
         print("\n" + "="*80)
-        print("💎 GENERATING MATERIAL ANALYSIS REPORT v1.0.2")
+        print("💎 GENERATING MATERIAL ANALYSIS REPORT v1.0.3")
         print("="*80)
     
     if debug:
@@ -111,7 +115,7 @@ def generate_material_report_from_results(
 - **Frames analyzed**: {n_frames}
 - **Atoms**: {n_atoms}
 - **Computation time**: {computation_time:.2f}s
-- **Analysis version**: Material Lambda³ v1.0.2
+- **Analysis version**: Material Lambda³ v1.0.3
 """
     
     # GPU情報
@@ -393,10 +397,10 @@ def generate_material_report_from_results(
                         report += "\n"
             
             # 材料パラメータ
-            if hasattr(result, 'plastic_zone_size'):
+            if hasattr(result, 'plastic_zone_size') and result.plastic_zone_size is not None:
                 report += f"- **Plastic zone size**: {result.plastic_zone_size:.2f} Å\n"
             
-            if hasattr(result, 'estimated_k_ic'):
+            if hasattr(result, 'estimated_k_ic') and result.estimated_k_ic is not None:
                 report += f"- **Estimated K_IC**: {result.estimated_k_ic:.1f} MPa√m\n"
             
             # 補強ポイント
@@ -601,7 +605,7 @@ def generate_material_report_from_results(
 
 ---
 *Material Analysis Complete!*
-*Version: 1.0.2 - Material Lambda³ GPU Edition (Fixed)*
+*Version: 1.0.3 - Material Lambda³ GPU Edition (Fixed)*
 *Material: {material_type}*
 *Total report length: {len(report):,} characters*
 """
@@ -618,7 +622,7 @@ def generate_material_report_from_results(
         
         # JSON形式でも保存
         json_data = {
-            'version': '1.0.2',
+            'version': '1.0.3',
             'material_type': material_type,
             'summary': {
                 'n_frames': n_frames,
@@ -664,7 +668,7 @@ def generate_material_report_from_results(
                 json.dump(vtk_data, f, indent=2, default=float)
         
         if verbose:
-            print(f"\n✨ COMPLETE! (Material Report v1.0.2)")
+            print(f"\n✨ COMPLETE! (Material Report v1.0.3)")
             print(f"   📄 Report saved to: {report_path}")
             print(f"   📊 Data saved to: {json_path}")
             print(f"   📏 Report length: {len(report):,} characters")
