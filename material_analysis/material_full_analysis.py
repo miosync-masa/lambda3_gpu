@@ -233,15 +233,25 @@ def run_material_analysis_pipeline(
         logger.info(f"   Material analytics: {config.use_material_analytics}")
         
         # 解析実行（新版インターフェース - 自動欠陥検出）
-        # backbone_indices=Noneで材料版MD特徴抽出が自動的に欠陥領域を検出
+        # cluster_atomsから欠陥領域を作成
+        backbone_indices = None
+        if cluster_atoms:
+            defect_atoms = []
+            for cid, atoms in cluster_atoms.items():
+                if str(cid) != "0":  # Cluster 0（健全）以外
+                    defect_atoms.extend(atoms)
+            backbone_indices = np.array(sorted(defect_atoms))
+            logger.info(f"   Defect atoms from clusters: {len(backbone_indices)}")
+        
+        # 解析実行（欠陥領域を明示的に渡す！）
         macro_result = detector.analyze(
             trajectory=trajectory,
-            backbone_indices=None,  # 自動で欠陥領域を検出！
+            backbone_indices=backbone_indices,  # ← もうNoneじゃない！
             atom_types=atom_types,
-            cluster_definition_path=cluster_definition_path,  # パスだけ渡してる
-            cluster_atoms=cluster_atoms  # ← これを追加！実際のデータも渡す
+            cluster_definition_path=cluster_definition_path,
+            cluster_atoms=cluster_atoms
         )
-        
+
         logger.info(f"   ✅ Macro analysis complete")
         
         # 欠陥領域の情報を表示
