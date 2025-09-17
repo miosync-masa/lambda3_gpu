@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 """
-Material Report Generator from Lambda³ GPU Results - Version 1.0.1 (FIXED)
+Material Report Generator from Lambda³ GPU Results - Version 1.0.2 (FIXED)
 ==================================================================
 
 材料解析結果から最大限の情報を抽出してレポート生成！
 転位・亀裂・相変態の完全解析対応版
 
-Version: 1.0.1 - Material Edition (Bug Fixed)
+Version: 1.0.2 - Material Edition (Bug Fixed)
 Authors: 環ちゃん
 
-修正内容:
+修正内容 v1.0.2:
+- hasattr()チェックだけでなく、is not None チェックも追加
+- material_events, stress_strain, anomaly_scores等がNoneの場合に対応
+- すべての属性アクセスを安全に
+
+修正内容 v1.0.1:
 - all_events変数の初期化位置を修正
 - hasattrチェックの追加
 - デバッグ出力の追加
@@ -72,7 +77,7 @@ def generate_material_report_from_results(
     
     if verbose:
         print("\n" + "="*80)
-        print("💎 GENERATING MATERIAL ANALYSIS REPORT v1.0.1")
+        print("💎 GENERATING MATERIAL ANALYSIS REPORT v1.0.2")
         print("="*80)
     
     if debug:
@@ -106,7 +111,7 @@ def generate_material_report_from_results(
 - **Frames analyzed**: {n_frames}
 - **Atoms**: {n_atoms}
 - **Computation time**: {computation_time:.2f}s
-- **Analysis version**: Material Lambda³ v1.0.1
+- **Analysis version**: Material Lambda³ v1.0.2
 """
     
     # GPU情報
@@ -124,11 +129,12 @@ def generate_material_report_from_results(
     report += "\n## 📊 Macro Material Analysis\n"
     
     # 検出イベント
-    if hasattr(macro_result, 'material_events'):
-        if debug:
-            print(f"[DEBUG] Found material_events: {len(macro_result.material_events)}")
-        
+    if hasattr(macro_result, 'material_events') and macro_result.material_events is not None:
         events = macro_result.material_events
+        
+        if debug:
+            print(f"[DEBUG] Found material_events: {len(events)}")
+        
         report += f"\n### Detected Material Events ({len(events)})\n"
         
         event_types = Counter()
@@ -158,7 +164,7 @@ def generate_material_report_from_results(
         report += "\n*Material events data not available*\n"
     
     # 応力-歪み解析
-    if hasattr(macro_result, 'stress_strain'):
+    if hasattr(macro_result, 'stress_strain') and macro_result.stress_strain is not None:
         if debug:
             print(f"[DEBUG] Found stress_strain data")
         
@@ -179,7 +185,7 @@ def generate_material_report_from_results(
         report += "\n*Stress-strain data not available*\n"
     
     # 異常スコア分析
-    if hasattr(macro_result, 'anomaly_scores'):
+    if hasattr(macro_result, 'anomaly_scores') and macro_result.anomaly_scores is not None:
         if debug:
             print(f"[DEBUG] Found anomaly_scores")
         
@@ -242,7 +248,7 @@ def generate_material_report_from_results(
 """
         
         # 臨界クラスター
-        if hasattr(two_stage_result, 'critical_clusters'):
+        if hasattr(two_stage_result, 'critical_clusters') and two_stage_result.critical_clusters:
             critical = two_stage_result.critical_clusters
             if critical:
                 report += f"\n### Critical Clusters (High Risk)\n"
@@ -256,7 +262,7 @@ def generate_material_report_from_results(
                     report += "\n"
         
         # 補強推奨箇所
-        if hasattr(two_stage_result, 'suggested_reinforcement_points'):
+        if hasattr(two_stage_result, 'suggested_reinforcement_points') and two_stage_result.suggested_reinforcement_points:
             reinforce = two_stage_result.suggested_reinforcement_points
             if reinforce:
                 report += f"\n### Reinforcement Recommendations\n"
@@ -595,7 +601,7 @@ def generate_material_report_from_results(
 
 ---
 *Material Analysis Complete!*
-*Version: 1.0.1 - Material Lambda³ GPU Edition (Fixed)*
+*Version: 1.0.2 - Material Lambda³ GPU Edition (Fixed)*
 *Material: {material_type}*
 *Total report length: {len(report):,} characters*
 """
@@ -612,7 +618,7 @@ def generate_material_report_from_results(
         
         # JSON形式でも保存
         json_data = {
-            'version': '1.0.1',
+            'version': '1.0.2',
             'material_type': material_type,
             'summary': {
                 'n_frames': n_frames,
@@ -658,7 +664,7 @@ def generate_material_report_from_results(
                 json.dump(vtk_data, f, indent=2, default=float)
         
         if verbose:
-            print(f"\n✨ COMPLETE! (Material Report v1.0.1)")
+            print(f"\n✨ COMPLETE! (Material Report v1.0.2)")
             print(f"   📄 Report saved to: {report_path}")
             print(f"   📊 Data saved to: {json_path}")
             print(f"   📏 Report length: {len(report):,} characters")
