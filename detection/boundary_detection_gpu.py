@@ -193,23 +193,43 @@ class BoundaryDetectorGPU(GPUBackend):
             'structural_entropy': self.to_cpu(entropy)
         }
     
-    def _compute_fractal_dimensions_gpu(self,
-                                      q_cumulative: np.ndarray,
-                                      window: int) -> NDArray:
+    def _compute_fractal_dimensions_gpu(self, q_cumulative: np.ndarray, window: int) -> NDArray:
         """局所フラクタル次元の計算（GPU版）"""
         if len(q_cumulative) == 0:
             return self.zeros(len(q_cumulative))
+        
+        # ===== 緊急修正：xpの存在確認と設定 =====
+        if not hasattr(self, 'xp') or self.xp is None:
+            if self.is_gpu and HAS_CUDA:
+                import cupy as cp
+                self.xp = cp
+            else:
+                import numpy as np
+                self.xp = np
+            print(f"    ⚠️ Emergency xp setup: {self.xp.__name__}")
         
         q_cum_gpu = self.to_gpu(q_cumulative)
         
         # CUDAカーネルでフラクタル次元計算
         if compute_local_fractal_dimension_kernel is not None:
-            dims = compute_local_fractal_dimension_kernel(q_cum_gpu, window)
-        else:
-            # フォールバック実装
-            dims = self.ones(len(q_cum_gpu))
-            for i in range(window, len(q_cum_gpu) - window):
-                local = q_cum_gpu[i-window:i+window]
+            try:
+                dims = compute_local_fractal_dimension_kernel(q_cum_gpu, window)
+            except:
+                dims = None
+            
+            if dims is not None:
+                return dims
+        
+        # フォールバック実装（self.xpを使う）
+        dims = self.ones(len(q_cum_gpu))
+        for i in range(window, len(q_cum_gpu) - window):
+            local = q_cum_gpu[i-window:i+window]
+            try:
+                var = self.xp.var(local)
+                if var > 1e-10:
+                    dims[i] = 1.0 + self.xp.log(var) / self.xp.log(window)
+            except AttributeError:
+                # 最終手段
                 if self.is_gpu:
                     var = cp.var(local)
                     if var > 1e-10:
