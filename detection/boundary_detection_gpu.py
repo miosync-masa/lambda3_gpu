@@ -314,18 +314,27 @@ class BoundaryDetectorGPU(GPUBackend):
         return coupling
     
     def _compute_structural_entropy_gpu(self,
-                                      rho_t: np.ndarray,
-                                      window: int) -> NDArray:
+                                  rho_t: np.ndarray,
+                                  window: int) -> NDArray:
         """
         構造エントロピーの計算（CuPy RawKernel版）
         PTX 8.4対応
         """
-        rho_t_gpu = self.to_gpu(rho_t).astype(cp.float32)
+        # xpの確認
+        if not hasattr(self, 'xp') or self.xp is None:
+            if self.is_gpu and HAS_CUDA:
+                import cupy as cp
+                self.xp = cp
+            else:
+                import numpy as np
+                self.xp = np
+        
+        rho_t_gpu = self.to_gpu(rho_t).astype(self.xp.float32)
         n = len(rho_t_gpu)
         
         if self.is_gpu and self.shannon_entropy_kernel is not None:
             # CuPy RawKernelを使用
-            entropy = cp.zeros(n, dtype=cp.float32)
+            entropy = self.xp.zeros(n, dtype=self.xp.float32)
             
             threads = 256
             blocks = (n + threads - 1) // threads
@@ -336,20 +345,20 @@ class BoundaryDetectorGPU(GPUBackend):
                 (rho_t_gpu, entropy, window, n)
             )
             
-            cp.cuda.Stream.null.synchronize()
+            self.xp.cuda.Stream.null.synchronize()
             return entropy
         else:
             # フォールバック：CuPyまたはNumPyで直接計算
             if self.is_gpu:
-                entropy = cp.zeros(n)
+                entropy = self.xp.zeros(n)
                 for i in range(window, n - window):
                     local_data = rho_t_gpu[i-window:i+window]
-                    local_sum = cp.sum(local_data)
+                    local_sum = self.xp.sum(local_data)
                     if local_sum > 1e-10:
                         p = local_data / local_sum
                         valid = p > 1e-10
-                        if cp.any(valid):
-                            entropy[i] = -cp.sum(p[valid] * cp.log(p[valid]))
+                        if self.xp.any(valid):
+                            entropy[i] = -self.xp.sum(p[valid] * self.xp.log(p[valid]))
             else:
                 entropy = np.zeros(n)
                 for i in range(window, n - window):
