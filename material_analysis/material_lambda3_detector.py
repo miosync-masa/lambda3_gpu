@@ -571,11 +571,11 @@ class MaterialLambda3DetectorGPU(GPUBackend):
             batch_traj_cpu = self.to_cpu(batch_trajectory) if self.is_gpu else batch_trajectory
             atom_types_cpu = self.to_cpu(atom_types) if atom_types is not None and self.is_gpu else atom_types
             
-            material_features = self.material_feature_extractor.extract_material_features(
-                batch_traj_cpu,
-                simple_clusters,
-                atom_types_cpu,
-                self.config
+            material_features = self.material_feature_extractor.extract_md_features(
+                trajectory=batch_traj_cpu,
+                backbone_indices=None,  # バッチ処理では省略
+                cluster_definition_path=cluster_definition_path,
+                atom_types=atom_types_cpu
             )
         
         window = self._compute_initial_window(len(batch_trajectory))
