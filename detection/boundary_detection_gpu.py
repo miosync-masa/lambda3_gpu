@@ -287,21 +287,26 @@ class BoundaryDetectorGPU(GPUBackend):
         
         return coherence
     
-    def _compute_coupling_strength_gpu(self,
-                                     q_cumulative: np.ndarray,
-                                     window: int) -> NDArray:
+    def _compute_coupling_strength_gpu(self, q_cumulative: np.ndarray, window: int) -> NDArray:
         """結合強度の計算（GPU版）"""
         q_cum_gpu = self.to_gpu(q_cumulative)
         n = len(q_cum_gpu)
         coupling = self.ones(n)
         
+        # self.xpが設定されてるか確認
+        if not hasattr(self, 'xp') or self.xp is None:
+            if self.is_gpu and HAS_CUDA:
+                import cupy as cp
+                self.xp = cp
+            else:
+                import numpy as np
+                self.xp = np
+        
         # 並列で局所分散を計算
         for i in range(window, n - window):
             local_q = q_cum_gpu[i-window:i+window]
-            if self.is_gpu:
-                var = cp.var(local_q)
-            else:
-                var = np.var(local_q)
+            # cpじゃなくてself.xpを使う！
+            var = self.xp.var(local_q)
             
             if var > 1e-10:
                 coupling[i] = 1.0 / (1.0 + var)
