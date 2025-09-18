@@ -405,6 +405,20 @@ def run_material_analysis_pipeline(
                 "Cluster definition file is required for material analysis. "
                 "KMeans spatial clustering is not physically meaningful for defect analysis."
             )
+        
+        # 歪み場読み込み（tryブロック内に追加！）
+        strain_field = None
+        if strain_field_path and Path(strain_field_path).exists():
+            strain_field = np.load(strain_field_path)
+            logger.info(f"   Strain field loaded: shape {strain_field.shape}")
+        else:
+            logger.info("   Strain field will be auto-generated from trajectory")
+        
+        logger.info("   ✅ Data validation passed")
+        
+    except Exception as e:
+        logger.error(f"Failed to load data: {e}")
+        raise
     
     # ========================================
     # Step 2: マクロ材料解析（強化版）
@@ -524,7 +538,7 @@ def run_material_analysis_pipeline(
     except Exception as e:
         logger.error(f"Macro analysis failed: {e}")
         raise
-    
+
     # ========================================
     # Step 3: 2段階クラスター解析（強化版）
     # ========================================
