@@ -373,7 +373,7 @@ def run_material_analysis_pipeline(
         atom_types = np.load(atom_types_path)
         logger.info(f"   Atom types loaded: {len(np.unique(atom_types))} types")
         
-        # クラスター定義読み込み
+        # クラスター定義読み込み（必須化！）
         if cluster_definition_path and Path(cluster_definition_path).exists():
             if cluster_definition_path.endswith('.json'):
                 with open(cluster_definition_path, 'r') as f:
@@ -382,25 +382,29 @@ def run_material_analysis_pipeline(
             else:
                 cluster_atoms = np.load(cluster_definition_path, allow_pickle=True).item()
             logger.info(f"   Clusters defined: {len(cluster_atoms)}")
+            
+            # クラスター0が健全領域として定義されているか確認
+            if 0 not in cluster_atoms:
+                logger.warning("   ⚠️ Cluster 0 (healthy region) not found in definition")
         else:
-            n_clusters = min(100, n_atoms // 50)
-            cluster_atoms = create_spatial_clusters(trajectory[0], n_clusters)
-            logger.info(f"   Auto-generated {n_clusters} clusters")
-        
-        # 歪み場読み込み
-        strain_field = None
-        if strain_field_path and Path(strain_field_path).exists():
-            strain_field = np.load(strain_field_path)
-            logger.info(f"   Strain field loaded: shape {strain_field.shape}")
-        else:
-            # 歪み場が指定されていない場合は後で自動生成
-            logger.info("   Strain field will be auto-generated from trajectory")
-        
-        logger.info("   ✅ Data validation passed")
-        
-    except Exception as e:
-        logger.error(f"Failed to load data: {e}")
-        raise
+            # KMeans削除！エラーにする
+            logger.error("="*60)
+            logger.error("❌ CLUSTER DEFINITION FILE IS REQUIRED")
+            logger.error("="*60)
+            logger.error("   Material analysis requires physical defect regions.")
+            logger.error("   Please provide: --clusters path/to/clusters_defects.json")
+            logger.error("")
+            logger.error("   The cluster file should define:")
+            logger.error("     - Cluster 0: Healthy/perfect crystal region")
+            logger.error("     - Cluster 1+: Various defect regions")
+            logger.error("")
+            logger.error("   Use external defect detection tools to generate this file.")
+            logger.error("="*60)
+            
+            raise ValueError(
+                "Cluster definition file is required for material analysis. "
+                "KMeans spatial clustering is not physically meaningful for defect analysis."
+            )
     
     # ========================================
     # Step 2: マクロ材料解析（強化版）
@@ -1203,7 +1207,9 @@ def main():
                        choices=['SUJ2', 'AL7075', 'Ti6Al4V', 'SS316L'],
                        help='Material type')
     parser.add_argument('--metadata', help='Path to metadata file (.json)')
-    parser.add_argument('--clusters', help='Path to cluster definition file')
+    parser.add_argument('--clusters', required=True,  # ← 必須に！
+                   help='Path to cluster definition file (REQUIRED). '
+                        'Must define Cluster 0 as healthy region and others as defects.')
     parser.add_argument('--strain', help='Path to strain field data (.npy)')
     parser.add_argument('--loading', '-l', default='tensile',
                        choices=['tensile', 'compression', 'shear', 'fatigue'])
