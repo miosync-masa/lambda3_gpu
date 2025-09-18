@@ -321,6 +321,12 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         print("\n⚡ Running batched GPU analysis...")
         
         n_frames = trajectory.shape[0]
+        
+        # 欠陥領域の特定（バッチ処理前に1回だけ）
+        backbone_indices = self._identify_defect_regions(
+            cluster_atoms, backbone_indices
+        )
+        
         batches = self._optimize_batch_plan(n_frames, batch_size)
         
         # Step 1: 前処理（バッチごと）
@@ -581,7 +587,8 @@ class MaterialLambda3DetectorGPU(GPUBackend):
                         backbone_indices: Optional[np.ndarray],
                         atom_types: Optional[np.ndarray],
                         batches: List[Tuple[int, int]],
-                        cluster_definition_path: Optional[str]
+                        cluster_definition_path: Optional[str],
+                        cluster_atoms: Optional[Dict[int, List[int]]] = None
                         ) -> List[Dict]:
         """バッチ処理の実行"""
         batch_results = []
