@@ -2,6 +2,7 @@
 Lambda³ GPU版構造境界検出モジュール
 構造境界（ΔΛC）検出のGPU最適化実装
 CuPy RawKernelベース（PTX 8.4対応）
+完全修正版 - 全てのcp直接参照をself.xpに置換
 """
 import numpy as np
 from typing import Dict, List, Tuple, Any
@@ -9,13 +10,11 @@ from typing import Dict, List, Tuple, Any
 try:
     import cupy as cp
     import logging
-    from cupyx.scipy.signal import find_peaks as find_peaks_gpu
-    from cupyx.scipy.ndimage import gaussian_filter1d as gaussian_filter1d_gpu
+    from scipy.signal import find_peaks  # cupyx.scipyではなくscipyを使用
     HAS_CUDA = True
 except ImportError:
     cp = None
-    find_peaks_gpu = None
-    gaussian_filter1d_gpu = None
+    find_peaks = None
     HAS_CUDA = False
 
 from ..types import ArrayType, NDArray
@@ -115,6 +114,9 @@ class BoundaryDetectorGPU(GPUBackend):
         super().__init__(force_cpu)
         self.boundary_cache = {}
         
+        # xpの初期設定
+        self._setup_xp()
+        
         # CuPy RawKernelをコンパイル
         if HAS_CUDA and not force_cpu:
             try:
@@ -132,6 +134,15 @@ class BoundaryDetectorGPU(GPUBackend):
         else:
             self.shannon_entropy_kernel = None
             self.detect_jumps_kernel = None
+    
+    def _setup_xp(self):
+        """numpy/cupyの切り替え設定"""
+        if self.is_gpu and HAS_CUDA:
+            import cupy as cp
+            self.xp = cp
+        else:
+            import numpy as np
+            self.xp = np
     
     def detect_structural_boundaries(self,
                                    structures: Dict[str, np.ndarray],
@@ -152,6 +163,10 @@ class BoundaryDetectorGPU(GPUBackend):
             境界情報
         """
         print("\n🔍 Detecting structural boundaries (ΔΛC) on GPU...")
+        
+        # xpの確認
+        if not hasattr(self, 'xp') or self.xp is None:
+            self._setup_xp()
         
         n_steps = len(structures['rho_T'])
         
@@ -198,15 +213,10 @@ class BoundaryDetectorGPU(GPUBackend):
         if len(q_cumulative) == 0:
             return self.zeros(len(q_cumulative))
         
-        # ===== 緊急修正：xpの存在確認と設定 =====
+        # xpの確認
         if not hasattr(self, 'xp') or self.xp is None:
-            if self.is_gpu and HAS_CUDA:
-                import cupy as cp
-                self.xp = cp
-            else:
-                import numpy as np
-                self.xp = np
-            print(f"    ⚠️ Emergency xp setup: {self.xp.__name__}")
+            self._setup_xp()
+            print(f"    ⚠️ Emergency xp setup in fractal_dimensions: {self.xp.__name__}")
         
         q_cum_gpu = self.to_gpu(q_cumulative)
         
@@ -224,20 +234,9 @@ class BoundaryDetectorGPU(GPUBackend):
         dims = self.ones(len(q_cum_gpu))
         for i in range(window, len(q_cum_gpu) - window):
             local = q_cum_gpu[i-window:i+window]
-            try:
-                var = self.xp.var(local)
-                if var > 1e-10:
-                    dims[i] = 1.0 + self.xp.log(var) / self.xp.log(window)
-            except AttributeError:
-                # 最終手段
-                if self.is_gpu:
-                    var = cp.var(local)
-                    if var > 1e-10:
-                        dims[i] = 1.0 + cp.log(var) / cp.log(window)
-                else:
-                    var = np.var(local)
-                    if var > 1e-10:
-                        dims[i] = 1.0 + np.log(var) / np.log(window)
+            var = self.xp.var(local)
+            if var > 1e-10:
+                dims[i] = 1.0 + self.xp.log(var) / self.xp.log(window)
         
         return dims
     
@@ -256,6 +255,10 @@ class BoundaryDetectorGPU(GPUBackend):
     
     def _compute_coherence_from_lambda_f(self, lambda_f: NDArray) -> NDArray:
         """Lambda_Fから一貫性を計算"""
+        # xpの確認
+        if not hasattr(self, 'xp') or self.xp is None:
+            self._setup_xp()
+        
         n_frames = len(lambda_f)
         coherence = self.ones(n_frames)
         
@@ -263,49 +266,32 @@ class BoundaryDetectorGPU(GPUBackend):
         for i in range(window, n_frames - window):
             local_f = lambda_f[i-window:i+window]
             # 方向の一貫性を評価
-            if self.is_gpu:
-                mean_dir = cp.mean(local_f, axis=0)
-                mean_norm = cp.linalg.norm(mean_dir)
-                if mean_norm > 1e-10:
-                    mean_dir /= mean_norm
-                    # 各ベクトルとの内積
-                    dots = cp.sum(local_f * mean_dir[None, :], axis=1)
-                    norms = cp.linalg.norm(local_f, axis=1)
-                    valid = norms > 1e-10
-                    if cp.any(valid):
-                        coherence[i] = cp.mean(dots[valid] / norms[valid])
-            else:
-                mean_dir = np.mean(local_f, axis=0)
-                mean_norm = np.linalg.norm(mean_dir)
-                if mean_norm > 1e-10:
-                    mean_dir /= mean_norm
-                    dots = np.sum(local_f * mean_dir[None, :], axis=1)
-                    norms = np.linalg.norm(local_f, axis=1)
-                    valid = norms > 1e-10
-                    if np.any(valid):
-                        coherence[i] = np.mean(dots[valid] / norms[valid])
+            mean_dir = self.xp.mean(local_f, axis=0)
+            mean_norm = self.xp.linalg.norm(mean_dir)
+            if mean_norm > 1e-10:
+                mean_dir /= mean_norm
+                # 各ベクトルとの内積
+                dots = self.xp.sum(local_f * mean_dir[None, :], axis=1)
+                norms = self.xp.linalg.norm(local_f, axis=1)
+                valid = norms > 1e-10
+                if self.xp.any(valid):
+                    coherence[i] = self.xp.mean(dots[valid] / norms[valid])
         
         return coherence
     
     def _compute_coupling_strength_gpu(self, q_cumulative: np.ndarray, window: int) -> NDArray:
         """結合強度の計算（GPU版）"""
+        # xpの確認
+        if not hasattr(self, 'xp') or self.xp is None:
+            self._setup_xp()
+        
         q_cum_gpu = self.to_gpu(q_cumulative)
         n = len(q_cum_gpu)
         coupling = self.ones(n)
         
-        # self.xpが設定されてるか確認
-        if not hasattr(self, 'xp') or self.xp is None:
-            if self.is_gpu and HAS_CUDA:
-                import cupy as cp
-                self.xp = cp
-            else:
-                import numpy as np
-                self.xp = np
-        
         # 並列で局所分散を計算
         for i in range(window, n - window):
             local_q = q_cum_gpu[i-window:i+window]
-            # cpじゃなくてself.xpを使う！
             var = self.xp.var(local_q)
             
             if var > 1e-10:
@@ -322,12 +308,7 @@ class BoundaryDetectorGPU(GPUBackend):
         """
         # xpの確認
         if not hasattr(self, 'xp') or self.xp is None:
-            if self.is_gpu and HAS_CUDA:
-                import cupy as cp
-                self.xp = cp
-            else:
-                import numpy as np
-                self.xp = np
+            self._setup_xp()
         
         rho_t_gpu = self.to_gpu(rho_t).astype(self.xp.float32)
         n = len(rho_t_gpu)
@@ -348,27 +329,16 @@ class BoundaryDetectorGPU(GPUBackend):
             self.xp.cuda.Stream.null.synchronize()
             return entropy
         else:
-            # フォールバック：CuPyまたはNumPyで直接計算
-            if self.is_gpu:
-                entropy = self.xp.zeros(n)
-                for i in range(window, n - window):
-                    local_data = rho_t_gpu[i-window:i+window]
-                    local_sum = self.xp.sum(local_data)
-                    if local_sum > 1e-10:
-                        p = local_data / local_sum
-                        valid = p > 1e-10
-                        if self.xp.any(valid):
-                            entropy[i] = -self.xp.sum(p[valid] * self.xp.log(p[valid]))
-            else:
-                entropy = np.zeros(n)
-                for i in range(window, n - window):
-                    local_data = rho_t[i-window:i+window]
-                    local_sum = np.sum(local_data)
-                    if local_sum > 1e-10:
-                        p = local_data / local_sum
-                        valid = p > 1e-10
-                        if np.any(valid):
-                            entropy[i] = -np.sum(p[valid] * np.log(p[valid]))
+            # フォールバック：self.xpで直接計算
+            entropy = self.xp.zeros(n)
+            for i in range(window, n - window):
+                local_data = rho_t_gpu[i-window:i+window]
+                local_sum = self.xp.sum(local_data)
+                if local_sum > 1e-10:
+                    p = local_data / local_sum
+                    valid = p > 1e-10
+                    if self.xp.any(valid):
+                        entropy[i] = -self.xp.sum(p[valid] * self.xp.log(p[valid]))
             
             return entropy
     
@@ -378,6 +348,10 @@ class BoundaryDetectorGPU(GPUBackend):
                                   coupling: NDArray,
                                   entropy: NDArray) -> NDArray:
         """統合境界スコアの計算"""
+        # xpの確認
+        if not hasattr(self, 'xp') or self.xp is None:
+            self._setup_xp()
+        
         # 長さを揃える
         min_len = min(len(fractal_dims), len(coupling), len(entropy))
         if len(coherence) > 0:
@@ -387,13 +361,13 @@ class BoundaryDetectorGPU(GPUBackend):
         if self.is_gpu:
             # compute_gradient_kernelが使えるか確認
             if compute_gradient_kernel is not None:
-                fractal_gradient = cp.abs(compute_gradient_kernel(fractal_dims[:min_len]))
-                entropy_gradient = cp.abs(compute_gradient_kernel(entropy[:min_len]))
+                fractal_gradient = self.xp.abs(compute_gradient_kernel(fractal_dims[:min_len]))
+                entropy_gradient = self.xp.abs(compute_gradient_kernel(entropy[:min_len]))
             else:
-                fractal_gradient = cp.abs(cp.gradient(fractal_dims[:min_len]))
-                entropy_gradient = cp.abs(cp.gradient(entropy[:min_len]))
+                fractal_gradient = self.xp.abs(self.xp.gradient(fractal_dims[:min_len]))
+                entropy_gradient = self.xp.abs(self.xp.gradient(entropy[:min_len]))
             
-            coherence_drop = 1 - coherence[:min_len] if len(coherence) > 0 else cp.zeros(min_len)
+            coherence_drop = 1 - coherence[:min_len] if len(coherence) > 0 else self.xp.zeros(min_len)
             coupling_weakness = 1 - coupling[:min_len]
         else:
             fractal_gradient = np.abs(np.gradient(fractal_dims[:min_len]))
@@ -415,18 +389,22 @@ class BoundaryDetectorGPU(GPUBackend):
                         boundary_score: NDArray,
                         n_steps: int) -> Tuple[NDArray, Dict]:
         """ピーク検出（GPU版）"""
+        # xpの確認
+        if not hasattr(self, 'xp') or self.xp is None:
+            self._setup_xp()
+        
         if len(boundary_score) > 10:
             min_distance_steps = max(50, n_steps // 30)
             
             if self.is_gpu:
                 # NaN値のチェックと除去
-                if cp.any(cp.isnan(boundary_score)):
+                if self.xp.any(self.xp.isnan(boundary_score)):
                     logger.warning("NaN values detected in boundary_score, cleaning...")
-                    boundary_score = cp.nan_to_num(boundary_score, nan=0.0)
+                    boundary_score = self.xp.nan_to_num(boundary_score, nan=0.0)
                 
                 # 統計値の計算
-                mean_val = float(cp.mean(boundary_score))
-                std_val = float(cp.std(boundary_score))
+                mean_val = float(self.xp.mean(boundary_score))
+                std_val = float(self.xp.std(boundary_score))
                 
                 # 閾値設定
                 height_threshold = mean_val + std_val
@@ -435,20 +413,17 @@ class BoundaryDetectorGPU(GPUBackend):
                 print(f"    Peak detection (GPU): mean={mean_val:.3f}, std={std_val:.3f}, threshold={height_threshold:.3f}")
                 
                 # CPUに転送してscipy.signal.find_peaksを使う（安定性重視）
-                boundary_score_cpu = cp.asnumpy(boundary_score)
-                from scipy.signal import find_peaks
+                boundary_score_cpu = self.xp.asnumpy(boundary_score)
                 peaks, properties = find_peaks(
                     boundary_score_cpu,
                     height=height_threshold,
                     distance=min_distance_steps
                 )
                 # GPU配列として返す
-                peaks = cp.array(peaks)
+                peaks = self.xp.array(peaks)
                     
             else:
                 # CPU版
-                from scipy.signal import find_peaks
-                
                 # NaN処理
                 boundary_score = np.nan_to_num(boundary_score, nan=0.0)
                 mean_val = np.mean(boundary_score)
@@ -470,11 +445,10 @@ class BoundaryDetectorGPU(GPUBackend):
                 height_threshold = mean_val + 0.5 * std_val
                 
                 if self.is_gpu:
-                    boundary_score_cpu = cp.asnumpy(boundary_score)
+                    boundary_score_cpu = self.xp.asnumpy(boundary_score)
                 else:
                     boundary_score_cpu = boundary_score
-                    
-                from scipy.signal import find_peaks
+                
                 peaks, properties = find_peaks(
                     boundary_score_cpu,
                     height=height_threshold,
@@ -482,22 +456,26 @@ class BoundaryDetectorGPU(GPUBackend):
                 )
                 
                 if self.is_gpu:
-                    peaks = cp.array(peaks)
+                    peaks = self.xp.array(peaks)
                     
         else:
-            peaks = cp.array([]) if self.is_gpu else np.array([])
+            peaks = self.xp.array([]) if self.is_gpu else np.array([])
             properties = {}
         
         logger.info(f"   Found {len(peaks)} structural boundaries")
         
         return peaks, properties
-                            
+    
     def _simple_peak_detection_gpu(self, array: NDArray, threshold: float, min_distance: int) -> NDArray:
         """シンプルなピーク検出実装（フォールバック用）"""
+        # xpの確認
+        if not hasattr(self, 'xp') or self.xp is None:
+            self._setup_xp()
+        
         peaks = []
         
         # GPU配列をCPUに転送して処理（安定性重視）
-        array_cpu = cp.asnumpy(array) if self.is_gpu else array
+        array_cpu = self.xp.asnumpy(array) if self.is_gpu else array
         
         for i in range(1, len(array_cpu) - 1):
             if (array_cpu[i] > threshold and 
@@ -508,7 +486,7 @@ class BoundaryDetectorGPU(GPUBackend):
         
         # GPU配列として返す
         if self.is_gpu:
-            return cp.array(peaks, dtype=cp.int64)
+            return self.xp.array(peaks, dtype=self.xp.int64)
         else:
             return np.array(peaks, dtype=np.int64)
     
@@ -518,6 +496,10 @@ class BoundaryDetectorGPU(GPUBackend):
     
     def _detect_lambda_anomalies_gpu(self, lambda_mag: np.ndarray, window: int) -> NDArray:
         """Lambda異常検出"""
+        # xpの確認
+        if not hasattr(self, 'xp') or self.xp is None:
+            self._setup_xp()
+        
         lambda_gpu = self.to_gpu(lambda_mag)
         n = len(lambda_gpu)
         anomalies = self.zeros(n)
@@ -525,26 +507,24 @@ class BoundaryDetectorGPU(GPUBackend):
         # 移動平均と標準偏差
         for i in range(window, n - window):
             local = lambda_gpu[i-window:i+window]
-            if self.is_gpu:
-                mean = cp.mean(local)
-                std = cp.std(local)
-                if std > 1e-10:
-                    anomalies[i] = cp.abs(lambda_gpu[i] - mean) / std
-            else:
-                mean = np.mean(local)
-                std = np.std(local)
-                if std > 1e-10:
-                    anomalies[i] = np.abs(lambda_mag[i] - mean) / std
+            mean = self.xp.mean(local)
+            std = self.xp.std(local)
+            if std > 1e-10:
+                anomalies[i] = self.xp.abs(lambda_gpu[i] - mean) / std
         
         return anomalies
     
     def _detect_tension_jumps_gpu(self, rho_t: np.ndarray, window: int) -> NDArray:
         """テンション場ジャンプ検出（CuPy RawKernel版）"""
-        rho_t_gpu = self.to_gpu(rho_t).astype(cp.float32)
+        # xpの確認
+        if not hasattr(self, 'xp') or self.xp is None:
+            self._setup_xp()
+        
+        rho_t_gpu = self.to_gpu(rho_t).astype(self.xp.float32)
         n = len(rho_t_gpu)
         
         if self.is_gpu and self.detect_jumps_kernel is not None:
-            jumps = cp.zeros(n, dtype=cp.float32)
+            jumps = self.xp.zeros(n, dtype=self.xp.float32)
             
             threads = 256
             blocks = (n + threads - 1) // threads
@@ -555,17 +535,14 @@ class BoundaryDetectorGPU(GPUBackend):
                 (rho_t_gpu, jumps, 2.0, window, n)  # threshold=2.0
             )
             
-            cp.cuda.Stream.null.synchronize()
+            self.xp.cuda.Stream.null.synchronize()
             return jumps
         else:
             # フォールバック
             jumps = self.zeros(n)
             for i in range(1, n-1):
                 diff = abs(rho_t_gpu[i] - rho_t_gpu[i-1])
-                if self.is_gpu:
-                    local_mean = cp.mean(cp.abs(rho_t_gpu[max(0,i-window):min(n,i+window)]))
-                else:
-                    local_mean = np.mean(np.abs(rho_t[max(0,i-window):min(n,i+window)]))
+                local_mean = self.xp.mean(self.xp.abs(rho_t_gpu[max(0,i-window):min(n,i+window)]))
                 
                 if local_mean > 1e-10 and diff > 2.0 * local_mean:
                     jumps[i] = diff / local_mean
@@ -574,19 +551,18 @@ class BoundaryDetectorGPU(GPUBackend):
     
     def _detect_phase_breaks_gpu(self, q_lambda: np.ndarray) -> NDArray:
         """位相破れ検出"""
+        # xpの確認
+        if not hasattr(self, 'xp') or self.xp is None:
+            self._setup_xp()
+        
         q_gpu = self.to_gpu(q_lambda)
         n = len(q_gpu)
         breaks = self.zeros(n)
         
         # 位相変化を検出
-        if self.is_gpu:
-            phase_diff = cp.abs(cp.diff(q_gpu))
-            threshold = 0.1
-            breaks[1:] = cp.where(phase_diff > threshold, phase_diff, 0)
-        else:
-            phase_diff = np.abs(np.diff(q_lambda))
-            threshold = 0.1
-            breaks[1:] = np.where(phase_diff > threshold, phase_diff, 0)
+        phase_diff = self.xp.abs(self.xp.diff(q_gpu))
+        threshold = 0.1
+        breaks[1:] = self.xp.where(phase_diff > threshold, phase_diff, 0)
         
         return breaks
     
@@ -602,6 +578,10 @@ class BoundaryDetectorGPU(GPUBackend):
             各種破れ検出結果
         """
         print("\n💥 Detecting topological breaks on GPU...")
+        
+        # xpの確認
+        if not hasattr(self, 'xp') or self.xp is None:
+            self._setup_xp()
         
         with self.memory_manager.temporary_allocation(
             len(structures['rho_T']) * 4 * 5, "topology"
