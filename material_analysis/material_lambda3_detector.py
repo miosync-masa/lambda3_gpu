@@ -32,7 +32,7 @@ except ImportError:
 # Lambda³ GPU imports
 from ..core.gpu_utils import GPUBackend
 from ..structures.lambda_structures_gpu import LambdaStructuresGPU
-from ..structures.md_features import MDFeaturesGPU  # 基本MD特徴抽出
+from ..structures.md_features_gpu import MDFeaturesGPU  # 基本MD特徴抽出（正しいモジュール名）
 from ..material.material_md_features_gpu import MaterialMDFeaturesGPU  # 材料特徴抽出
 from ..detection.anomaly_detection_gpu import AnomalyDetectorGPU
 from ..detection.boundary_detection_gpu import BoundaryDetectorGPU
