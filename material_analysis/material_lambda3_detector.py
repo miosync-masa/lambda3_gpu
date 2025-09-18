@@ -543,10 +543,26 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         }
     
     def _merge_batch_results(self,
-                           batch_results: List[Dict],
-                           original_shape: Tuple,
-                           atom_types: Optional[np.ndarray]) -> MaterialLambda3Result:
-        """バッチ結果の統合（MD版と同じ - データ結合のみ）"""
+                       batch_results: List[Dict],
+                       original_shape: Tuple,
+                       atom_types: Optional[np.ndarray]) -> MaterialLambda3Result:
+        """
+        バッチ結果の統合（Colab対応版 - NaN自動処理付き）
+        
+        Parameters
+        ----------
+        batch_results : List[Dict]
+            各バッチの処理結果
+        original_shape : Tuple
+            元のトラジェクトリの形状 (n_frames, n_atoms, 3)
+        atom_types : Optional[np.ndarray]
+            原子タイプ配列
+        
+        Returns
+        -------
+        MaterialLambda3Result
+            統合された結果（NaN-free保証）
+        """
         print("  Merging data from all batches...")
         
         n_frames, n_atoms, _ = original_shape
@@ -634,11 +650,63 @@ class MaterialLambda3DetectorGPU(GPUBackend):
                         actual_frames = min(len(value), batch_n_frames)
                         merged_material_features[key][offset:offset + actual_frames] = value[:actual_frames]
         
-        # NaNチェック
+        # ===== NaN処理（Colab対応の核心部分） =====
+        print("    Checking and filling NaN values...")
+        
+        # Lambda構造のNaN処理
         for key, arr in merged_lambda_structures.items():
             nan_count = np.isnan(arr).sum()
             if nan_count > 0:
-                print(f"    ⚠️ Warning: {key} has {nan_count} unprocessed frames")
+                print(f"    ⚠️ {key} has {nan_count} unprocessed frames")
+                
+                # 各構造に応じた適切なデフォルト値で埋める
+                if key == 'rho_T' or key == 'structural_coherence':
+                    # テンション密度と構造一貫性は1.0
+                    merged_lambda_structures[key] = np.nan_to_num(arr, nan=1.0)
+                elif key == 'Q_cumulative':
+                    # 累積値は前方補完してから0埋め
+                    mask = np.isnan(arr)
+                    if mask.any() and not mask[0]:  # 最初が有効値なら前方補完
+                        for i in range(1, len(arr)):
+                            if mask[i]:
+                                arr[i] = arr[i-1]
+                    merged_lambda_structures[key] = np.nan_to_num(arr, nan=0.0)
+                elif key == 'sigma_s':
+                    # 構造同期率は0.5（中間値）
+                    merged_lambda_structures[key] = np.nan_to_num(arr, nan=0.5)
+                elif key in ['lambda_F', 'lambda_FF']:
+                    # ベクトル場は0ベクトル
+                    merged_lambda_structures[key] = np.nan_to_num(arr, nan=0.0)
+                elif key in ['lambda_F_mag', 'lambda_FF_mag']:
+                    # 大きさは小さい正の値
+                    merged_lambda_structures[key] = np.nan_to_num(arr, nan=1e-10)
+                else:
+                    # その他は0
+                    merged_lambda_structures[key] = np.nan_to_num(arr, nan=0.0)
+                
+                print(f"      ✅ Filled with appropriate default values")
+        
+        # MD特徴のNaN処理
+        for key, arr in merged_md_features.items():
+            if isinstance(arr, np.ndarray) and arr.dtype != object:  # object型は除外
+                nan_count = np.isnan(arr).sum() if arr.dtype in [np.float32, np.float64] else 0
+                if nan_count > 0:
+                    # MD特徴は基本的に0で埋める
+                    if key in ['radius_of_gyration', 'rmsd']:
+                        # これらは小さい正の値
+                        merged_md_features[key] = np.nan_to_num(arr, nan=1e-6)
+                    else:
+                        merged_md_features[key] = np.nan_to_num(arr, nan=0.0)
+                    print(f"      ✅ Filled {nan_count} NaN in {key}")
+        
+        # 材料特徴のNaN処理
+        if merged_material_features is not None:
+            for key, arr in merged_material_features.items():
+                if isinstance(arr, np.ndarray) and arr.dtype != object:
+                    nan_count = np.isnan(arr).sum() if arr.dtype in [np.float32, np.float64] else 0
+                    if nan_count > 0:
+                        merged_material_features[key] = np.nan_to_num(arr, nan=0.0)
+                        print(f"      ✅ Filled {nan_count} NaN in material feature {key}")
         
         # ウィンドウステップの計算
         window_steps = 100  # デフォルト値
@@ -652,10 +720,11 @@ class MaterialLambda3DetectorGPU(GPUBackend):
             'computation_mode': 'batched',
             'n_batches': len(batch_results),
             'device_name': str(self.device),
-            'batch_sizes': [b['n_frames'] for b in batch_results]
+            'batch_sizes': [b['n_frames'] for b in batch_results],
+            'nan_handling': 'auto-filled'  # NaN処理済みフラグ
         }
         
-        print(f"  ✅ Merged {n_frames} frames successfully")
+        print(f"  ✅ Merged {n_frames} frames successfully (NaN-free guaranteed!)")
         
         # マージ結果を返す（解析は未完了）
         return MaterialLambda3Result(
@@ -673,7 +742,7 @@ class MaterialLambda3DetectorGPU(GPUBackend):
             computation_time=0.0,
             gpu_info=gpu_info
         )
-    
+         
     def _complete_analysis(self, 
                           merged_result: MaterialLambda3Result,
                           atom_types: Optional[np.ndarray]) -> MaterialLambda3Result:
