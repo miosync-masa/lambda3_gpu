@@ -933,19 +933,6 @@ def get_material_parameters(material_type: str) -> Dict:
     
     return materials.get(material_type, materials['SUJ2'])
 
-def create_spatial_clusters(positions: np.ndarray, n_clusters: int) -> Dict[int, List[int]]:
-    """空間分割によるクラスター作成"""
-    from sklearn.cluster import KMeans
-    
-    kmeans = KMeans(n_clusters=n_clusters, random_state=42)
-    labels = kmeans.fit_predict(positions)
-    
-    cluster_atoms = {}
-    for i in range(n_clusters):
-        cluster_atoms[i] = np.where(labels == i)[0].tolist()
-    
-    return cluster_atoms
-
 def compute_strain_field_from_trajectory(
     trajectory: np.ndarray,
     material_events: List[Tuple[int, int, str]],
