@@ -9,9 +9,11 @@ Material Lambda³ Detector GPU - Refactored Pipeline Edition
 - 前処理（バッチごと）と後処理（マージ後）の明確な分離
 - MaterialAnalyticsGPUの欠陥解析を前処理に移動
 - メモリ効率的なバッチ処理
+- material_featuresとmd_featuresの正しい分離処理
 
-Version: 2.1.0
+Version: 2.1.1
 Author: 環ちゃん
+Bug Fix: material_features/md_features separation (2024)
 """
 
 import numpy as np
@@ -332,7 +334,7 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         # Step 1: 前処理（バッチごと）
         batch_results = self._process_batches(
             trajectory, backbone_indices, atom_types,
-            batches, cluster_definition_path
+            batches, cluster_definition_path, cluster_atoms
         )
         
         if not batch_results:
@@ -418,6 +420,7 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         """
         lambda_structures = merged_result.lambda_structures
         md_features = merged_result.md_features
+        material_features = merged_result.material_features  # 正しく取得！
         n_frames = merged_result.n_frames
         n_atoms = merged_result.n_atoms
         
@@ -444,7 +447,7 @@ class MaterialLambda3DetectorGPU(GPUBackend):
             topological_breaks, md_features, self.config
         )
         
-        # 材料特有の解析（MD特徴ベース）
+        # 材料特有の解析（material_features優先、なければmd_features使用）
         defect_analysis = None
         structural_coherence = None
         failure_prediction = None
@@ -453,6 +456,9 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         if self.config.use_material_analytics and self.material_analytics:
             print("  - Material-specific analysis...")
             
+            # material_featuresがあれば優先的に使用
+            features_for_material = material_features if material_features else md_features
+            
             # 欠陥情報の取得
             if 'defect_charge' in md_features:
                 defect_analysis = {
@@ -460,20 +466,20 @@ class MaterialLambda3DetectorGPU(GPUBackend):
                     'cumulative_charge': md_features.get('cumulative_charge')
                 }
             
-            # 構造一貫性
-            if 'coordination' in md_features:
+            # 構造一貫性（材料特徴を使用）
+            if 'coordination' in features_for_material:
                 structural_coherence = self.material_analytics.compute_structural_coherence(
-                    md_features['coordination'],
-                    md_features.get('strain', np.zeros((n_frames, 1))),
+                    features_for_material['coordination'],  # material_features優先
+                    features_for_material.get('strain', np.zeros((n_frames, 1))),
                     window=primary_window // 2
                 )
             
-            # 破壊予測
-            if 'strain' in md_features:
+            # 破壊予測（材料特徴を使用）
+            if 'strain' in features_for_material:
                 failure_prediction = self.material_analytics.predict_failure(
-                    md_features['strain'],
-                    damage_history=md_features.get('damage'),
-                    defect_charge=md_features.get('cumulative_charge')
+                    features_for_material['strain'],  # material_features優先
+                    damage_history=features_for_material.get('damage'),
+                    defect_charge=md_features.get('cumulative_charge')  # defect_chargeはmd_featuresから
                 )
                 failure_prediction = {
                     'failure_probability': failure_prediction.failure_probability,
@@ -621,7 +627,7 @@ class MaterialLambda3DetectorGPU(GPUBackend):
                            original_shape: Tuple,
                            atom_types: Optional[np.ndarray]
                            ) -> MaterialLambda3Result:
-        """バッチ結果の統合"""
+        """バッチ結果の統合（修正版）"""
         print("  Merging batch results...")
         n_frames, n_atoms, _ = original_shape
         
@@ -631,6 +637,7 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         # 結果配列の初期化
         merged_lambda = {}
         merged_features = {}
+        merged_material_features = {}  # ← 独立した辞書を追加！
         
         # 最初のバッチから構造を取得
         first_batch = batch_results[0]
@@ -648,6 +655,14 @@ class MaterialLambda3DetectorGPU(GPUBackend):
             if isinstance(sample, (np.ndarray, self.xp.ndarray)):
                 shape = (n_frames,) + sample.shape[1:] if sample.ndim > 1 else (n_frames,)
                 merged_features[key] = np.full(shape, np.nan, dtype=sample.dtype)
+        
+        # Material特徴の初期化（追加！）
+        if 'material_features' in first_batch and first_batch['material_features']:
+            for key in first_batch['material_features'].keys():
+                sample = first_batch['material_features'][key]
+                if isinstance(sample, (np.ndarray, self.xp.ndarray)):
+                    shape = (n_frames,) + sample.shape[1:] if sample.ndim > 1 else (n_frames,)
+                    merged_material_features[key] = np.full(shape, np.nan, dtype=sample.dtype)
         
         # データのマージ
         for batch in batch_results:
@@ -668,6 +683,14 @@ class MaterialLambda3DetectorGPU(GPUBackend):
                     value = self.to_cpu(value) if hasattr(value, 'get') else value
                     actual_frames = min(len(value), end_idx - offset)
                     merged_features[key][offset:offset + actual_frames] = value[:actual_frames]
+            
+            # Material特徴のマージ（追加！）
+            if 'material_features' in batch and batch['material_features']:
+                for key, value in batch['material_features'].items():
+                    if key in merged_material_features:
+                        value = self.to_cpu(value) if hasattr(value, 'get') else value
+                        actual_frames = min(len(value), end_idx - offset)
+                        merged_material_features[key][offset:offset + actual_frames] = value[:actual_frames]
         
         # ウィンドウサイズの平均
         window_steps = int(np.mean([b.get('window', 100) for b in batch_results]))
@@ -677,7 +700,7 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         return MaterialLambda3Result(
             lambda_structures=merged_lambda,
             md_features=merged_features,
-            material_features=merged_features,
+            material_features=merged_material_features if merged_material_features else None,  # ← 修正！
             structural_boundaries={},
             topological_breaks={},
             anomaly_scores={},
@@ -701,7 +724,7 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         partial_result = MaterialLambda3Result(
             lambda_structures=self._to_cpu_dict(lambda_structures),
             md_features=self._to_cpu_dict(md_features),
-            material_features=self._to_cpu_dict(material_features) if material_features else md_features,
+            material_features=self._to_cpu_dict(material_features) if material_features else None,  # 修正！
             structural_boundaries={},
             topological_breaks={},
             anomaly_scores={},
