@@ -517,47 +517,31 @@ class MaterialLambda3DetectorGPU(GPUBackend):
             print("  ❌ All batches failed!")
             return self._create_empty_result(n_frames, trajectory.shape[1])
         
-        # Step 2: 結果をマージ
+        # Step 2: 結果をマージ（MaterialLambda3Resultを返す）
         print("\n[Step 2] Merging batch results...")
         merged_result = self._merge_batch_results(batch_results, trajectory.shape, atom_types)
         
-        # ===== 重要：型チェックと変換 =====
+        # Step 3: 完了処理
         print("\n[Step 3] Completing analysis on merged data...")
         
-        # merged_resultがMaterialLambda3Resultの場合、辞書形式に変換
-        if isinstance(merged_result, MaterialLambda3Result):
-            print("  Converting MaterialLambda3Result to dict format...")
-            merged_dict = {
-                'lambda_structures': merged_result.lambda_structures,
-                'md_features': merged_result.md_features,
-                'material_features': merged_result.material_features,
-                'n_frames': merged_result.n_frames,
-                'n_atoms': merged_result.n_atoms,
-                'window_steps': merged_result.window_steps
-            }
-            
-            # cluster_atoms情報を追加
-            if cluster_atoms is not None:
-                merged_dict['cluster_atoms'] = cluster_atoms
-            
-            # _complete_analysisに渡す
-            try:
-                final_result = self._complete_analysis(merged_dict, atom_types)
-            except AttributeError as e:
-                if "'NoneType'" in str(e):
-                    print(f"  ⚠️ NoneType error in _complete_analysis: {e}")
-                    # エラー時はmerged_resultをそのまま返す
-                    print("  Using merged result without additional analysis")
-                    final_result = merged_result
-                    # 最低限の境界情報を追加
-                    final_result.structural_boundaries = {'boundary_locations': np.array([])}
-                    final_result.topological_breaks = {'break_points': np.array([])}
-                    final_result.anomaly_scores = {'combined': np.zeros(n_frames)}
-                else:
-                    raise
-        else:
-            # すでに辞書形式の場合
+        # ===== 重要：MaterialLambda3Resultオブジェクトをそのまま渡す =====
+        # merged_resultはすでにMaterialLambda3Resultなので、変換不要！
+        
+        try:
             final_result = self._complete_analysis(merged_result, atom_types)
+        except AttributeError as e:
+            if "'NoneType'" in str(e):
+                print(f"  ⚠️ NoneType error in _complete_analysis: {e}")
+                print("  Using merged result without additional analysis")
+                # エラー時は最低限の解析で返す
+                merged_result.structural_boundaries = {'boundary_locations': np.array([])}
+                merged_result.topological_breaks = {'break_points': np.array([])}
+                merged_result.anomaly_scores = {'combined': np.zeros(n_frames)}
+                merged_result.critical_events = []
+                merged_result.material_events = []
+                return merged_result
+            else:
+                raise
         
         return final_result
     
