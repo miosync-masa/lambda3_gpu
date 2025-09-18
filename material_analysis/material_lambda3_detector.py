@@ -32,7 +32,8 @@ except ImportError:
 # Lambda³ GPU imports
 from ..core.gpu_utils import GPUBackend
 from ..structures.lambda_structures_gpu import LambdaStructuresGPU
-from ..material.material_md_features_gpu import MaterialMDFeaturesGPU
+from ..structures.md_features import MDFeaturesGPU  # 基本MD特徴抽出
+from ..material.material_md_features_gpu import MaterialMDFeaturesGPU  # 材料特徴抽出
 from ..detection.anomaly_detection_gpu import AnomalyDetectorGPU
 from ..detection.boundary_detection_gpu import BoundaryDetectorGPU
 from ..detection.topology_breaks_gpu import TopologyBreaksDetectorGPU
@@ -140,7 +141,13 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         
         # コンポーネント構成
         self.structure_computer = LambdaStructuresGPU(force_cpu_flag)
-        self.feature_extractor = MaterialMDFeaturesGPU(force_cpu_flag)
+        
+        # === 重要: 2つの独立した特徴抽出器 ===
+        # Lambda構造計算用（全原子）
+        self.feature_extractor = MDFeaturesGPU(force_cpu_flag)
+        # 材料解析用（欠陥領域）
+        self.material_feature_extractor = MaterialMDFeaturesGPU(force_cpu_flag)
+        
         self.anomaly_detector = AnomalyDetectorGPU(force_cpu_flag)
         self.boundary_detector = BoundaryDetectorGPU(force_cpu_flag)
         self.topology_detector = TopologyBreaksDetectorGPU(force_cpu_flag)
@@ -163,9 +170,13 @@ class MaterialLambda3DetectorGPU(GPUBackend):
     def _share_resources(self):
         """メモリマネージャとデバイスをコンポーネント間で共有"""
         components = [
-            self.structure_computer, self.feature_extractor,
-            self.anomaly_detector, self.boundary_detector,
-            self.topology_detector, self.extended_detector,
+            self.structure_computer, 
+            self.feature_extractor,  # 基本MD特徴抽出器
+            self.material_feature_extractor,  # 材料特徴抽出器
+            self.anomaly_detector, 
+            self.boundary_detector,
+            self.topology_detector, 
+            self.extended_detector,
             self.phase_space_analyzer
         ]
         
@@ -256,26 +267,37 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         # === 前処理 ===
         print("\n[PREPROCESSING]")
         
-        # 1. MD特徴抽出
-        print("  1. Extracting MD features...")
+        # 1. 基本MD特徴抽出（全原子 - Lambda構造用）
+        print("  1. Extracting MD features (full atoms)...")
         md_features = self.feature_extractor.extract_md_features(
-            trajectory, backbone_indices,
+            trajectory, 
+            None,  # 全原子で計算
             cluster_definition_path=cluster_definition_path,
             atom_types=atom_types
         )
         
-        # 2. 欠陥解析（トラジェクトリが必要）
-        if self.config.use_material_analytics and self.material_analytics:
-            print("  2. Computing crystal defect charges...")
+        # 2. 材料特有の特徴抽出（欠陥領域 - 材料解析用）
+        material_features = None
+        if self.config.use_material_analytics and backbone_indices is not None:
+            print("  2. Extracting material features (defect region)...")
+            material_features = self.material_feature_extractor.extract_md_features(
+                trajectory, 
+                backbone_indices,  # 欠陥領域のみ
+                cluster_definition_path=cluster_definition_path,
+                atom_types=atom_types
+            )
+            
+            # 欠陥解析結果をMD特徴に追加（参照用）
+            print("  3. Computing crystal defect charges...")
             self._add_defect_analysis_to_features(
                 trajectory, md_features, cluster_atoms, n_atoms
             )
         
-        # 3. Lambda構造計算
+        # 4. Lambda構造計算（基本MD特徴を使用）
         initial_window = self._compute_initial_window(n_frames)
-        print("  3. Computing Lambda³ structures...")
+        print("  4. Computing Lambda³ structures...")
         lambda_structures = self.structure_computer.compute_lambda_structures(
-            trajectory, md_features, initial_window
+            trajectory, md_features, initial_window  # md_features（全原子）を使用
         )
         
         # === 後処理 ===
@@ -283,7 +305,7 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         
         # 解析結果を統合
         result = self._perform_postprocessing(
-            lambda_structures, md_features, None,
+            lambda_structures, md_features, material_features,
             n_frames, n_atoms, initial_window
         )
         
@@ -335,29 +357,40 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         単一バッチの前処理
         
         実行内容：
-        1. MD特徴抽出（MaterialMDFeaturesGPU）
-        2. 欠陥解析（MaterialAnalyticsGPU - トラジェクトリ必要）
-        3. Lambda構造計算
+        1. 基本MD特徴抽出（MDFeaturesGPU - 全原子）
+        2. 材料特徴抽出（MaterialMDFeaturesGPU - 欠陥領域）
+        3. 欠陥解析（MaterialAnalyticsGPU - トラジェクトリ必要）
+        4. Lambda構造計算
         """
         n_atoms = batch_trajectory.shape[1]
         
-        # 1. MD特徴抽出
+        # 1. 基本MD特徴抽出（全原子 - Lambda構造用）
         md_features = self.feature_extractor.extract_md_features(
-            batch_trajectory, backbone_indices,
+            batch_trajectory, 
+            None,  # 全原子で計算
             cluster_definition_path=cluster_definition_path,
             atom_types=atom_types
         )
         
-        # 2. 欠陥解析（前処理で実行）
-        if self.config.use_material_analytics and self.material_analytics:
+        # 2. 材料特有の特徴抽出（欠陥領域 - 材料解析用）
+        material_features = None
+        if self.config.use_material_analytics and backbone_indices is not None:
+            material_features = self.material_feature_extractor.extract_md_features(
+                batch_trajectory, 
+                backbone_indices,  # 欠陥領域のみ
+                cluster_definition_path=cluster_definition_path,
+                atom_types=atom_types
+            )
+            
+            # 3. 欠陥解析（前処理で実行）
             self._add_defect_analysis_to_features(
                 batch_trajectory, md_features, None, n_atoms
             )
         
-        # 3. Lambda構造計算
+        # 4. Lambda構造計算（基本MD特徴を使用）
         window = self._compute_initial_window(len(batch_trajectory))
         lambda_structures = self.structure_computer.compute_lambda_structures(
-            batch_trajectory, md_features, window
+            batch_trajectory, md_features, window  # md_features（全原子）を使用
         )
         
         return {
@@ -365,7 +398,7 @@ class MaterialLambda3DetectorGPU(GPUBackend):
             'n_frames': len(batch_trajectory),
             'lambda_structures': lambda_structures,
             'md_features': md_features,
-            'material_features': md_features,  # エイリアス
+            'material_features': material_features,  # 別途保持
             'window': window
         }
     
