@@ -20,11 +20,25 @@ __email__ = 'tamaki@lambda3.ai'
 # ========================================
 # Main Pipeline
 # ========================================
-from .material_full_analysis import (
-    run_material_analysis_pipeline,
-    get_material_parameters,
-    create_spatial_clusters
-)
+# Circular import fix - commented out
+# from .material_full_analysis import (
+#     run_material_analysis_pipeline,
+#     get_material_parameters,
+#     create_spatial_clusters
+# )
+
+# 遅延インポート用の関数を定義
+def run_material_analysis_pipeline(*args, **kwargs):
+    from .material_full_analysis import run_material_analysis_pipeline as _run
+    return _run(*args, **kwargs)
+
+def get_material_parameters(*args, **kwargs):
+    from .material_full_analysis import get_material_parameters as _get
+    return _get(*args, **kwargs)
+
+def create_spatial_clusters(*args, **kwargs):
+    from .material_full_analysis import create_spatial_clusters as _create
+    return _create(*args, **kwargs)
 
 # ========================================
 # MD Features for Materials (v3.0 新機能)
