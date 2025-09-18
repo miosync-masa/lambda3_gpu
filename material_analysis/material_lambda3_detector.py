@@ -271,9 +271,7 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         print("  1. Extracting MD features (full atoms)...")
         md_features = self.feature_extractor.extract_md_features(
             trajectory, 
-            None,  # 全原子で計算
-            cluster_definition_path=cluster_definition_path,
-            atom_types=atom_types
+            None  # 全原子で計算、backbone_indicesはNone
         )
         
         # 2. 材料特有の特徴抽出（欠陥領域 - 材料解析用）
@@ -367,9 +365,7 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         # 1. 基本MD特徴抽出（全原子 - Lambda構造用）
         md_features = self.feature_extractor.extract_md_features(
             batch_trajectory, 
-            None,  # 全原子で計算
-            cluster_definition_path=cluster_definition_path,
-            atom_types=atom_types
+            None  # 全原子で計算、backbone_indicesはNone
         )
         
         # 2. 材料特有の特徴抽出（欠陥領域 - 材料解析用）
