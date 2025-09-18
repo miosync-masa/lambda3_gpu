@@ -118,9 +118,6 @@ class MaterialLambda3Result:
 class MaterialLambda3DetectorGPU(GPUBackend):
     """
     GPU版Lambda³材料検出器（MD版の設計を踏襲）
-    
-    MD版と同じ3段階バッチ処理を実装し、
-    材料特有の解析はMaterialAnalyticsGPUに委譲
     """
     
     def __init__(self, config: MaterialConfig = None, device: str = 'auto'):
@@ -132,7 +129,7 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         device : str, default='auto'
             'auto', 'gpu', 'cpu'のいずれか
         """
-        # GPUBackendの初期化（MD版と同じ）
+        # GPUBackendの初期化
         if device == 'cpu':
             super().__init__(device='cpu', force_cpu=True)
         else:
@@ -144,7 +141,7 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         # force_cpuフラグを決定
         force_cpu_flag = not self.is_gpu
         
-        # MD版と同じコンポーネント構成（材料版に最適化）
+        # コンポーネント構成
         self.structure_computer = LambdaStructuresGPU(force_cpu_flag)
         self.feature_extractor = MaterialMDFeaturesGPU(force_cpu_flag)  # 材料版MD特徴抽出
         self.anomaly_detector = AnomalyDetectorGPU(force_cpu_flag)
@@ -153,20 +150,16 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         self.extended_detector = ExtendedDetectorGPU(force_cpu_flag)
         self.phase_space_analyzer = PhaseSpaceAnalyzerGPU(force_cpu_flag)
         
-        # 材料特有のコンポーネント
+        # 材料特有のコンポーネント（MaterialAnalyticsGPUのみ！）
         if self.config.use_material_analytics:
             self.material_analytics = MaterialAnalyticsGPU(
                 material_type=self.config.material_type,
                 force_cpu=force_cpu_flag
             )
-            # ===== 修正: material_feature_extractorを適切に設定 =====
-            # すでにself.feature_extractorがMaterialMDFeaturesGPUなので、それを使う
-            self.material_feature_extractor = self.feature_extractor
         else:
             self.material_analytics = None
-            self.material_feature_extractor = None
         
-        # メモリマネージャとデバイスを共有（MD版と同じ）
+        # メモリマネージャとデバイスを共有
         for component in [self.structure_computer, self.feature_extractor,
                          self.anomaly_detector, self.boundary_detector,
                          self.topology_detector, self.extended_detector,
@@ -176,13 +169,11 @@ class MaterialLambda3DetectorGPU(GPUBackend):
             if hasattr(component, 'device'):
                 component.device = self.device
         
-        # material_analyticsのメモリマネージャー共有
         if self.material_analytics:
             self.material_analytics.memory_manager = self.memory_manager
             self.material_analytics.device = self.device
-            # material_feature_extractorはself.feature_extractorと同じなので、すでに共有済み
         
-        self._print_initialization_info()    
+        self._print_initialization_info()
 
     def analyze(self,
             trajectory: np.ndarray,
@@ -264,84 +255,68 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         self._print_summary(result)
         
         return result
-
+  
     def _analyze_single_trajectory(self,
                              trajectory: np.ndarray,
                              backbone_indices: Optional[np.ndarray],
                              atom_types: Optional[np.ndarray],
                              cluster_definition_path: Optional[str] = None,
-                             cluster_atoms: Optional[Dict[int, List[int]]] = None) -> MaterialLambda3Result:  # ← 追加
-        """単一軌道の解析（MD版と同じ構造）"""
+                             cluster_atoms: Optional[Dict[int, List[int]]] = None) -> MaterialLambda3Result:
+        """単一軌道の解析"""
         n_frames, n_atoms, _ = trajectory.shape
 
+        # cluster_atomsから欠陥領域のインデックスを抽出
         if cluster_atoms is not None:
-            # Cluster 0以外を欠陥として扱う
             defect_indices = []
             for cid, atoms in cluster_atoms.items():
                 if str(cid) != "0":  # Cluster 0（健全領域）以外
                     defect_indices.extend(atoms)
-            backbone_indices = np.array(sorted(defect_indices))
-            print(f"   Using {len(backbone_indices)} defect atoms from clusters")
+            if defect_indices:  # 欠陥が見つかった場合のみ更新
+                backbone_indices = np.array(sorted(defect_indices))
+                print(f"   Using {len(backbone_indices)} defect atoms from clusters")
 
-        # 1. MD特徴抽出（材料版MD特徴抽出を使用）
+        # 1. MD特徴抽出（材料版MD特徴抽出、1回だけ！）
         print("\n1. Extracting MD features on GPU...")
         md_features = self.feature_extractor.extract_md_features(
-            trajectory, backbone_indices,
+            trajectory, 
+            backbone_indices,  # ← ちゃんと渡す！
             cluster_definition_path=cluster_definition_path,
             atom_types=atom_types
         )
         
-        # 1.5. 材料特徴抽出（材料特有）
-        material_features = None
-        if self.config.use_material_analytics and self.material_feature_extractor:
-            print("\n1.5. Extracting material-specific features...")
-            
-            # クラスター定義が渡されていればそれを使う、なければ簡易定義
-            if cluster_atoms is not None:
-                clusters_for_features = cluster_atoms
-                print(f"    Using provided clusters: {len(clusters_for_features)} clusters")
-            else:
-                # 簡易クラスター定義（Two-Stageで詳細化）
-                clusters_for_features = {0: list(range(n_atoms))}
-                print("    Using simple cluster definition (all atoms)")
-            
-            material_features = self.material_feature_extractor.extract_md_features(
-                trajectory=self.to_cpu(trajectory) if self.is_gpu else trajectory,
-                backbone_indices=backbone_indices,  # 欠陥領域のインデックス
-                cluster_definition_path=cluster_definition_path,
-                atom_types=self.to_cpu(atom_types) if atom_types is not None and self.is_gpu else atom_types
-            ) 
+        # material_featuresはmd_featuresと同じ（エイリアスとして保持）
+        material_features = md_features
         
-        # 2. 初期ウィンドウサイズ（MD版と同じ）
+        # 2. 初期ウィンドウサイズ
         initial_window = self._compute_initial_window(n_frames)
         
-        # 3. Lambda構造計算（MD版と同じ）
+        # 3. Lambda構造計算
         print("\n2. Computing Lambda³ structures (first pass)...")
         lambda_structures = self.structure_computer.compute_lambda_structures(
             trajectory, md_features, initial_window
         )
         
-        # 4. 適応的ウィンドウサイズ決定（MD版と同じ）
+        # 4. 適応的ウィンドウサイズ決定
         adaptive_windows = self._determine_adaptive_windows(
             lambda_structures, initial_window
         )
         primary_window = adaptive_windows.get('primary', initial_window)
         
-        # 5. 構造境界検出（MD版と同じ）
+        # 5. 構造境界検出
         print("\n3. Detecting structural boundaries...")
         boundary_window = adaptive_windows.get('boundary', primary_window // 3)
         structural_boundaries = self.boundary_detector.detect_structural_boundaries(
             lambda_structures, boundary_window
         )
         
-        # 6. トポロジカル破れ検出（MD版と同じ）
+        # 6. トポロジカル破れ検出
         print("\n4. Detecting topological breaks...")
         fast_window = adaptive_windows.get('fast', primary_window // 2)
         topological_breaks = self.topology_detector.detect_topological_breaks(
             lambda_structures, fast_window
         )
         
-        # 7. マルチスケール異常検出（MD版と同じ）
+        # 7. マルチスケール異常検出
         print("\n5. Computing multi-scale anomaly scores...")
         anomaly_scores = self.anomaly_detector.compute_multiscale_anomalies(
             lambda_structures,
@@ -351,7 +326,7 @@ class MaterialLambda3DetectorGPU(GPUBackend):
             self.config
         )
         
-        # 7.5. 材料特有の解析（材料追加）
+        # 7.5. 材料特有の解析（MaterialAnalyticsGPU使用）
         defect_analysis = None
         structural_coherence = None
         failure_prediction = None
@@ -361,31 +336,32 @@ class MaterialLambda3DetectorGPU(GPUBackend):
             print("\n5.5. Performing material-specific analysis...")
             
             # 欠陥解析
-            if atom_types is not None:
-                trajectory_cpu = self.to_cpu(trajectory) if self.is_gpu else trajectory
-                defect_result = self.material_analytics.compute_crystal_defect_charge(
-                    trajectory_cpu,
-                    {0: list(range(n_atoms))},  # 簡易クラスター
-                    cutoff=3.5
-                )
-                defect_analysis = {
-                    'defect_charge': defect_result.defect_charge,
-                    'cumulative_charge': defect_result.cumulative_charge
-                }
+            trajectory_cpu = self.to_cpu(trajectory) if self.is_gpu else trajectory
+            simple_clusters = cluster_atoms if cluster_atoms else {0: list(range(n_atoms))}
             
-            # 構造一貫性
-            if material_features and 'coordination' in material_features:
+            defect_result = self.material_analytics.compute_crystal_defect_charge(
+                trajectory_cpu,
+                simple_clusters,
+                cutoff=3.5
+            )
+            defect_analysis = {
+                'defect_charge': defect_result.defect_charge,
+                'cumulative_charge': defect_result.cumulative_charge
+            }
+            
+            # 構造一貫性（MD特徴から）
+            if 'coordination' in md_features:
                 structural_coherence = self.material_analytics.compute_structural_coherence(
-                    material_features['coordination'],
-                    material_features.get('strain', np.zeros((n_frames, 1))),
+                    md_features['coordination'],
+                    md_features.get('strain', np.zeros((n_frames, 1))),
                     window=primary_window // 2
                 )
             
-            # 破壊予測
-            if material_features and 'strain' in material_features:
+            # 破壊予測（MD特徴から）
+            if 'strain' in md_features:
                 failure_prediction = self.material_analytics.predict_failure(
-                    material_features['strain'],
-                    damage_history=material_features.get('damage'),
+                    md_features['strain'],
+                    damage_history=md_features.get('damage'),
                     defect_charge=defect_analysis['cumulative_charge'] if defect_analysis else None
                 )
                 failure_prediction = {
@@ -394,14 +370,14 @@ class MaterialLambda3DetectorGPU(GPUBackend):
                     'failure_mode': failure_prediction.failure_mode
                 }
         
-        # 8. 構造パターン検出（MD版と同じ）
+        # 8. 構造パターン検出
         print("\n6. Detecting structural patterns...")
         slow_window = adaptive_windows.get('slow', primary_window * 2)
         detected_structures = self._detect_structural_patterns(
             lambda_structures, structural_boundaries, slow_window
         )
         
-        # 9. 位相空間解析（MD版と同じ、オプション）
+        # 9. 位相空間解析（オプション）
         phase_space_analysis = None
         if self.config.use_phase_space:
             print("\n7. Performing phase space analysis...")
@@ -412,7 +388,7 @@ class MaterialLambda3DetectorGPU(GPUBackend):
             except Exception as e:
                 print(f"Phase space analysis failed: {e}")
         
-        # 臨界イベントの検出（MD版と同じ）
+        # 臨界イベントの検出
         critical_events = self._detect_critical_events(anomaly_scores)
         
         # 材料イベントの分類
@@ -425,7 +401,7 @@ class MaterialLambda3DetectorGPU(GPUBackend):
                     defect_charge=defect_analysis['defect_charge'] if defect_analysis else None
                 )
         
-        # GPU情報を収集（MD版と同じ）
+        # GPU情報を収集
         gpu_info = self._get_gpu_info()
         
         # 結果を構築
@@ -434,7 +410,7 @@ class MaterialLambda3DetectorGPU(GPUBackend):
             structural_boundaries=structural_boundaries,
             topological_breaks=self._to_cpu_dict(topological_breaks),
             md_features=self._to_cpu_dict(md_features),
-            material_features=self._to_cpu_dict(material_features) if material_features else None,
+            material_features=self._to_cpu_dict(material_features),
             anomaly_scores=self._to_cpu_dict(anomaly_scores),
             detected_structures=detected_structures,
             phase_space_analysis=phase_space_analysis,
