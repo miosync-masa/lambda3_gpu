@@ -305,12 +305,12 @@ class MaterialLambda3DetectorGPU(GPUBackend):
                 clusters_for_features = {0: list(range(n_atoms))}
                 print("    Using simple cluster definition (all atoms)")
             
-            material_features = self.material_feature_extractor.extract_material_features(
-                self.to_cpu(trajectory) if self.is_gpu else trajectory,
-                clusters_for_features,  # ← 修正
-                self.to_cpu(atom_types) if atom_types is not None and self.is_gpu else atom_types,
-                self.config
-        )
+            material_features = self.material_feature_extractor.extract_md_features(
+                trajectory=self.to_cpu(trajectory) if self.is_gpu else trajectory,
+                backbone_indices=backbone_indices,  # 欠陥領域のインデックス
+                cluster_definition_path=cluster_definition_path,
+                atom_types=self.to_cpu(atom_types) if atom_types is not None and self.is_gpu else atom_types
+            ) 
         
         # 2. 初期ウィンドウサイズ（MD版と同じ）
         initial_window = self._compute_initial_window(n_frames)
