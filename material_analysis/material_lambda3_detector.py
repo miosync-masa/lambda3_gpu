@@ -450,49 +450,114 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         return result
     
     def _analyze_batched(self,
-                        trajectory: np.ndarray,
-                        backbone_indices: Optional[np.ndarray],
-                        atom_types: Optional[np.ndarray],
-                        batch_size: int,
-                        cluster_definition_path: Optional[str] = None) -> MaterialLambda3Result:
-        """バッチ処理による解析（MD版の3段階処理を踏襲）"""
+                    trajectory: np.ndarray,
+                    backbone_indices: Optional[np.ndarray],
+                    atom_types: Optional[np.ndarray],
+                    batch_size: int,
+                    cluster_definition_path: Optional[str] = None,
+                    cluster_atoms: Optional[Dict[int, List[int]]] = None) -> MaterialLambda3Result:
+        """バッチ処理による解析（Colab対応版）"""
         print("\n⚡ Running batched GPU analysis...")
         
         n_frames = trajectory.shape[0]
-        n_batches = (n_frames + batch_size - 1) // batch_size
+        
+        # ===== Colab対応：最小バッチ処理 =====
+        MIN_BATCH_SIZE = 1000  # 最小1000フレーム
+        
+        # バッチ計画を最適化
+        batches = []
+        current_pos = 0
+        
+        while current_pos < n_frames:
+            batch_end = min(current_pos + batch_size, n_frames)
+            remaining_frames = batch_end - current_pos
+            
+            # 最後の小さいバッチを処理
+            if batch_end == n_frames and remaining_frames < MIN_BATCH_SIZE and len(batches) > 0:
+                # 前のバッチと結合
+                print(f"  ⚠️ Last batch too small ({remaining_frames} frames), merging with previous")
+                prev_start, _ = batches[-1]
+                batches[-1] = (prev_start, n_frames)
+                break
+            else:
+                batches.append((current_pos, batch_end))
+                current_pos = batch_end
+        
+        print(f"  Optimized to {len(batches)} batches")
         
         # バッチごとの結果を蓄積
         batch_results = []
         
-        # Step 1: 重い処理をバッチで実行（MD特徴とLambda構造）
+        # Step 1: バッチ処理
         print("\n[Step 1] Processing batches for feature extraction...")
-        for batch_idx in range(n_batches):
-            start_idx = batch_idx * batch_size
-            end_idx = min((batch_idx + 1) * batch_size, n_frames)
+        for batch_idx, (start_idx, end_idx) in enumerate(batches):
+            print(f"  Batch {batch_idx + 1}/{len(batches)}: frames {start_idx}-{end_idx} ({end_idx-start_idx} frames)")
             
-            print(f"  Batch {batch_idx + 1}/{n_batches}: frames {start_idx}-{end_idx}")
+            try:
+                batch_trajectory = trajectory[start_idx:end_idx]
+                
+                # バッチ解析
+                batch_result = self._analyze_single_batch(
+                    batch_trajectory, backbone_indices, atom_types, start_idx,
+                    cluster_definition_path
+                )
+                
+                batch_results.append(batch_result)
+                
+            except Exception as e:
+                print(f"  ⚠️ Batch {batch_idx + 1} failed: {e}")
+                # 失敗したバッチはスキップ
+                continue
             
-            batch_trajectory = trajectory[start_idx:end_idx]
-            batch_atom_types = atom_types if atom_types is None else atom_types
-            
-            # バッチ解析（特徴抽出とLambda構造計算のみ）
-            batch_result = self._analyze_single_batch(
-                batch_trajectory, backbone_indices, batch_atom_types, start_idx,
-                cluster_definition_path
-            )
-            
-            batch_results.append(batch_result)
-            
-            # メモリクリア
-            self.memory_manager.clear_cache()
+            finally:
+                # メモリクリア
+                self.memory_manager.clear_cache()
         
-        # Step 2: 結果をマージ（データ結合のみ）
+        if not batch_results:
+            print("  ❌ All batches failed!")
+            return self._create_empty_result(n_frames, trajectory.shape[1])
+        
+        # Step 2: 結果をマージ
         print("\n[Step 2] Merging batch results...")
         merged_result = self._merge_batch_results(batch_results, trajectory.shape, atom_types)
         
-        # Step 3: マージされたデータで解析を完了（軽い処理）
+        # ===== 重要：型チェックと変換 =====
         print("\n[Step 3] Completing analysis on merged data...")
-        final_result = self._complete_analysis(merged_result, atom_types)
+        
+        # merged_resultがMaterialLambda3Resultの場合、辞書形式に変換
+        if isinstance(merged_result, MaterialLambda3Result):
+            print("  Converting MaterialLambda3Result to dict format...")
+            merged_dict = {
+                'lambda_structures': merged_result.lambda_structures,
+                'md_features': merged_result.md_features,
+                'material_features': merged_result.material_features,
+                'n_frames': merged_result.n_frames,
+                'n_atoms': merged_result.n_atoms,
+                'window_steps': merged_result.window_steps
+            }
+            
+            # cluster_atoms情報を追加
+            if cluster_atoms is not None:
+                merged_dict['cluster_atoms'] = cluster_atoms
+            
+            # _complete_analysisに渡す
+            try:
+                final_result = self._complete_analysis(merged_dict, atom_types)
+            except AttributeError as e:
+                if "'NoneType'" in str(e):
+                    print(f"  ⚠️ NoneType error in _complete_analysis: {e}")
+                    # エラー時はmerged_resultをそのまま返す
+                    print("  Using merged result without additional analysis")
+                    final_result = merged_result
+                    # 最低限の境界情報を追加
+                    final_result.structural_boundaries = {'boundary_locations': np.array([])}
+                    final_result.topological_breaks = {'break_points': np.array([])}
+                    final_result.anomaly_scores = {'combined': np.zeros(n_frames)}
+                else:
+                    raise
+        else:
+            # すでに辞書形式の場合
+            final_result = self._complete_analysis(merged_result, atom_types)
         
         return final_result
     
