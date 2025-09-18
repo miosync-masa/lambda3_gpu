@@ -115,7 +115,6 @@ class MaterialLambda3Result:
 # ===============================
 # Main Detector Class
 # ===============================
-
 class MaterialLambda3DetectorGPU(GPUBackend):
     """
     GPU版Lambda³材料検出器（MD版の設計を踏襲）
@@ -160,7 +159,9 @@ class MaterialLambda3DetectorGPU(GPUBackend):
                 material_type=self.config.material_type,
                 force_cpu=force_cpu_flag
             )
-            self.material_feature_extractor = None
+            # ===== 修正: material_feature_extractorを適切に設定 =====
+            # すでにself.feature_extractorがMaterialMDFeaturesGPUなので、それを使う
+            self.material_feature_extractor = self.feature_extractor
         else:
             self.material_analytics = None
             self.material_feature_extractor = None
@@ -175,12 +176,14 @@ class MaterialLambda3DetectorGPU(GPUBackend):
             if hasattr(component, 'device'):
                 component.device = self.device
         
+        # material_analyticsのメモリマネージャー共有
         if self.material_analytics:
             self.material_analytics.memory_manager = self.memory_manager
             self.material_analytics.device = self.device
+            # material_feature_extractorはself.feature_extractorと同じなので、すでに共有済み
         
-        self._print_initialization_info()
-    
+        self._print_initialization_info()    
+
     def analyze(self,
             trajectory: np.ndarray,
             backbone_indices: Optional[np.ndarray] = None,
