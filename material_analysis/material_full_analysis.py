@@ -196,7 +196,7 @@ def enhance_macro_result(
 
 def generate_stress_curve(strain: np.ndarray, material_params: Dict, 
                          events: List) -> np.ndarray:
-    """応力曲線を生成"""
+    """応力曲線を生成（2次元で返す）"""
     E = material_params.get('E', 210.0)
     yield_stress = material_params.get('yield', 1.5)
     
@@ -228,9 +228,9 @@ def generate_stress_curve(strain: np.ndarray, material_params: Dict,
             # 転位による応力集中
             stress[start:end] *= 1.01
     
-    # 形状を確実に1次元に
-    stress = np.squeeze(stress)
-    assert stress.ndim == 1, f"Stress must be 1D, got shape {stress.shape}"
+    # ===== ここが重要！2次元 (n_frames, 1) で返す =====
+    stress = stress.reshape(-1, 1)
+    assert stress.ndim == 2 and stress.shape[1] == 1, f"Stress must be (n_frames, 1), got shape {stress.shape}"
     
     return stress
 
