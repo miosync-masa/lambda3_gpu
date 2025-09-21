@@ -366,48 +366,102 @@ class MaterialFailurePhysicsGPU(GPUBackend):
     
     def _detect_rmsf_divergence(self, trajectory: np.ndarray) -> RMSFAnalysisResult:
         """
-        RMSF発散による破損前兆検出
+        RMSF発散による破損前兆検出（バッチ処理対応版）
         """
         n_frames, n_atoms, _ = trajectory.shape
+        
+        # バッチサイズ制限
+        max_atoms_per_batch = 10000
         
         # ウィンドウパラメータ
         window_size = min(100, n_frames // 10)
         stride = max(1, window_size // 2)  # 50%オーバーラップ
         n_windows = (n_frames - window_size) // stride + 1
         
-        if self.is_gpu and HAS_GPU and self.rmsf_evolution_kernel is not None:
-            # GPU計算
-            traj_gpu = cp.asarray(trajectory.reshape(n_frames, -1), dtype=cp.float32)
-            rmsf_field_gpu = cp.zeros((n_windows, n_atoms), dtype=cp.float32)
+        # 結果配列を初期化
+        rmsf_field = np.zeros((n_windows, n_atoms))
+        
+        # 大規模システムの場合はバッチ処理
+        if n_atoms > max_atoms_per_batch:
+            logger.info(f"Large system ({n_atoms} atoms) - using batch processing with batch size {max_atoms_per_batch}")
             
-            blocks = (256,)
-            grids = ((n_atoms + 255) // 256, n_windows)
+            n_batches = (n_atoms + max_atoms_per_batch - 1) // max_atoms_per_batch
             
-            self.rmsf_evolution_kernel(
-                grids, blocks,
-                (traj_gpu, rmsf_field_gpu, n_frames, n_atoms, window_size, stride)
-            )
-            
-            rmsf_field = cp.asnumpy(rmsf_field_gpu)
-        else:
-            # CPU計算
-            rmsf_field = np.zeros((n_windows, n_atoms))
-            
-            for w in range(n_windows):
-                start = w * stride
-                end = min(start + window_size, n_frames)
+            for batch_idx in range(n_batches):
+                start_atom = batch_idx * max_atoms_per_batch
+                end_atom = min((batch_idx + 1) * max_atoms_per_batch, n_atoms)
+                batch_size = end_atom - start_atom
                 
-                # 各原子のRMSF計算
-                for atom in range(n_atoms):
-                    atom_traj = trajectory[start:end, atom, :]
-                    mean_pos = np.mean(atom_traj, axis=0)
-                    deviations = atom_traj - mean_pos
-                    rmsf_field[w, atom] = np.sqrt(np.mean(deviations**2))
+                logger.debug(f"Processing batch {batch_idx+1}/{n_batches}: atoms {start_atom}-{end_atom}")
+                
+                # バッチトラジェクトリ
+                batch_trajectory = trajectory[:, start_atom:end_atom, :]
+                
+                if self.is_gpu and HAS_GPU and self.rmsf_evolution_kernel is not None:
+                    # GPU計算（バッチ版）
+                    traj_gpu = cp.asarray(batch_trajectory.reshape(n_frames, -1), dtype=cp.float32)
+                    rmsf_batch_gpu = cp.zeros((n_windows, batch_size), dtype=cp.float32)
+                    
+                    blocks = (256,)
+                    grids = ((batch_size + 255) // 256, n_windows)
+                    
+                    self.rmsf_evolution_kernel(
+                        grids, blocks,
+                        (traj_gpu, rmsf_batch_gpu, n_frames, batch_size, window_size, stride)
+                    )
+                    
+                    rmsf_field[:, start_atom:end_atom] = cp.asnumpy(rmsf_batch_gpu)
+                else:
+                    # CPU計算（バッチ版）
+                    for w in range(n_windows):
+                        start_frame = w * stride
+                        end_frame = min(start_frame + window_size, n_frames)
+                        
+                        for atom_idx in range(batch_size):
+                            atom_traj = batch_trajectory[start_frame:end_frame, atom_idx, :]
+                            mean_pos = np.mean(atom_traj, axis=0)
+                            deviations = atom_traj - mean_pos
+                            rmsf_field[w, start_atom + atom_idx] = np.sqrt(np.mean(deviations**2))
+        
+        else:
+            # 小規模システムは従来通り一括処理
+            if self.is_gpu and HAS_GPU and self.rmsf_evolution_kernel is not None:
+                # GPU計算
+                traj_gpu = cp.asarray(trajectory.reshape(n_frames, -1), dtype=cp.float32)
+                rmsf_field_gpu = cp.zeros((n_windows, n_atoms), dtype=cp.float32)
+                
+                blocks = (256,)
+                grids = ((n_atoms + 255) // 256, n_windows)
+                
+                self.rmsf_evolution_kernel(
+                    grids, blocks,
+                    (traj_gpu, rmsf_field_gpu, n_frames, n_atoms, window_size, stride)
+                )
+                
+                rmsf_field = cp.asnumpy(rmsf_field_gpu)
+            else:
+                # CPU計算
+                for w in range(n_windows):
+                    start = w * stride
+                    end = min(start + window_size, n_frames)
+                    
+                    for atom in range(n_atoms):
+                        atom_traj = trajectory[start:end, atom, :]
+                        mean_pos = np.mean(atom_traj, axis=0)
+                        deviations = atom_traj - mean_pos
+                        rmsf_field[w, atom] = np.sqrt(np.mean(deviations**2))
         
         # Lindemann基準での臨界原子特定
         critical_threshold = self.lindemann_criterion * self.lattice_constant
         max_rmsf_per_atom = np.max(rmsf_field, axis=0)
         critical_atoms = np.where(max_rmsf_per_atom > critical_threshold)[0].tolist()
+        
+        # メモリ節約のため、臨界原子が多すぎる場合は制限
+        if len(critical_atoms) > 1000:
+            logger.warning(f"Too many critical atoms ({len(critical_atoms)}), limiting to top 1000")
+            # RMSFの高い順に1000個選ぶ
+            top_indices = np.argsort(max_rmsf_per_atom)[-1000:]
+            critical_atoms = top_indices.tolist()
         
         # 全体のLindemann値計算
         mean_rmsf = np.mean(rmsf_field)
