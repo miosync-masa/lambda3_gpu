@@ -373,8 +373,6 @@ __all__ = [
     'FatigueCycleResult',
     'detect_failure_precursor',
     'predict_fatigue_life',
-    'MATERIAL_CONSTANTS',
-    'K_B',
     
     # ===== Material Database =====
     'MATERIAL_DATABASE',
