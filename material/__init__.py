@@ -4,7 +4,7 @@ Lambda³ GPU Material Analysis Module
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 材料解析用Lambda³構造計算のGPU実装！
-金属・セラミックス・ポリマーの疲労・破壊を高速解析！💎
+金属・セラミックスの疲労・破壊を高速解析！💎
 
 Components:
     - ClusterStructuresGPU: クラスター構造計算（歪み・配位数）
