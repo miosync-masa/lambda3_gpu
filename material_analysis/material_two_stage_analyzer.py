@@ -45,6 +45,7 @@ from lambda3_gpu.material.material_failure_physics_gpu import (
     MaterialFailurePhysicsGPU, 
     FailurePhysicsResult
 )
+from lambda3_gpu.material.material_database import MATERIAL_DATABASE, get_material_parameters
 from lambda3_gpu.material_analysis.material_lambda3_detector import MaterialLambda3Result
 from lambda3_gpu.types import ArrayType, NDArray
 
@@ -235,46 +236,8 @@ class MaterialTwoStageAnalyzerGPU(GPUBackend):
                 component.device = self.device
     
     def _set_material_properties(self):
-        """材料プロパティ設定（物理定数追加）"""
-        if self.material_type == 'SUJ2':
-            self.material_props = {
-                'elastic_modulus': 210.0,  # GPa
-                'yield_strength': 1.5,
-                'ultimate_strength': 2.0,
-                'fatigue_strength': 0.7,
-                'fracture_toughness': 30.0,
-                'poisson_ratio': 0.3,
-                # 物理定数（NEW!）
-                'lattice_constant': 2.87,  # Å
-                'melting_temp': 1811,  # K
-                'lindemann_criterion': 0.10
-            }
-        elif self.material_type == 'AL7075':
-            self.material_props = {
-                'elastic_modulus': 71.7,
-                'yield_strength': 0.503,
-                'ultimate_strength': 0.572,
-                'fatigue_strength': 0.159,
-                'fracture_toughness': 23.0,
-                'poisson_ratio': 0.33,
-                # 物理定数（NEW!）
-                'lattice_constant': 4.05,
-                'melting_temp': 933,
-                'lindemann_criterion': 0.12
-            }
-        else:
-            # デフォルト（鋼鉄）
-            self.material_props = {
-                'elastic_modulus': 210.0,
-                'yield_strength': 1.0,
-                'ultimate_strength': 1.5,
-                'fatigue_strength': 0.5,
-                'fracture_toughness': 20.0,
-                'poisson_ratio': 0.3,
-                'lattice_constant': 2.87,
-                'melting_temp': 1800,
-                'lindemann_criterion': 0.10
-            }
+        """材料プロパティ設定（統一データベースから取得）"""
+        self.material_props = get_material_parameters(self.material_type)
     
     def analyze_trajectory(self,
                           trajectory: np.ndarray,
