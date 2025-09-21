@@ -483,83 +483,113 @@ class MaterialFailurePhysicsGPU(GPUBackend):
     # ===============================
     
     def _analyze_energy_balance(self,
-                               trajectory: np.ndarray,
-                               stress_history: Optional[np.ndarray],
-                               base_temperature: float) -> EnergyBalanceResult:
+                           trajectory: np.ndarray,
+                           stress_history: Optional[np.ndarray],
+                           base_temperature: float) -> EnergyBalanceResult:
         """
-        エネルギーバランス解析（応力→熱変換と相転移）
-        
-        Parameters
-        ----------
-        trajectory : np.ndarray
-            原子軌道
-        stress_history : np.ndarray, optional
-            応力履歴
-        base_temperature : float
-            基礎温度 (K)
-            
-        Returns
-        -------
-        EnergyBalanceResult
-            エネルギーバランス結果
+        エネルギーバランス解析（物理的改善版）
         """
         n_frames, n_atoms, _ = trajectory.shape
         
-        # 運動エネルギー計算（簡略化：速度から）
+        # 材料別原子質量（amu → kg）
+        AMU_TO_KG = 1.66054e-27
+        atomic_masses = {
+            'SUJ2': 55.845,    # Fe主体
+            'AL7075': 26.982,  # Al主体
+            'Ti6Al4V': 47.867, # Ti主体
+            'SS316L': 55.845   # Fe主体
+        }
+        mass = atomic_masses.get(self.material_type, 55.845) * AMU_TO_KG
+        
+        # 1. 運動エネルギー（ちゃんと質量考慮）
         if n_frames > 1:
-            velocities = np.diff(trajectory, axis=0)  # 簡易速度
-            kinetic_energy = 0.5 * np.sum(velocities**2, axis=-1)  # (n_frames-1, n_atoms)
-            # 最終フレーム分を複製
+            dt = 1e-15  # 1 fs timestep（MD標準）
+            velocities = np.diff(trajectory, axis=0) / dt  # m/s
+            # KE = 1/2 * m * v^2 （eVに変換）
+            J_TO_EV = 6.242e18
+            kinetic_energy = 0.5 * mass * np.sum(velocities**2, axis=-1) * J_TO_EV
             kinetic_energy = np.vstack([kinetic_energy, kinetic_energy[-1]])
         else:
             kinetic_energy = np.zeros((n_frames, n_atoms))
         
-        # 局所温度計算
-        local_temperature = np.zeros((n_frames, n_atoms))
+        # 2. 応力から温度上昇（物理的に）
+        local_temperature = np.full((n_frames, n_atoms), base_temperature)
         
         if stress_history is not None:
-            # 応力から温度上昇を推定
-            stress_history = np.atleast_2d(stress_history)
-            if stress_history.shape[0] != n_frames:
-                stress_history = np.broadcast_to(
-                    stress_history, (n_frames, n_atoms)
-                )
+            stress_history = np.asarray(stress_history)
             
-            # Taylor-Quinney係数（塑性仕事の90%が熱に）
-            heat_conversion = 0.9
+            # 形状処理（2次元に統一）
+            if stress_history.ndim == 1:
+                stress_history = stress_history.reshape(-1, 1)
             
-            # 材料パラメータ
-            rho = self.material_params['density']
-            cp = self.material_params['specific_heat']
+            # ブロードキャスト
+            if stress_history.shape[1] == 1:
+                stress_history = np.broadcast_to(stress_history, (n_frames, n_atoms))
             
-            # ΔT = (η * σ * ε̇ * Δt) / (ρ * Cp)
-            # 簡略化：応力に比例した温度上昇
-            delta_T = heat_conversion * np.abs(stress_history) * 10.0  # スケーリング係数
+            # 歪み速度推定（変位から）
+            if n_frames > 1:
+                strain_rate = np.diff(trajectory, axis=0) / (self.lattice_constant * dt)
+                strain_rate = np.abs(np.mean(strain_rate, axis=-1))  # (n_frames-1, n_atoms)
+                strain_rate = np.vstack([strain_rate, strain_rate[-1]])
+            else:
+                strain_rate = 1e-3 * np.ones((n_frames, n_atoms))  # デフォルト値
+            
+            # Taylor-Quinney係数（材料別）
+            beta = {
+                'SUJ2': 0.9,    # 高炭素鋼
+                'AL7075': 0.85, # アルミ合金
+                'Ti6Al4V': 0.8, # チタン合金
+                'SS316L': 0.9   # ステンレス鋼
+            }.get(self.material_type, 0.9)
+            
+            # 塑性仕事 → 熱変換
+            # Q = β × σ × ε̇ × V
+            # ΔT = Q / (ρ × Cp × V) = β × σ × ε̇ / (ρ × Cp)
+            rho = self.material_params['density']  # kg/m³
+            cp = self.material_params['specific_heat']  # J/(kg·K)
+            
+            # 応力はGPa、歪み速度は1/s
+            plastic_work = np.abs(stress_history) * 1e9 * strain_rate  # Pa·s⁻¹ = W/m³
+            delta_T = beta * plastic_work / (rho * cp)
+            
+            # 温度場更新
             local_temperature = base_temperature + delta_T
-        else:
-            local_temperature[:] = base_temperature
+            
+            # 物理的制限（融点以下）
+            melting_temp = self.material_params['melting_temp']
+            local_temperature = np.clip(local_temperature, base_temperature, melting_temp * 1.1)
         
-        # 束縛エネルギー推定（Debye温度から）
-        # E_binding ≈ 3kT_Debye
-        debye_temp = self.material_params['melting_temp'] * 0.5  # 簡略化
-        binding_energy = 3 * K_B * debye_temp * np.ones_like(kinetic_energy)
+        # 3. 束縛エネルギー（Debye-Waller因子から）
+        # Debye温度の推定（Einstein-Debye関係）
+        # θ_D ≈ (v_s / a) × (6π²N)^(1/3) × ℏ/k_B
+        # 簡略化: θ_D ≈ 0.4 * T_melting （金属の経験則）
+        debye_temp = self.material_params['melting_temp'] * 0.4
         
-        # エネルギー比
-        energy_ratio = float(np.mean(kinetic_energy) / np.mean(binding_energy))
-        
-        # 相状態判定
+        # <u²> = (3ℏ²T) / (mk_Bθ_D²) でDebye-Waller因子
+        # E_binding ≈ k_B × θ_D × exp(-2W)
         mean_temp = np.mean(local_temperature)
-        melting_temp = self.material_params['melting_temp']
+        debye_waller = (3 * mean_temp) / (debye_temp**2) 
+        binding_energy = K_B * debye_temp * np.exp(-2 * debye_waller) * np.ones_like(kinetic_energy)
         
-        if mean_temp < 0.8 * melting_temp:
+        # 4. エネルギー比とLindemann判定
+        energy_ratio = float(np.mean(kinetic_energy) / np.mean(binding_energy)) if np.mean(binding_energy) > 0 else np.inf
+        
+        # Lindemann基準：<u²>^0.5 / a > 0.1で融解
+        rms_displacement = np.sqrt(np.mean((trajectory - np.mean(trajectory, axis=0))**2))
+        lindemann_parameter = rms_displacement / self.lattice_constant
+        
+        # 相状態判定（Lindemann基準も考慮）
+        if lindemann_parameter > self.lindemann_criterion:
+            phase_state = 'liquid'
+        elif mean_temp < 0.7 * melting_temp:
             phase_state = 'solid'
-        elif mean_temp > 0.95 * melting_temp:
+        elif mean_temp > 0.9 * melting_temp:
             phase_state = 'liquid'
         else:
             phase_state = 'transition'
         
-        # 臨界温度（エネルギーバランスから）
-        critical_temperature = binding_energy[0, 0] / (1.5 * K_B)
+        # 臨界温度（Lindemann基準から逆算）
+        critical_temperature = debye_temp * (self.lindemann_criterion / 0.1)**2
         
         return EnergyBalanceResult(
             kinetic_energy=np.mean(kinetic_energy, axis=1),
@@ -569,7 +599,7 @@ class MaterialFailurePhysicsGPU(GPUBackend):
             phase_state=phase_state,
             critical_temperature=float(critical_temperature)
         )
-    
+        
     # ===============================
     # Damage Nucleation Tracking
     # ===============================
