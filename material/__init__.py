@@ -26,6 +26,44 @@ __author__ = '環ちゃん'
 __email__ = 'tamaki@miosync.email'
 
 # ===============================
+# CUDA Kernels (拡張版7カーネル!)
+# ===============================
+from .cuda_kernels import (
+    # Classes
+    MaterialCUDAKernels,
+    
+    # Original 3 kernels
+    STRAIN_TENSOR_KERNEL_CODE,
+    COORDINATION_NUMBER_KERNEL_CODE,
+    DAMAGE_SCORE_KERNEL_CODE,
+    
+    # Extended 4 kernels (NEW!)
+    DEFECT_CHARGE_KERNEL_CODE,
+    STRUCTURAL_COHERENCE_KERNEL_CODE,
+    BURGERS_VECTOR_KERNEL_CODE,
+    ROLLING_STATS_KERNEL_CODE,
+)
+
+# ===============================
+# Material Analytics (CUDA最適化版!)
+# ===============================
+
+from .material_analytics_gpu import (
+    # Classes
+    MaterialAnalyticsGPU,
+    
+    # Data Classes
+    DefectAnalysisResult,
+    CrystalDefectResult,
+    MaterialState,
+    FailurePredictionResult,
+    
+    # Main Functions (CUDA最適化済み！)
+    compute_crystal_defect_charge,
+    compute_structural_coherence,
+)
+
+# ===============================
 # Cluster Structures
 # ===============================
 
@@ -324,7 +362,26 @@ __all__ = [
     # ===== Version Info =====
     '__version__',
     '__author__',
+
+    # ===== CUDA Kernels (7つ全部!) =====
+    'MaterialCUDAKernels',
+    'STRAIN_TENSOR_KERNEL_CODE',
+    'COORDINATION_NUMBER_KERNEL_CODE',
+    'DAMAGE_SCORE_KERNEL_CODE',
+    'DEFECT_CHARGE_KERNEL_CODE',
+    'STRUCTURAL_COHERENCE_KERNEL_CODE',
+    'BURGERS_VECTOR_KERNEL_CODE',
+    'ROLLING_STATS_KERNEL_CODE',
     
+    # ===== Material Analytics =====
+    'MaterialAnalyticsGPU',
+    'DefectAnalysisResult',
+    'CrystalDefectResult',
+    'MaterialState',
+    'FailurePredictionResult',
+    'compute_crystal_defect_charge',
+    'compute_structural_coherence',
+
     # ===== Cluster Structures =====
     'ClusterStructuresGPU',
     'ClusterStructureBatchProcessor',
