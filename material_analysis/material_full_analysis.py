@@ -200,6 +200,9 @@ def generate_stress_curve(strain: np.ndarray, material_params: Dict,
     E = material_params.get('E', 210.0)
     yield_stress = material_params.get('yield', 1.5)
     
+    # 形状確認
+    strain = np.atleast_1d(strain).squeeze()  # 確実に1次元に
+    
     # 弾性領域
     stress = E * strain
     
@@ -207,15 +210,27 @@ def generate_stress_curve(strain: np.ndarray, material_params: Dict,
     yield_strain = yield_stress / E
     plastic_mask = strain > yield_strain
     if np.any(plastic_mask):
-        # 加工硬化を考慮
-        stress[plastic_mask] = yield_stress + 0.1 * E * (strain[plastic_mask] - yield_strain)
+        # 加工硬化を考慮（より現実的な値に）
+        n_value = 0.2  # 加工硬化指数（SUJ2の典型値）
+        K_value = material_params.get('ultimate', 2.0)
+        stress[plastic_mask] = K_value * ((strain[plastic_mask] - yield_strain + 0.002) ** n_value) + yield_stress
     
-    # イベントによる応力変動
+    # イベントによる応力変動（より物理的に）
     for start, end, event_type in events:
         if 'crack' in event_type:
-            stress[start:] *= 0.9  # 亀裂による応力低下
+            # 亀裂による段階的な応力低下
+            decay_factor = 0.95 - 0.1 * (end - start) / 100  # 継続時間に応じて
+            stress[start:] *= max(0.5, decay_factor)
         elif 'plastic' in event_type:
-            stress[start:end] *= 1.05  # 塑性変形による局所的増加
+            # 塑性変形による加工硬化
+            stress[start:end] *= 1.02  # 控えめに
+        elif 'dislocation' in event_type:
+            # 転位による応力集中
+            stress[start:end] *= 1.01
+    
+    # 形状を確実に1次元に
+    stress = np.squeeze(stress)
+    assert stress.ndim == 1, f"Stress must be 1D, got shape {stress.shape}"
     
     return stress
 
