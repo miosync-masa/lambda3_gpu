@@ -34,6 +34,8 @@ from scipy.signal import find_peaks
 import logging
 import traceback
 
+from lambda3_gpu.material.material_database import MATERIAL_DATABASE, get_material_parameters
+
 logger = logging.getLogger('material_report_generator')
 
 def generate_material_report_from_results(
@@ -565,34 +567,17 @@ def generate_material_report_from_results(
     # ========================================
     report += "\n\n## 📋 Technical Specifications\n"
     
-    # 材料プロパティ
+    # 材料プロパティ（統一データベースから）
     report += f"\n### Material Properties ({material_type})\n"
     
-    material_props = {
-        'SUJ2': {
-            'E': 210.0,
-            'nu': 0.3,
-            'yield': 1.5,
-            'ultimate': 2.0,
-            'K_IC': 30.0
-        },
-        'AL7075': {
-            'E': 71.7,
-            'nu': 0.33,
-            'yield': 0.503,
-            'ultimate': 0.572,
-            'K_IC': 23.0
-        }
-    }
-    
-    if material_type in material_props:
-        props = material_props[material_type]
-        report += f"- Elastic modulus: {props['E']} GPa\n"
-        report += f"- Poisson's ratio: {props['nu']}\n"
-        report += f"- Yield strength: {props['yield']} GPa\n"
-        report += f"- Ultimate strength: {props['ultimate']} GPa\n"
-        report += f"- Fracture toughness: {props['K_IC']} MPa√m\n"
-    
+    # MATERIAL_DATABASEから取得
+    props = get_material_parameters(material_type)
+    report += f"- Elastic modulus: {props.get('elastic_modulus', props.get('E', 'N/A'))} GPa\n"
+    report += f"- Poisson's ratio: {props.get('poisson_ratio', props.get('nu', 'N/A'))}\n"
+    report += f"- Yield strength: {props.get('yield_strength', props.get('yield', 'N/A'))} GPa\n"
+    report += f"- Ultimate strength: {props.get('ultimate_strength', props.get('ultimate', 'N/A'))} GPa\n"
+    report += f"- Fracture toughness: {props.get('fracture_toughness', props.get('K_IC', 'N/A'))} MPa√m\n"
+        
     # 解析パラメータ
     report += "\n### Analysis Parameters\n"
     report += "- Defect detection: Adaptive thresholding\n"
