@@ -147,7 +147,7 @@ class MaterialMDFeatureConfig(MDFeatureConfig):
     coordination_cutoff: float = 3.5      # 配位数計算のカットオフ [Å]
     ideal_coordination: int = 8           # 理想配位数（BCC=8, FCC=12）
     crystal_structure: str = 'BCC'       # 結晶構造
-    max_defect_atoms: int = 5000         # 欠陥原子数の上限（メモリ制限）
+    max_defect_atoms: int = sys.maxsize  # 欠陥原子数の上限（メモリ制限に応じて変更）
     min_defect_atoms: int = 100          # 欠陥原子数の下限
     
     # 欠陥検出パラメータ
