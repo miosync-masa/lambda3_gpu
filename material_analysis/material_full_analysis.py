@@ -25,6 +25,7 @@ import numpy as np
 import json
 import argparse
 import logging
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 from collections import Counter
@@ -63,12 +64,23 @@ except ImportError as e:
     raise
 
 # Logger設定
+# 既存のハンドラをクリア（重複防止の核心！）
+root_logger = logging.getLogger()
+if root_logger.handlers:
+    for handler in root_logger.handlers:
+        root_logger.removeHandler(handler)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
+
 logger = logging.getLogger('material_full_analysis')
+logger.propagate = False  # ← これ重要！親への伝播を止める
+
+# 子モジュールのログも制御（オプション）
+logging.getLogger('lambda3_gpu').propagate = False
 
 # ============================================
 # データ統合ヘルパー関数（新規追加）
@@ -1276,7 +1288,7 @@ def main():
             atom_types_path=args.atom_types,
             material_type=args.material,
             cluster_definition_path=args.clusters,
-            
+            backbone_indices_path=args.backbone, 
             strain_field_path=args.strain,
             enable_two_stage=not args.no_two_stage,
             enable_impact=not args.no_impact,
