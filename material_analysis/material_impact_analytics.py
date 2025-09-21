@@ -21,6 +21,9 @@ import json
 import time
 from collections import Counter, defaultdict
 
+# 既存のインポートの後に追加
+from lambda3_gpu.material.material_database import MATERIAL_DATABASE, get_material_parameters
+
 # GPU imports
 try:
     import cupy as cp
@@ -159,7 +162,7 @@ class MaterialDefectNetworkGPU:
                  sync_threshold: float = 0.7,
                  max_lag: int = 3,  # 材料は短い時間スケール
                  distance_cutoff: float = 4.0,  # BCC/FCCの第一近接
-                 elastic_modulus: float = 210.0):  # GPa
+                 elastic_modulus: float = 210.0):  # GPa（デフォルト値、SUJ2相当）
         """
         Parameters
         ----------
@@ -709,21 +712,18 @@ class MaterialImpactAnalyzer:
             self.defect_network = None
         
         logger.info(f"💎 Material Impact Analyzer v1.0 initialized ({material_type})")
-    
+
     def _set_material_params(self):
-        """材料パラメータ設定"""
-        if self.material_type == 'SUJ2':
-            self.elastic_modulus = 210.0
-            self.yield_strength = 1.5
-            self.k_ic = 30.0
-        elif self.material_type == 'AL7075':
-            self.elastic_modulus = 71.7
-            self.yield_strength = 0.503
-            self.k_ic = 23.0
-        else:
-            self.elastic_modulus = 210.0
-            self.yield_strength = 1.0
-            self.k_ic = 20.0
+        """材料パラメータ設定（統一データベースから）"""
+        params = get_material_parameters(self.material_type)
+        
+        # 材料プロパティ取得（互換性キーも考慮）
+        self.elastic_modulus = params.get('elastic_modulus', params.get('E', 210.0))
+        self.yield_strength = params.get('yield_strength', params.get('yield', 1.5))
+        self.k_ic = params.get('fracture_toughness', params.get('K_IC', 30.0))
+        
+        # 追加パラメータも保存（後で使うかも）
+        self.material_params = params
     
     def analyze_critical_clusters(self,
                                  macro_result: Any,
