@@ -40,6 +40,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 # Lambda³ Material imports
 try:
+    from lambda3_gpu.material.material_database import (
+        MATERIAL_DATABASE, 
+        get_material_parameters,
+        K_B, AMU_TO_KG, J_TO_EV
+    )
     from lambda3_gpu.material_analysis.material_lambda3_detector import (
         MaterialLambda3DetectorGPU,
         MaterialLambda3Result,
@@ -82,111 +87,6 @@ logger.propagate = False  # ← これ重要！親への伝播を止める
 # 子モジュールのログも制御（オプション）
 logging.getLogger('lambda3_gpu').propagate = False
 
-# ===============================
-# 材料パラメータデータベース（詳細版）
-# ===============================
-
-MATERIAL_DATABASE = {
-    'SUJ2': {
-        'name': 'Bearing Steel (JIS SUJ2)',
-        'crystal_structure': 'BCC',
-        'lattice_constant': 2.87,      # Å
-        'elastic_modulus': 210.0,      # GPa (既存のEと同じ)
-        'poisson_ratio': 0.30,
-        'yield_strength': 1.5,         # GPa (既存のyieldと同じ)
-        'ultimate_strength': 2.0,      # GPa (既存のultimateと同じ)
-        'fatigue_strength': 0.7,       # GPa
-        'fracture_toughness': 30.0,    # MPa√m (既存のK_ICと同じ)
-        'melting_temp': 1811,          # K
-        'density': 7850,               # kg/m³ (既存の7.85 g/cm³と同じ)
-        'specific_heat': 460,          # J/(kg·K)
-        'thermal_expansion': 1.2e-5,   # /K
-        'ideal_coordination': 8,       # BCC
-        'lindemann_criterion': 0.10,
-        'taylor_quinney': 0.90,        # 塑性仕事→熱変換率
-        'work_hardening_n': 0.20,      # 加工硬化指数
-    },
-    'AL7075': {
-        'name': 'Aluminum Alloy 7075-T6',
-        'crystal_structure': 'FCC',
-        'lattice_constant': 4.05,
-        'elastic_modulus': 71.7,       # GPa
-        'poisson_ratio': 0.33,
-        'yield_strength': 0.503,       # GPa
-        'ultimate_strength': 0.572,    # GPa
-        'fatigue_strength': 0.159,
-        'fracture_toughness': 23.0,    # MPa√m
-        'melting_temp': 933,
-        'density': 2810,               # kg/m³
-        'specific_heat': 900,
-        'thermal_expansion': 2.4e-5,
-        'ideal_coordination': 12,      # FCC
-        'lindemann_criterion': 0.12,
-        'taylor_quinney': 0.85,
-        'work_hardening_n': 0.15,
-    },
-    'Ti6Al4V': {
-        'name': 'Titanium Alloy Ti-6Al-4V',
-        'crystal_structure': 'HCP',
-        'lattice_constant': 2.95,      # a-axis
-        'elastic_modulus': 113.8,
-        'poisson_ratio': 0.342,
-        'yield_strength': 0.88,
-        'ultimate_strength': 0.95,
-        'fatigue_strength': 0.51,
-        'fracture_toughness': 75.0,
-        'melting_temp': 1941,
-        'density': 4430,               # kg/m³
-        'specific_heat': 520,
-        'thermal_expansion': 8.6e-6,
-        'ideal_coordination': 12,      # HCP
-        'lindemann_criterion': 0.11,
-        'taylor_quinney': 0.80,
-        'work_hardening_n': 0.10,
-    },
-    'SS316L': {
-        'name': 'Stainless Steel 316L',
-        'crystal_structure': 'FCC',
-        'lattice_constant': 3.58,
-        'elastic_modulus': 193.0,
-        'poisson_ratio': 0.30,
-        'yield_strength': 0.205,
-        'ultimate_strength': 0.515,
-        'fatigue_strength': 0.24,
-        'fracture_toughness': 112.0,
-        'melting_temp': 1673,
-        'density': 8000,               # kg/m³
-        'specific_heat': 500,
-        'thermal_expansion': 1.6e-5,
-        'ideal_coordination': 12,
-        'lindemann_criterion': 0.12,
-        'taylor_quinney': 0.85,
-        'work_hardening_n': 0.45,
-    }
-}
-
-def get_material_parameters(material_type: str) -> Dict:
-    """
-    材料パラメータ取得（物理的に完全な版）
-    
-    既存コードとの互換性のため、旧キー名もマッピング
-    """
-    if material_type not in MATERIAL_DATABASE:
-        logger.warning(f"Unknown material {material_type}, using SUJ2")
-        material_type = 'SUJ2'
-    
-    # 詳細パラメータ取得
-    params = MATERIAL_DATABASE[material_type].copy()
-    
-    # 既存コードとの互換性マッピング
-    params['E'] = params['elastic_modulus']
-    params['nu'] = params['poisson_ratio']
-    params['yield'] = params['yield_strength']
-    params['ultimate'] = params['ultimate_strength']
-    params['K_IC'] = params['fracture_toughness']
-    params['density_gcm3'] = params['density'] / 1000  # kg/m³ → g/cm³
-    
-    return params
 
 # ============================================
 # データ統合ヘルパー関数（新規追加）
@@ -1119,45 +1019,6 @@ def run_material_analysis_pipeline(
 # ============================================
 # ヘルパー関数（既存のものを維持）
 # ============================================
-
-def get_material_parameters(material_type: str) -> Dict:
-    """材料パラメータ取得"""
-    materials = {
-        'SUJ2': {
-            'E': 210.0,      # GPa
-            'nu': 0.3,       # Poisson's ratio
-            'yield': 1.5,    # GPa
-            'ultimate': 2.0, # GPa
-            'K_IC': 30.0,    # MPa√m
-            'density': 7.85  # g/cm³
-        },
-        'AL7075': {
-            'E': 71.7,
-            'nu': 0.33,
-            'yield': 0.503,
-            'ultimate': 0.572,
-            'K_IC': 23.0,
-            'density': 2.81
-        },
-        'Ti6Al4V': {
-            'E': 113.8,
-            'nu': 0.342,
-            'yield': 0.88,
-            'ultimate': 0.95,
-            'K_IC': 75.0,
-            'density': 4.43
-        },
-        'SS316L': {
-            'E': 193.0,
-            'nu': 0.3,
-            'yield': 0.205,
-            'ultimate': 0.515,
-            'K_IC': 112.0,
-            'density': 8.0
-        }
-    }
-    
-    return materials.get(material_type, materials['SUJ2'])
 
 def compute_strain_field_from_trajectory(
     trajectory: np.ndarray,
