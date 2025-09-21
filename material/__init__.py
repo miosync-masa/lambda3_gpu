@@ -131,11 +131,7 @@ from .material_failure_physics_gpu import (
     
     # Main Functions
     detect_failure_precursor,
-    predict_fatigue_life,
-    
-    # Physical Constants
-    MATERIAL_CONSTANTS,
-    K_B,  # Boltzmann constant
+    predict_fatigue_life  
 )
 
 # ===============================
