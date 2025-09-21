@@ -141,51 +141,19 @@ from .material_failure_physics_gpu import (
 # ===============================
 # Material Properties Database
 # ===============================
+from .material_database import (
+    MATERIAL_DATABASE,
+    get_material_parameters,
+    K_B,
+    AMU_TO_KG,
+    J_TO_EV
+)
 
-# SUJ2 (高炭素クロム軸受鋼) の材料定数
-SUJ2_PROPERTIES = {
-    'elastic_modulus': 210.0,        # GPa
-    'poisson_ratio': 0.3,
-    'yield_strength': 1.5,            # GPa
-    'ultimate_strength': 2.0,         # GPa
-    'fatigue_strength': 0.7,          # GPa
-    'fracture_toughness': 30.0,       # MPa√m
-    'density': 7.85,                  # g/cm³
-    'crystal_structure': 'BCC',       # Body-Centered Cubic
-    'lattice_constant': 2.87,         # Å (from MATERIAL_CONSTANTS)
-    'melting_temp': 1811,            # K
-    'lindemann_criterion': 0.10,     # Lindemann melting criterion
-}
-
-# アルミニウム合金 (A7075-T6)
-AL7075_PROPERTIES = {
-    'elastic_modulus': 71.7,          # GPa
-    'poisson_ratio': 0.33,
-    'yield_strength': 0.503,          # GPa
-    'ultimate_strength': 0.572,       # GPa
-    'fatigue_strength': 0.159,        # GPa
-    'fracture_toughness': 23.0,       # MPa√m
-    'density': 2.81,                  # g/cm³
-    'crystal_structure': 'FCC',       # Face-Centered Cubic
-    'lattice_constant': 4.05,         # Å
-    'melting_temp': 933,             # K
-    'lindemann_criterion': 0.12,     # FCC adjusted
-}
-
-# チタン合金 (Ti-6Al-4V)
-TI6AL4V_PROPERTIES = {
-    'elastic_modulus': 113.8,         # GPa
-    'poisson_ratio': 0.342,
-    'yield_strength': 0.88,           # GPa
-    'ultimate_strength': 0.95,        # GPa
-    'fatigue_strength': 0.51,         # GPa
-    'fracture_toughness': 75.0,       # MPa√m
-    'density': 4.43,                  # g/cm³
-    'crystal_structure': 'HCP',       # Hexagonal Close-Packed
-    'lattice_constant': 3.23,         # Å
-    'melting_temp': 1941,            # K
-    'lindemann_criterion': 0.11,     # HCP adjusted
-}
+# 互換性のため、個別の材料プロパティも公開
+SUJ2_PROPERTIES = MATERIAL_DATABASE['SUJ2']
+AL7075_PROPERTIES = MATERIAL_DATABASE['AL7075']
+TI6AL4V_PROPERTIES = MATERIAL_DATABASE['Ti6Al4V']
+SS316L_PROPERTIES = MATERIAL_DATABASE['SS316L']  # 新規追加！
 
 # ===============================
 # Quick Analysis Functions
@@ -217,9 +185,10 @@ def quick_analyze_suj2(trajectory, cluster_atoms, atom_types,
     """
     if end_frame == -1:
         end_frame = trajectory.shape[0] - 1
-    
+
+    material_props = MATERIAL_DATABASE['SUJ2']
     # 構造計算
-    structures = ClusterStructuresGPU(**SUJ2_PROPERTIES)
+    structures = ClusterStructuresGPU()
     result = structures.compute_cluster_structures(
         trajectory, start_frame, end_frame,
         cluster_atoms, atom_types, window_size
@@ -411,10 +380,18 @@ __all__ = [
     'MATERIAL_CONSTANTS',
     'K_B',
     
+    # ===== Material Database =====
+    'MATERIAL_DATABASE',
+    'get_material_parameters',
+    'K_B',
+    'AMU_TO_KG', 
+    'J_TO_EV',
+    
     # ===== Material Properties =====
     'SUJ2_PROPERTIES',
     'AL7075_PROPERTIES',
     'TI6AL4V_PROPERTIES',
+    'SS316L_PROPERTIES',
     
     # ===== Quick Analysis =====
     'quick_analyze_suj2',
