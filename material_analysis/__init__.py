@@ -20,12 +20,6 @@ __email__ = 'tamaki@lambda3.ai'
 # ========================================
 # Main Pipeline
 # ========================================
-# Circular import fix - commented out
-# from .material_full_analysis import (
-#     run_material_analysis_pipeline,
-#     get_material_parameters,
-#     create_spatial_clusters
-# )
 
 # 遅延インポート用の関数を定義
 def run_material_analysis_pipeline(*args, **kwargs):
@@ -101,8 +95,7 @@ from ..material.material_failure_physics_gpu import (
     DamageNucleusResult,
     FatigueCycleResult,
     detect_failure_precursor,
-    predict_fatigue_life,
-    MATERIAL_CONSTANTS
+    predict_fatigue_life
 )
 
 # ========================================
@@ -406,7 +399,6 @@ __all__ = [
     'FatigueCycleResult',
     'detect_failure_precursor',
     'predict_fatigue_life',
-    'MATERIAL_CONSTANTS',
     
     # Results
     'MaterialLambda3Result',
