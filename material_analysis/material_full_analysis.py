@@ -309,6 +309,7 @@ def run_material_analysis_pipeline(
     atom_types_path: str,
     material_type: str = 'SUJ2',
     cluster_definition_path: Optional[str] = None,
+    backbone_indices_path: Optional[str] = None, 
     strain_field_path: Optional[str] = None,
     enable_two_stage: bool = True,
     enable_impact: bool = True,
@@ -441,17 +442,33 @@ def run_material_analysis_pipeline(
         
         # 検出器初期化
         detector = MaterialLambda3DetectorGPU(config)
-        
-        # backbone_indices準備
+
+        # backbone_indices準備（修正版）
         backbone_indices = None
-        if cluster_atoms:
+        
+        # まず明示的に指定されたファイルから読み込み
+        if backbone_indices_path and Path(backbone_indices_path).exists():
+            backbone_indices = np.load(backbone_indices_path)
+            # 型チェック
+            if backbone_indices.dtype != np.int32:
+                backbone_indices = backbone_indices.astype(np.int32)
+            logger.info(f"   ✅ Loaded backbone_indices from file: {len(backbone_indices)} atoms")
+        
+        # ファイルがない場合はcluster_atomsから自動生成
+        elif cluster_atoms:
             defect_atoms = []
             for cid, atoms in cluster_atoms.items():
                 if str(cid) != "0":
-                    defect_atoms.extend(atoms)
+                    # 整数変換を確実に
+                    if isinstance(atoms, dict) and 'atom_ids' in atoms:
+                        defect_atoms.extend([int(a) for a in atoms['atom_ids']])
+                    else:
+                        defect_atoms.extend([int(a) for a in atoms])
             if defect_atoms:
-                backbone_indices = np.array(sorted(defect_atoms))
-                logger.info(f"   Defect region: {len(backbone_indices)} atoms")
+                backbone_indices = np.array(sorted(set(defect_atoms)), dtype=np.int32)
+                logger.info(f"   🔄 Auto-generated backbone_indices: {len(backbone_indices)} atoms from clusters")
+        else:
+            logger.warning("   ⚠️ No backbone_indices or cluster_atoms available")
         
         # 解析実行
         macro_result = detector.analyze(
@@ -1211,6 +1228,8 @@ def main():
     parser.add_argument('--clusters', required=True,  # ← 必須に！
                    help='Path to cluster definition file (REQUIRED). '
                         'Must define Cluster 0 as healthy region and others as defects.')
+    parser.add_argument('--backbone', '-b',
+                       help='Path to backbone_indices file (.npy) - pre-computed defect atoms')
     parser.add_argument('--strain', help='Path to strain field data (.npy)')
     parser.add_argument('--loading', '-l', default='tensile',
                        choices=['tensile', 'compression', 'shear', 'fatigue'])
@@ -1238,6 +1257,7 @@ def main():
             atom_types_path=args.atom_types,
             material_type=args.material,
             cluster_definition_path=args.clusters,
+            
             strain_field_path=args.strain,
             enable_two_stage=not args.no_two_stage,
             enable_impact=not args.no_impact,
