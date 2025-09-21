@@ -531,21 +531,57 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         return merged_result
     
     # === ヘルパーメソッド ===
-    
     def _identify_defect_regions(self,
-                                cluster_atoms: Optional[Dict[int, List[int]]],
-                                backbone_indices: Optional[np.ndarray]
-                                ) -> Optional[np.ndarray]:
-        """欠陥領域の特定"""
+                            cluster_atoms: Optional[Dict[int, List[int]]],
+                            backbone_indices: Optional[np.ndarray]
+                            ) -> Optional[np.ndarray]:
+        """欠陥領域の特定
+        
+        Parameters
+        ----------
+        cluster_atoms : Dict[int, List[int]], optional
+            クラスター定義（キーがクラスターID、値が原子インデックスリスト）
+        backbone_indices : np.ndarray, optional
+            既存のbackbone_indices（あれば優先使用）
+        
+        Returns
+        -------
+        np.ndarray or None
+            欠陥原子のインデックス配列（必ずint32型）
+        """
+        # 既存のbackbone_indicesがあればそれを使用（型チェック付き）
+        if backbone_indices is not None:
+            # 型変換を確実に
+            if backbone_indices.dtype != np.int32:
+                backbone_indices = np.array(backbone_indices, dtype=np.int32)
+            print(f"  Using provided backbone_indices: {len(backbone_indices)} atoms")
+            return backbone_indices
+        
+        # cluster_atomsから自動生成
         if cluster_atoms is not None:
             defect_indices = []
             for cid, atoms in cluster_atoms.items():
+                # キーを文字列に変換して比較（JSONから読み込んだ場合への対応）
                 if str(cid) != "0":  # Cluster 0（健全領域）以外
-                    defect_indices.extend(atoms)
+                    # atomsの各要素を確実に整数に変換
+                    if isinstance(atoms, (list, np.ndarray)):
+                        # 各要素を整数に変換
+                        defect_indices.extend([int(a) for a in atoms])
+                    else:
+                        defect_indices.extend(atoms)
+            
             if defect_indices:
-                backbone_indices = np.array(sorted(defect_indices))
-                print(f"  Using {len(backbone_indices)} defect atoms from clusters")
-        return backbone_indices
+                # 重複除去してソート、必ずint32型で返す
+                backbone_indices = np.array(sorted(set(defect_indices)), dtype=np.int32)
+                print(f"  Auto-detected {len(backbone_indices)} defect atoms from {len(cluster_atoms)-1} clusters")
+                return backbone_indices
+            else:
+                print("  ⚠️ No defect atoms found in clusters (only healthy cluster 0)")
+                return None
+        
+        # どちらもない場合
+        print("  ℹ️ No backbone_indices or cluster_atoms provided")
+        return None
     
     def _add_defect_analysis_to_features(self,
                                         trajectory: np.ndarray,
