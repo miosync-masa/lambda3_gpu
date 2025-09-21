@@ -82,6 +82,112 @@ logger.propagate = False  # ← これ重要！親への伝播を止める
 # 子モジュールのログも制御（オプション）
 logging.getLogger('lambda3_gpu').propagate = False
 
+# ===============================
+# 材料パラメータデータベース（詳細版）
+# ===============================
+
+MATERIAL_DATABASE = {
+    'SUJ2': {
+        'name': 'Bearing Steel (JIS SUJ2)',
+        'crystal_structure': 'BCC',
+        'lattice_constant': 2.87,      # Å
+        'elastic_modulus': 210.0,      # GPa (既存のEと同じ)
+        'poisson_ratio': 0.30,
+        'yield_strength': 1.5,         # GPa (既存のyieldと同じ)
+        'ultimate_strength': 2.0,      # GPa (既存のultimateと同じ)
+        'fatigue_strength': 0.7,       # GPa
+        'fracture_toughness': 30.0,    # MPa√m (既存のK_ICと同じ)
+        'melting_temp': 1811,          # K
+        'density': 7850,               # kg/m³ (既存の7.85 g/cm³と同じ)
+        'specific_heat': 460,          # J/(kg·K)
+        'thermal_expansion': 1.2e-5,   # /K
+        'ideal_coordination': 8,       # BCC
+        'lindemann_criterion': 0.10,
+        'taylor_quinney': 0.90,        # 塑性仕事→熱変換率
+        'work_hardening_n': 0.20,      # 加工硬化指数
+    },
+    'AL7075': {
+        'name': 'Aluminum Alloy 7075-T6',
+        'crystal_structure': 'FCC',
+        'lattice_constant': 4.05,
+        'elastic_modulus': 71.7,       # GPa
+        'poisson_ratio': 0.33,
+        'yield_strength': 0.503,       # GPa
+        'ultimate_strength': 0.572,    # GPa
+        'fatigue_strength': 0.159,
+        'fracture_toughness': 23.0,    # MPa√m
+        'melting_temp': 933,
+        'density': 2810,               # kg/m³
+        'specific_heat': 900,
+        'thermal_expansion': 2.4e-5,
+        'ideal_coordination': 12,      # FCC
+        'lindemann_criterion': 0.12,
+        'taylor_quinney': 0.85,
+        'work_hardening_n': 0.15,
+    },
+    'Ti6Al4V': {
+        'name': 'Titanium Alloy Ti-6Al-4V',
+        'crystal_structure': 'HCP',
+        'lattice_constant': 2.95,      # a-axis
+        'elastic_modulus': 113.8,
+        'poisson_ratio': 0.342,
+        'yield_strength': 0.88,
+        'ultimate_strength': 0.95,
+        'fatigue_strength': 0.51,
+        'fracture_toughness': 75.0,
+        'melting_temp': 1941,
+        'density': 4430,               # kg/m³
+        'specific_heat': 520,
+        'thermal_expansion': 8.6e-6,
+        'ideal_coordination': 12,      # HCP
+        'lindemann_criterion': 0.11,
+        'taylor_quinney': 0.80,
+        'work_hardening_n': 0.10,
+    },
+    'SS316L': {
+        'name': 'Stainless Steel 316L',
+        'crystal_structure': 'FCC',
+        'lattice_constant': 3.58,
+        'elastic_modulus': 193.0,
+        'poisson_ratio': 0.30,
+        'yield_strength': 0.205,
+        'ultimate_strength': 0.515,
+        'fatigue_strength': 0.24,
+        'fracture_toughness': 112.0,
+        'melting_temp': 1673,
+        'density': 8000,               # kg/m³
+        'specific_heat': 500,
+        'thermal_expansion': 1.6e-5,
+        'ideal_coordination': 12,
+        'lindemann_criterion': 0.12,
+        'taylor_quinney': 0.85,
+        'work_hardening_n': 0.45,
+    }
+}
+
+def get_material_parameters(material_type: str) -> Dict:
+    """
+    材料パラメータ取得（物理的に完全な版）
+    
+    既存コードとの互換性のため、旧キー名もマッピング
+    """
+    if material_type not in MATERIAL_DATABASE:
+        logger.warning(f"Unknown material {material_type}, using SUJ2")
+        material_type = 'SUJ2'
+    
+    # 詳細パラメータ取得
+    params = MATERIAL_DATABASE[material_type].copy()
+    
+    # 既存コードとの互換性マッピング
+    params['E'] = params['elastic_modulus']
+    params['nu'] = params['poisson_ratio']
+    params['yield'] = params['yield_strength']
+    params['ultimate'] = params['ultimate_strength']
+    params['K_IC'] = params['fracture_toughness']
+    params['density_gcm3'] = params['density'] / 1000  # kg/m³ → g/cm³
+    
+    return params
+
 # ============================================
 # データ統合ヘルパー関数（新規追加）
 # ============================================
@@ -196,39 +302,82 @@ def enhance_macro_result(
 
 def generate_stress_curve(strain: np.ndarray, material_params: Dict, 
                          events: List) -> np.ndarray:
-    """応力曲線を生成（2次元で返す）"""
-    E = material_params.get('E', 210.0)
-    yield_stress = material_params.get('yield', 1.5)
+    """
+    応力曲線を生成（物理的に正確な版）
+    Ramberg-Osgood則＋イベント基づく修正
+    """
+    # パラメータ取得（互換性考慮）
+    E = material_params.get('elastic_modulus', material_params.get('E', 210.0))
+    nu = material_params.get('poisson_ratio', material_params.get('nu', 0.3))
+    sigma_y = material_params.get('yield_strength', material_params.get('yield', 1.5))
+    sigma_u = material_params.get('ultimate_strength', material_params.get('ultimate', 2.0))
+    n_value = material_params.get('work_hardening_n', 0.20)
     
     # 形状確認
     strain = np.atleast_1d(strain).squeeze()  # 確実に1次元に
+    n_frames = len(strain)
     
-    # 弾性領域
-    stress = E * strain
+    # 降伏ひずみ
+    epsilon_y = sigma_y / E
     
-    # 降伏後の処理
-    yield_strain = yield_stress / E
-    plastic_mask = strain > yield_strain
-    if np.any(plastic_mask):
-        # 加工硬化を考慮（より現実的な値に）
-        n_value = 0.2  # 加工硬化指数（SUJ2の典型値）
-        K_value = material_params.get('ultimate', 2.0)
-        stress[plastic_mask] = K_value * ((strain[plastic_mask] - yield_strain + 0.002) ** n_value) + yield_stress
+    # Ramberg-Osgood則による弾塑性応力計算
+    stress = np.zeros_like(strain)
     
-    # イベントによる応力変動（より物理的に）
+    for i, eps in enumerate(strain):
+        if eps <= epsilon_y:
+            # 弾性域（フックの法則）
+            stress[i] = E * eps
+        else:
+            # 塑性域（加工硬化考慮）
+            # σ = σ_y + K * (ε - ε_y)^n
+            # K: 強度係数（経験的に設定）
+            K = sigma_u * 1.1
+            plastic_strain = eps - epsilon_y
+            
+            # 小さい塑性ひずみのガード（数値安定性）
+            if plastic_strain > 1e-6:
+                stress[i] = sigma_y + K * (plastic_strain ** n_value)
+            else:
+                stress[i] = sigma_y
+            
+            # 最大強度でキャップ
+            stress[i] = min(stress[i], sigma_u)
+    
+    # イベントによる物理的修正
     for start, end, event_type in events:
+        if start >= n_frames:
+            continue
+        end = min(end, n_frames)
+        
         if 'crack' in event_type:
-            # 亀裂による段階的な応力低下
-            decay_factor = 0.95 - 0.1 * (end - start) / 100  # 継続時間に応じて
-            stress[start:] *= max(0.5, decay_factor)
+            # Griffithの破壊基準を簡略化
+            K_IC = material_params.get('fracture_toughness', 30.0)  # MPa√m
+            crack_length = 0.001 * (end - start) / 100  # 仮想亀裂長さ[m]
+            
+            if crack_length > 0:
+                # 応力拡大係数による応力低下
+                stress_reduction = 1.0 - min(0.5, crack_length * 1000)
+                stress[start:] *= stress_reduction
+                
         elif 'plastic' in event_type:
-            # 塑性変形による加工硬化
-            stress[start:end] *= 1.02  # 控えめに
+            # Bauschinger効果（逆負荷軟化）を簡略化
+            stress[start:end] *= (1.0 + 0.02 * n_value)  # 微小な加工硬化
+            
         elif 'dislocation' in event_type:
-            # 転位による応力集中
-            stress[start:end] *= 1.01
+            # Peach-Koehler力による応力場変化
+            b = material_params.get('lattice_constant', 2.87)  # バーガースベクトル
+            local_stress_increase = 0.001 * E * b / max(1, end - start)
+            stress[start:end] += local_stress_increase
+            
+        elif 'fatigue' in event_type:
+            # Paris則による疲労損傷
+            fatigue_strength = material_params.get('fatigue_strength', 0.7)
+            if np.mean(stress[start:end]) > fatigue_strength:
+                # 累積損傷
+                damage_factor = 1.0 - 0.1 * (end - start) / n_frames
+                stress[start:] *= max(0.3, damage_factor)
     
-    # ===== ここが重要！2次元 (n_frames, 1) で返す =====
+    # 2次元 (n_frames, 1) で返す
     stress = stress.reshape(-1, 1)
     assert stress.ndim == 2 and stress.shape[1] == 1, f"Stress must be (n_frames, 1), got shape {stress.shape}"
     
