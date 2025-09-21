@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Material Analytics GPU - Advanced Material-Specific Analysis
-============================================================
+Material Analytics GPU - Advanced Material-Specific Analysis (REFACTORED)
+==========================================================================
 
 材料解析に特化した高度な解析機能群
 結晶欠陥定量化、構造一貫性評価、破壊予測など
 
 Lambda³ GPU既存モジュールと連携して材料特有の現象を解析
 
-Version: 1.0.0
+Version: 2.0.0 - Refactored with unified material database
 Author: 環ちゃん
 """
 
@@ -29,48 +29,14 @@ except ImportError:
 # Lambda³ Core imports
 from ..core.gpu_utils import GPUBackend
 
+# Material Database import (統一データベース)
+from .material_database import MATERIAL_DATABASE, get_material_parameters
+
 # Logger設定
 logger = logging.getLogger(__name__)
 
 # ===============================
-# Material Properties Database
-# ===============================
-
-MATERIAL_PROPERTIES = {
-    'SUJ2': {
-        'name': 'Bearing Steel (SUJ2)',
-        'elastic_modulus': 210.0,  # GPa
-        'yield_strength': 1.5,      # GPa
-        'ultimate_strength': 2.0,   # GPa
-        'fatigue_strength': 0.7,    # GPa
-        'fracture_toughness': 30.0, # MPa√m
-        'crystal_structure': 'BCC',
-        'ideal_coordination': 8
-    },
-    'AL7075': {
-        'name': 'Aluminum Alloy 7075',
-        'elastic_modulus': 71.7,
-        'yield_strength': 0.503,
-        'ultimate_strength': 0.572,
-        'fatigue_strength': 0.159,
-        'fracture_toughness': 23.0,
-        'crystal_structure': 'FCC',
-        'ideal_coordination': 12
-    },
-    'TI6AL4V': {
-        'name': 'Titanium Alloy Ti-6Al-4V',
-        'elastic_modulus': 113.8,
-        'yield_strength': 0.880,
-        'ultimate_strength': 0.950,
-        'fatigue_strength': 0.510,
-        'fracture_toughness': 75.0,
-        'crystal_structure': 'HCP',
-        'ideal_coordination': 12
-    }
-}
-
-# ===============================
-# Data Classes
+# Data Classes (変更なし)
 # ===============================
 
 @dataclass
@@ -80,6 +46,7 @@ class DefectAnalysisResult:
     cumulative_charge: np.ndarray       # 累積チャージ (n_frames,)
     burgers_vectors: Optional[np.ndarray] = None  # Burgers vectors
     coordination_defects: Optional[np.ndarray] = None  # 配位数欠陥
+    defect_density: Optional[float] = None  # 欠陥密度
 
 @dataclass
 class CrystalDefectResult:
@@ -97,6 +64,8 @@ class MaterialState:
     max_damage: float                   # 最大損傷値
     damage_distribution: Optional[np.ndarray] = None  # クラスター別損傷分布
     critical_clusters: Optional[List[int]] = None     # 臨界クラスターリスト
+    failure_mode: Optional[str] = None  # 破壊モード
+    reliability_beta: Optional[float] = None  # 信頼性β指標
     
     def to_dict(self) -> Dict[str, Any]:
         """辞書形式に変換（後方互換性のため）"""
@@ -105,7 +74,9 @@ class MaterialState:
             'health_index': self.health_index,
             'max_damage': self.max_damage,
             'damage_distribution': self.damage_distribution,
-            'critical_clusters': self.critical_clusters
+            'critical_clusters': self.critical_clusters,
+            'failure_mode': self.failure_mode,
+            'reliability_beta': self.reliability_beta
         }
 
 @dataclass
@@ -118,20 +89,20 @@ class FailurePredictionResult:
     failure_mode: Optional[str] = None
 
 # ===============================
-# Main Class
+# Main Class (リファクタリング版)
 # ===============================
 
 class MaterialAnalyticsGPU(GPUBackend):
     """
-    材料特有の高度な解析機能を提供するGPUクラス
+    材料特有の高度な解析機能を提供するGPUクラス（リファクタリング版）
     
-    既存のLambda³検出器と連携して、材料科学的な観点から
-    結晶欠陥、構造安定性、破壊リスクなどを評価
+    統一材料データベース(MATERIAL_DATABASE)を使用
+    物理的に正確な欠陥解析と材料状態評価を実装
     
     Parameters
     ----------
     material_type : str, optional
-        材料タイプ ('SUJ2', 'AL7075', 'TI6AL4V')
+        材料タイプ ('SUJ2', 'AL7075', 'Ti6Al4V', 'SS316L')
     force_cpu : bool, optional
         CPUモードを強制するかどうか
     """
@@ -147,12 +118,9 @@ class MaterialAnalyticsGPU(GPUBackend):
         """
         super().__init__(force_cpu=force_cpu)
         
-        # 材料プロパティ設定
+        # 材料データベースから取得（統一版）
         self.material_type = material_type
-        self.material_props = MATERIAL_PROPERTIES.get(
-            material_type, 
-            MATERIAL_PROPERTIES['SUJ2']
-        )
+        self.material_props = get_material_parameters(material_type)
         
         # 解析パラメータ
         self.coherence_window = 50
@@ -162,18 +130,18 @@ class MaterialAnalyticsGPU(GPUBackend):
         logger.info(f"Crystal structure: {self.material_props['crystal_structure']}")
     
     # ===============================
-    # Crystal Defect Analysis
+    # Crystal Defect Analysis (正規化版)
     # ===============================
     
-    def compute_crystal_defect_charge(self,
-                                     trajectory: np.ndarray,
-                                     cluster_atoms: Dict[int, List[int]],
-                                     cutoff: float = 3.5) -> DefectAnalysisResult:
+    def compute_normalized_defect_charge(self,
+                                        trajectory: np.ndarray,
+                                        cluster_atoms: Dict[int, List[int]],
+                                        cutoff: float = 3.5) -> DefectAnalysisResult:
         """
-        結晶欠陥のトポロジカルチャージを計算
+        正規化された欠陥チャージ計算（改善版）
         
-        転位、空孔、格子間原子などの結晶欠陥を定量化。
-        既存のtopology_breaks_gpu.pyとは異なり、結晶構造の欠陥に特化。
+        転位、空孔、格子間原子などの結晶欠陥を定量化し、
+        値を0-1範囲に正規化して数値の爆発を防ぐ
         
         Parameters
         ----------
@@ -187,75 +155,111 @@ class MaterialAnalyticsGPU(GPUBackend):
         Returns
         -------
         DefectAnalysisResult
-            欠陥解析結果
+            欠陥解析結果（正規化済み）
         """
-        trajectory = self.to_gpu(trajectory)
         n_frames, n_atoms, _ = trajectory.shape
         n_clusters = len(cluster_atoms)
         
+        # 材料定数
+        lattice = self.material_props.get('lattice_constant', 2.87)
+        ideal_coord = self.material_props.get('ideal_coordination', 8)
+        
         # 欠陥チャージ配列
-        defect_charge = self.zeros((n_frames - 1, n_clusters))
-        burgers_list = []
+        defect_charge = np.zeros((n_frames - 1, n_clusters))
         
         for frame in range(n_frames - 1):
-            frame_burgers = []
+            pos_current = trajectory[frame]
+            pos_next = trajectory[frame + 1]
             
             for cid, atoms in cluster_atoms.items():
-                if cid >= n_clusters or len(atoms) < 10:
+                if cid >= n_clusters or len(atoms) < 5:
                     continue
                 
-                # Burgers回路解析
-                burgers = self._compute_burgers_circuit(
-                    self.to_cpu(trajectory[frame]), atoms, cutoff
-                )
-                frame_burgers.append(burgers)
+                # 1. Burgersベクトル計算（簡略版）
+                cluster_center = np.mean(pos_current[atoms], axis=0)
+                cluster_displacements = pos_next[atoms] - pos_current[atoms]
+                burgers_magnitude = np.linalg.norm(np.sum(cluster_displacements, axis=0))
+                burgers_normalized = burgers_magnitude / (lattice * len(atoms))
                 
-                # 配位数変化
-                coord_change = self._compute_coordination_change(
-                    self.to_cpu(trajectory[frame]),
-                    self.to_cpu(trajectory[frame + 1]),
-                    atoms, cutoff
-                )
+                # 2. 配位数変化の正規化計算
+                coord_changes = []
+                sample_size = min(10, len(atoms))
+                sample_atoms = atoms[:sample_size] if isinstance(atoms, list) else list(atoms)[:sample_size]
                 
-                # 欠陥チャージ = Burgers大きさ + 配位数変化
-                defect_charge[frame, cid] = (
-                    np.linalg.norm(burgers) / max(1, len(atoms)) +
-                    abs(coord_change) * 0.1
-                )
-            
-            if frame_burgers:
-                burgers_list.append(np.array(frame_burgers))
+                for atom in sample_atoms:
+                    # 現在フレーム配位数
+                    distances_current = np.linalg.norm(pos_current - pos_current[atom], axis=1)
+                    coord_current = np.sum((distances_current > 0) & (distances_current < cutoff))
+                    
+                    # 次フレーム配位数
+                    distances_next = np.linalg.norm(pos_next - pos_next[atom], axis=1)
+                    coord_next = np.sum((distances_next > 0) & (distances_next < cutoff))
+                    
+                    # 理想配位数との差を正規化
+                    coord_change = abs(coord_next - coord_current) / ideal_coord
+                    coord_changes.append(coord_change)
+                
+                coord_change_normalized = np.mean(coord_changes) if coord_changes else 0.0
+                
+                # 3. 欠陥チャージ（0-1範囲に正規化）
+                # tanhで飽和させて爆発を防ぐ
+                raw_charge = 0.3 * burgers_normalized + 0.2 * coord_change_normalized
+                defect_charge[frame, cid] = np.tanh(raw_charge)
         
-        # 累積チャージ（欠陥の蓄積）
-        cumulative_charge = self.xp.cumsum(self.xp.sum(defect_charge, axis=1))
+        # 累積チャージ（平均化して爆発を防ぐ）
+        cumulative_charge = np.cumsum(np.mean(defect_charge, axis=1))
+        
+        # 全体の欠陥密度
+        total_defect_atoms = sum(
+            len(atoms) for cid, atoms in cluster_atoms.items() 
+            if cid != 0  # クラスター0（健全領域）を除外
+        )
+        defect_density = total_defect_atoms / n_atoms if n_atoms > 0 else 0.0
         
         return DefectAnalysisResult(
-            defect_charge=self.to_cpu(defect_charge),
-            cumulative_charge=self.to_cpu(cumulative_charge),
-            burgers_vectors=np.array(burgers_list) if burgers_list else None,
-            coordination_defects=None
+            defect_charge=defect_charge,
+            cumulative_charge=cumulative_charge,
+            burgers_vectors=None,  # 簡略化のため省略
+            coordination_defects=None,
+            defect_density=defect_density
         )
     
+    # 旧メソッドとの互換性保持（内部で正規化版を呼ぶ）
+    def compute_crystal_defect_charge(self,
+                                     trajectory: np.ndarray,
+                                     cluster_atoms: Dict[int, List[int]],
+                                     cutoff: float = 3.5) -> DefectAnalysisResult:
+        """旧メソッド名との互換性保持"""
+        return self.compute_normalized_defect_charge(trajectory, cluster_atoms, cutoff)
+    
     # ===============================
-    # Material State Evaluation
+    # Material State Evaluation (物理的改善版)
     # ===============================
     
     def evaluate_material_state(self,
-                               damage_scores: Optional[np.ndarray] = None,
+                               stress_history: Optional[np.ndarray] = None,
                                defect_charge: Optional[np.ndarray] = None,
+                               energy_balance: Optional[Dict] = None,
+                               damage_scores: Optional[np.ndarray] = None,
                                strain_history: Optional[np.ndarray] = None,
                                critical_clusters: Optional[List[int]] = None) -> MaterialState:
         """
-        材料の現在状態を評価
+        材料の健全性評価（物理的改善版）
+        
+        応力、欠陥、エネルギー状態を総合的に評価
         
         Parameters
         ----------
-        damage_scores : np.ndarray, optional
-            損傷スコア (n_frames,) or (n_frames, n_clusters)
+        stress_history : np.ndarray, optional
+            応力履歴 (n_frames, 1) or (n_frames,)
         defect_charge : np.ndarray, optional
-            欠陥チャージ
+            欠陥チャージ (n_frames, n_clusters)
+        energy_balance : Dict, optional
+            エネルギーバランス結果
+        damage_scores : np.ndarray, optional
+            損傷スコア（後方互換性）
         strain_history : np.ndarray, optional
-            歪み履歴
+            歪み履歴（後方互換性）
         critical_clusters : List[int], optional
             臨界クラスターリスト
             
@@ -264,77 +268,131 @@ class MaterialAnalyticsGPU(GPUBackend):
         MaterialState
             材料状態
         """
-        # 初期値
-        state = 'healthy'
+        # 初期化
         health_index = 1.0
-        max_damage = 0.0
-        damage_distribution = None
+        state = 'healthy'
+        failure_probability = 0.0
+        failure_mode = None
         
-        # 損傷評価
-        if damage_scores is not None:
-            damage_scores = self.to_gpu(damage_scores)
-            
-            if damage_scores.ndim > 1:
-                # クラスター別損傷
-                max_damage_per_cluster = self.xp.max(damage_scores, axis=0)
-                max_damage = float(self.xp.max(max_damage_per_cluster))
-                damage_distribution = self.to_cpu(max_damage_per_cluster)
-            else:
-                max_damage = float(self.xp.max(damage_scores))
-            
-            # 健全性指標
-            health_index = max(0.0, 1.0 - max_damage)
+        # 材料パラメータ取得
+        E = self.material_props.get('elastic_modulus', 210.0)
+        sigma_y = self.material_props.get('yield_strength', 1.5)
+        sigma_u = self.material_props.get('ultimate_strength', 2.0)
         
-        # 欠陥蓄積評価
-        if defect_charge is not None:
-            defect_charge = self.to_gpu(defect_charge)
-            cumulative_defect = float(self.xp.sum(defect_charge))
+        # 1. 応力ベース評価
+        if stress_history is not None:
+            stress_history = np.asarray(stress_history)
+            if stress_history.ndim == 2 and stress_history.shape[1] == 1:
+                stress_history = stress_history.squeeze()
             
-            # 欠陥による健全性低下
-            defect_penalty = min(0.3, cumulative_defect / 100.0)
-            health_index = max(0.0, health_index - defect_penalty)
-        
-        # 歪み評価
-        if strain_history is not None:
-            strain_history = self.to_gpu(strain_history)
-            max_strain = float(self.xp.max(self.xp.abs(strain_history)))
+            max_stress = float(np.max(np.abs(stress_history)))
+            mean_stress = float(np.mean(np.abs(stress_history)))
             
-            # 材料プロパティ
-            E = self.material_props['elastic_modulus']
-            yield_strain = self.material_props['yield_strength'] / E
-            
-            if max_strain > yield_strain:
-                # 塑性変形による健全性低下
-                plastic_penalty = min(0.4, (max_strain - yield_strain) * 5.0)
-                health_index = max(0.0, health_index - plastic_penalty)
-        
-        # 状態分類
-        if health_index > 0.8:
-            state = 'healthy'
-        elif health_index > 0.5:
-            state = 'damaged'
-        elif health_index > 0.2:
-            state = 'critical'
+            if max_stress > sigma_u:
+                health_index *= 0.1
+                failure_probability = 1.0
+                state = 'failed'
+                failure_mode = 'immediate_fracture'
+            elif max_stress > sigma_y:
+                plastic_factor = (max_stress - sigma_y) / (sigma_u - sigma_y)
+                health_index *= (1 - 0.5 * plastic_factor)
+                failure_probability = plastic_factor
+                failure_mode = 'plastic_failure'
+                if health_index < 0.5:
+                    state = 'critical'
+                else:
+                    state = 'damaged'
         else:
-            state = 'failed'
+            max_stress = 0.0
+            mean_stress = 0.0
         
-        # 臨界クラスター情報を追加
-        if critical_clusters is None and damage_distribution is not None:
-            # 損傷の高いクラスターを臨界とみなす
-            threshold = max_damage * 0.7
-            critical_indices = np.where(damage_distribution > threshold)[0]
+        # 2. 欠陥ベース評価
+        if defect_charge is not None and defect_charge.size > 0:
+            max_defect = float(np.max(defect_charge))
+            mean_defect = float(np.mean(defect_charge))
+            
+            # 欠陥による健全性低下（最大30%）
+            defect_penalty = min(0.3, mean_defect)
+            health_index *= (1 - defect_penalty)
+            
+            # 欠陥加速度（危険度指標）
+            if len(defect_charge) > 2:
+                if defect_charge.ndim == 2:
+                    defect_evolution = np.mean(defect_charge, axis=1)
+                else:
+                    defect_evolution = defect_charge
+                
+                defect_acceleration = np.max(np.abs(np.gradient(defect_evolution)))
+                if defect_acceleration > 0.1:
+                    health_index *= 0.8
+                    if state == 'healthy':
+                        state = 'damaged'
+                    if failure_mode is None:
+                        failure_mode = 'defect_driven_failure'
+        
+        # 3. エネルギー/相状態評価
+        if energy_balance is not None:
+            phase = energy_balance.get('phase_state', 'solid')
+            lindemann = energy_balance.get('lindemann_parameter', 0.0)
+            lindemann_criterion = self.material_props.get('lindemann_criterion', 0.1)
+            
+            if phase == 'liquid' or lindemann > lindemann_criterion:
+                health_index *= 0.2
+                state = 'failed'
+                failure_probability = 1.0
+                if failure_mode is None:
+                    failure_mode = 'melting'
+            elif phase == 'transition':
+                health_index *= 0.7
+                if state == 'healthy':
+                    state = 'damaged'
+        
+        # 4. 後方互換性：damage_scoresの処理
+        if damage_scores is not None:
+            damage_scores = np.asarray(damage_scores)
+            max_damage = float(np.max(damage_scores))
+            health_index *= max(0.0, 1.0 - max_damage)
+        
+        # 5. 後方互換性：strain_historyの処理
+        if strain_history is not None and stress_history is None:
+            # 歪みから応力を推定（簡易版）
+            strain_history = np.asarray(strain_history)
+            max_strain = float(np.max(np.abs(strain_history)))
+            
+            yield_strain = sigma_y / E
+            if max_strain > yield_strain:
+                plastic_penalty = min(0.4, (max_strain - yield_strain) * 5.0)
+                health_index *= (1 - plastic_penalty)
+        
+        # 6. 最終的な健全性指標の正規化
+        health_index = max(0.0, min(1.0, health_index))
+        
+        # 7. 信頼性指標（β指標）
+        if mean_stress > 0:
+            reliability_beta = (sigma_u - mean_stress) / (sigma_u * 0.1)  # 簡略化
+        else:
+            reliability_beta = 5.0
+        
+        # 8. 臨界クラスターの決定
+        if critical_clusters is None and defect_charge is not None and defect_charge.ndim == 2:
+            # 欠陥の高いクラスターを臨界とみなす
+            cluster_max_defect = np.max(defect_charge, axis=0)
+            threshold = np.mean(cluster_max_defect) + 2 * np.std(cluster_max_defect)
+            critical_indices = np.where(cluster_max_defect > threshold)[0]
             critical_clusters = critical_indices.tolist() if len(critical_indices) > 0 else None
         
         return MaterialState(
             state=state,
             health_index=health_index,
-            max_damage=max_damage,
-            damage_distribution=damage_distribution,
-            critical_clusters=critical_clusters
+            max_damage=1.0 - health_index,
+            damage_distribution=None,  # 簡略化
+            critical_clusters=critical_clusters,
+            failure_mode=failure_mode,
+            reliability_beta=reliability_beta
         )
     
     # ===============================
-    # Structural Coherence Analysis
+    # Structural Coherence Analysis (変更なし)
     # ===============================
     
     def compute_structural_coherence(self,
@@ -343,23 +401,6 @@ class MaterialAnalyticsGPU(GPUBackend):
                                     window: Optional[int] = None) -> np.ndarray:
         """
         構造一貫性の計算 - 熱ゆらぎと永続的構造変化を区別
-        
-        既存のboundary_detection_gpu.pyの境界検出とは異なり、
-        構造の時間的安定性を評価。
-        
-        Parameters
-        ----------
-        coordination : np.ndarray
-            配位数時系列 (n_frames, n_clusters)
-        strain : np.ndarray
-            歪み時系列 (n_frames, n_clusters)
-        window : int, optional
-            時間平均ウィンドウサイズ
-            
-        Returns
-        -------
-        np.ndarray
-            構造一貫性スコア (n_frames,)
         """
         coordination = self.to_gpu(coordination)
         strain = self.to_gpu(strain)
@@ -372,7 +413,7 @@ class MaterialAnalyticsGPU(GPUBackend):
             window = min(self.coherence_window, n_frames // 4)
         
         # 理想配位数
-        ideal_coord = self.material_props['ideal_coordination']
+        ideal_coord = self.material_props.get('ideal_coordination', 8)
         
         for i in range(window, n_frames - window):
             cluster_coherence = self.zeros(n_clusters)
@@ -407,7 +448,7 @@ class MaterialAnalyticsGPU(GPUBackend):
         return self.to_cpu(coherence)
     
     # ===============================
-    # Material Event Classification
+    # Material Event Classification (変更なし)
     # ===============================
     
     def classify_material_events(self,
@@ -415,25 +456,7 @@ class MaterialAnalyticsGPU(GPUBackend):
                                 anomaly_scores: Dict[str, np.ndarray],
                                 structural_coherence: np.ndarray,
                                 defect_charge: Optional[np.ndarray] = None) -> List[Tuple[int, int, str]]:
-        """
-        材料イベントの物理的意味を分類
-        
-        Parameters
-        ----------
-        critical_events : List[Tuple[int, int]]
-            臨界イベントのリスト (start, end)
-        anomaly_scores : Dict[str, np.ndarray]
-            異常スコア辞書
-        structural_coherence : np.ndarray
-            構造一貫性スコア
-        defect_charge : np.ndarray, optional
-            欠陥チャージ
-            
-        Returns
-        -------
-        List[Tuple[int, int, str]]
-            分類されたイベント (start, end, event_type)
-        """
+        """材料イベントの物理的意味を分類"""
         classified_events = []
         
         for event in critical_events:
@@ -489,7 +512,7 @@ class MaterialAnalyticsGPU(GPUBackend):
         return classified_events
     
     # ===============================
-    # Failure Prediction
+    # Failure Prediction (材料データベース使用版)
     # ===============================
     
     def predict_failure(self,
@@ -497,25 +520,7 @@ class MaterialAnalyticsGPU(GPUBackend):
                        damage_history: Optional[np.ndarray] = None,
                        defect_charge: Optional[np.ndarray] = None,
                        loading_cycles: Optional[int] = None) -> FailurePredictionResult:
-        """
-        材料の破壊確率と信頼性を予測
-        
-        Parameters
-        ----------
-        strain_history : np.ndarray
-            歪み履歴 (n_frames, n_clusters) or (n_frames,)
-        damage_history : np.ndarray, optional
-            損傷履歴
-        defect_charge : np.ndarray, optional
-            欠陥チャージ履歴
-        loading_cycles : int, optional
-            負荷サイクル数
-            
-        Returns
-        -------
-        FailurePredictionResult
-            破壊予測結果
-        """
+        """材料の破壊確率と信頼性を予測"""
         strain_history = self.to_gpu(strain_history)
         
         # 歪みの統計量
@@ -528,10 +533,11 @@ class MaterialAnalyticsGPU(GPUBackend):
             max_strain = self.xp.max(self.xp.abs(strain_history))
             std_strain = self.xp.std(self.xp.abs(strain_history))
         
-        # 材料プロパティ
-        E = self.material_props['elastic_modulus']
-        yield_strain = self.material_props['yield_strength'] / E
-        ultimate_strain = self.material_props['ultimate_strength'] / E
+        # 材料プロパティ（統一データベースから）
+        E = self.material_props.get('elastic_modulus', 210.0)
+        yield_strain = self.material_props.get('yield_strength', 1.5) / E
+        ultimate_strain = self.material_props.get('ultimate_strength', 2.0) / E
+        fatigue_strength = self.material_props.get('fatigue_strength', 0.7)
         
         # 破壊確率計算
         if max_strain > ultimate_strain:
@@ -545,9 +551,9 @@ class MaterialAnalyticsGPU(GPUBackend):
             # 弾性域（疲労考慮）
             if loading_cycles is not None and loading_cycles > 0:
                 # Basquin則による疲労寿命推定
-                fatigue_strength = self.material_props['fatigue_strength'] / E
-                if mean_strain > fatigue_strength:
-                    Nf = 1e6 * (fatigue_strength / mean_strain) ** 12  # S-N曲線
+                fatigue_strain = fatigue_strength / E
+                if mean_strain > fatigue_strain:
+                    Nf = 1e6 * (fatigue_strain / mean_strain) ** 12  # S-N曲線
                     failure_prob = min(1.0, loading_cycles / Nf)
                     failure_mode = 'fatigue_failure'
                 else:
@@ -572,7 +578,12 @@ class MaterialAnalyticsGPU(GPUBackend):
         # 欠陥蓄積による補正
         if defect_charge is not None:
             defect_charge = self.to_gpu(defect_charge)
-            defect_rate = float(self.xp.mean(self.xp.gradient(defect_charge)))
+            if defect_charge.ndim == 2:
+                defect_evolution = self.xp.mean(defect_charge, axis=1)
+            else:
+                defect_evolution = defect_charge
+            
+            defect_rate = float(self.xp.mean(self.xp.gradient(defect_evolution)))
             if defect_rate > 0.1:
                 failure_prob = min(1.0, failure_prob + defect_rate * 0.2)
         
@@ -598,30 +609,14 @@ class MaterialAnalyticsGPU(GPUBackend):
         )
     
     # ===============================
-    # Helper Methods
+    # Helper Methods（変更なし）
     # ===============================
     
     def _compute_burgers_circuit(self,
                                 positions: np.ndarray,
                                 atoms: List[int],
                                 cutoff: float) -> np.ndarray:
-        """
-        Burgers回路による転位検出
-        
-        Parameters
-        ----------
-        positions : np.ndarray
-            原子位置 (n_atoms, 3)
-        atoms : List[int]
-            クラスター内原子インデックス
-        cutoff : float
-            カットオフ距離
-            
-        Returns
-        -------
-        np.ndarray
-            Burgers vector (3,)
-        """
+        """Burgers回路による転位検出"""
         if len(atoms) < 10:
             return np.zeros(3)
         
@@ -657,31 +652,13 @@ class MaterialAnalyticsGPU(GPUBackend):
                                     pos2: np.ndarray,
                                     atoms: List[int],
                                     cutoff: float) -> float:
-        """
-        配位数変化の計算
-        
-        Parameters
-        ----------
-        pos1 : np.ndarray
-            フレーム1の原子位置
-        pos2 : np.ndarray
-            フレーム2の原子位置
-        atoms : List[int]
-            クラスター内原子インデックス
-        cutoff : float
-            カットオフ距離
-            
-        Returns
-        -------
-        float
-            平均配位数変化
-        """
+        """配位数変化の計算"""
         if len(atoms) < 5:
             return 0.0
         
         # サンプリング（計算効率のため）
         sample_size = min(10, len(atoms))
-        sample_atoms = atoms[:sample_size]
+        sample_atoms = atoms[:sample_size] if isinstance(atoms, list) else list(atoms)[:sample_size]
         
         coord_changes = []
         for atom in sample_atoms:
@@ -702,31 +679,13 @@ class MaterialAnalyticsGPU(GPUBackend):
     # ===============================
     
     def set_material_type(self, material_type: str):
-        """
-        材料タイプを変更
-        
-        Parameters
-        ----------
-        material_type : str
-            新しい材料タイプ
-        """
-        if material_type not in MATERIAL_PROPERTIES:
-            warnings.warn(f"Unknown material type: {material_type}, using SUJ2 as default")
-            material_type = 'SUJ2'
-        
+        """材料タイプを変更"""
         self.material_type = material_type
-        self.material_props = MATERIAL_PROPERTIES[material_type]
+        self.material_props = get_material_parameters(material_type)
         logger.info(f"Material type changed to {material_type}")
     
     def get_material_info(self) -> Dict[str, Any]:
-        """
-        現在の材料情報を取得
-        
-        Returns
-        -------
-        Dict[str, Any]
-            材料プロパティ
-        """
+        """現在の材料情報を取得"""
         return {
             'type': self.material_type,
             'properties': self.material_props.copy(),
@@ -735,7 +694,7 @@ class MaterialAnalyticsGPU(GPUBackend):
         }
 
 # ===============================
-# Export Functions
+# Export Functions（統一データベース使用版）
 # ===============================
 
 def compute_crystal_defect_charge(trajectory: np.ndarray,
@@ -744,28 +703,10 @@ def compute_crystal_defect_charge(trajectory: np.ndarray,
                                  cutoff: float = 3.5,
                                  use_gpu: bool = True) -> CrystalDefectResult:
     """
-    結晶欠陥チャージを計算する便利関数
-    
-    Parameters
-    ----------
-    trajectory : np.ndarray
-        原子トラジェクトリ
-    cluster_atoms : Dict[int, List[int]]
-        クラスター定義
-    material_type : str
-        材料タイプ
-    cutoff : float
-        カットオフ距離
-    use_gpu : bool
-        GPU使用フラグ
-        
-    Returns
-    -------
-    CrystalDefectResult
-        結晶欠陥解析結果
+    結晶欠陥チャージを計算する便利関数（正規化版）
     """
     analyzer = MaterialAnalyticsGPU(material_type, force_cpu=not use_gpu)
-    result = analyzer.compute_crystal_defect_charge(trajectory, cluster_atoms, cutoff)
+    result = analyzer.compute_normalized_defect_charge(trajectory, cluster_atoms, cutoff)
     
     # CrystalDefectResult形式に変換
     max_charge = float(np.max(result.cumulative_charge))
@@ -783,26 +724,6 @@ def compute_structural_coherence(coordination: np.ndarray,
                                 material_type: str = 'SUJ2',
                                 window: Optional[int] = None,
                                 use_gpu: bool = True) -> np.ndarray:
-    """
-    構造一貫性を計算する便利関数
-    
-    Parameters
-    ----------
-    coordination : np.ndarray
-        配位数時系列
-    strain : np.ndarray
-        歪み時系列
-    material_type : str
-        材料タイプ
-    window : int, optional
-        時間窓サイズ
-    use_gpu : bool
-        GPU使用フラグ
-        
-    Returns
-    -------
-    np.ndarray
-        構造一貫性スコア
-    """
+    """構造一貫性を計算する便利関数"""
     analyzer = MaterialAnalyticsGPU(material_type, force_cpu=not use_gpu)
     return analyzer.compute_structural_coherence(coordination, strain, window)
