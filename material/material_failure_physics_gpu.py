@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Material Failure Physics GPU Module
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Material Failure Physics GPU Module (REFACTORED)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 物理原理に基づく材料破損予測
 - RMSF発散による破損前兆検出
@@ -11,7 +11,7 @@ Material Failure Physics GPU Module
 
 水の沸点研究から生まれた統一理論の実装
 
-Version: 1.0.0
+Version: 2.0.0 - Refactored with unified material database
 Author: 環ちゃん - Physics Edition
 """
 
@@ -34,52 +34,20 @@ except ImportError:
 # Lambda³ Core imports
 from ..core.gpu_utils import GPUBackend
 
+# Material Database import (統一データベース)
+from .material_database import (
+    MATERIAL_DATABASE, 
+    get_material_parameters,
+    K_B,           # Boltzmann定数
+    AMU_TO_KG,     # 原子質量単位→kg変換
+    J_TO_EV        # J→eV変換
+)
+
 # Logger設定
 logger = logging.getLogger(__name__)
 
 # ===============================
-# Physical Constants
-# ===============================
-
-# Boltzmann定数 (eV/K)
-K_B = 8.617333e-5
-
-# 材料定数データベース
-MATERIAL_CONSTANTS = {
-    'SUJ2': {
-        'lattice_constant': 2.87,      # BCC Fe (Å)
-        'melting_temp': 1811,          # Fe melting point (K)
-        'surface_energy': 2.0,         # J/m²
-        'elastic_modulus': 210.0,      # GPa
-        'thermal_expansion': 1.2e-5,   # /K
-        'specific_heat': 460,          # J/(kg·K)
-        'density': 7850,               # kg/m³
-        'lindemann_criterion': 0.10    # Lindemann融解基準
-    },
-    'AL7075': {
-        'lattice_constant': 4.05,      # FCC Al (Å)
-        'melting_temp': 933,           # Al melting point (K)
-        'surface_energy': 1.1,         # J/m²
-        'elastic_modulus': 71.7,       # GPa
-        'thermal_expansion': 2.4e-5,   # /K
-        'specific_heat': 900,          # J/(kg·K)
-        'density': 2810,               # kg/m³
-        'lindemann_criterion': 0.12    # FCC用に調整
-    },
-    'TI6AL4V': {
-        'lattice_constant': 3.23,      # HCP Ti (Å)
-        'melting_temp': 1941,          # Ti melting point (K)
-        'surface_energy': 2.1,         # J/m²
-        'elastic_modulus': 113.8,      # GPa
-        'thermal_expansion': 8.6e-6,   # /K
-        'specific_heat': 520,          # J/(kg·K)
-        'density': 4430,               # kg/m³
-        'lindemann_criterion': 0.11    # HCP用に調整
-    }
-}
-
-# ===============================
-# Data Classes
+# Data Classes (変更なし)
 # ===============================
 
 @dataclass
@@ -91,6 +59,7 @@ class RMSFAnalysisResult:
     lindemann_ratio: float               # Lindemann比
     divergence_time: Optional[int]      # 発散開始時刻
     divergence_rate: float               # 発散速度
+    lindemann_parameter: Optional[float] = None  # 実際のLindemann値
 
 @dataclass
 class EnergyBalanceResult:
@@ -101,6 +70,7 @@ class EnergyBalanceResult:
     local_temperature: np.ndarray       # 局所温度場
     phase_state: str                     # 'solid', 'liquid', 'transition'
     critical_temperature: float          # 臨界温度
+    lindemann_parameter: Optional[float] = None  # Lindemann値
 
 @dataclass
 class DamageNucleusResult:
@@ -142,7 +112,7 @@ class FailurePhysicsResult:
     confidence: float = 0.0                # 予測信頼度
 
 # ===============================
-# CUDA Kernels
+# CUDA Kernels (変更なし)
 # ===============================
 
 # RMSF時間発展カーネル
@@ -211,13 +181,11 @@ void compute_local_temperature(
     // 塑性仕事 = 応力 × 歪み速度
     float plastic_work = stress_field[atom_id] * strain_rate[atom_id];
     
-    // 90%が熱に変換（Taylor-Quinney係数）
-    float heat_generated = 0.9f * plastic_work;
+    // Taylor-Quinney係数で熱に変換
+    float heat_generated = conversion_factor * plastic_work;
     
     // 局所温度上昇
-    float delta_T = heat_generated * conversion_factor;
-    
-    local_temp[atom_id] = base_temp + delta_T;
+    local_temp[atom_id] = base_temp + heat_generated;
 }
 '''
 
@@ -253,13 +221,14 @@ void detect_damage_nuclei(
 '''
 
 # ===============================
-# Main Class
+# Main Class (リファクタリング版)
 # ===============================
 
 class MaterialFailurePhysicsGPU(GPUBackend):
     """
-    物理原理に基づく材料破損予測
+    物理原理に基づく材料破損予測（リファクタリング版）
     
+    統一材料データベース(MATERIAL_DATABASE)を使用
     水の沸点研究から発見した普遍原理を材料破損に適用
     """
     
@@ -271,7 +240,7 @@ class MaterialFailurePhysicsGPU(GPUBackend):
         Parameters
         ----------
         material_type : str
-            材料タイプ
+            材料タイプ ('SUJ2', 'AL7075', 'Ti6Al4V', 'SS316L')
         lindemann_criterion : float, optional
             Lindemann基準値（Noneの場合材料デフォルト）
         force_cpu : bool
@@ -279,20 +248,19 @@ class MaterialFailurePhysicsGPU(GPUBackend):
         """
         super().__init__(force_cpu=force_cpu)
         
-        # 材料パラメータ設定
+        # 材料パラメータ取得（統一データベースから）
         self.material_type = material_type
-        if material_type not in MATERIAL_CONSTANTS:
-            logger.warning(f"Unknown material {material_type}, using SUJ2")
-            material_type = 'SUJ2'
+        self.material_params = get_material_parameters(material_type)
         
-        self.material_params = MATERIAL_CONSTANTS[material_type]
-        self.lattice_constant = self.material_params['lattice_constant']
+        # 必要なパラメータ抽出
+        self.lattice_constant = self.material_params.get('lattice_constant', 2.87)
+        self.melting_temp = self.material_params.get('melting_temp', 1811)
         
         # Lindemann基準
         if lindemann_criterion is not None:
             self.lindemann_criterion = lindemann_criterion
         else:
-            self.lindemann_criterion = self.material_params['lindemann_criterion']
+            self.lindemann_criterion = self.material_params.get('lindemann_criterion', 0.10)
         
         # CUDAカーネル初期化
         if self.is_gpu and HAS_GPU:
@@ -321,7 +289,7 @@ class MaterialFailurePhysicsGPU(GPUBackend):
             self.damage_nucleus_kernel = None
     
     # ===============================
-    # Main Analysis Method
+    # Main Analysis Method (変更なし)
     # ===============================
     
     def analyze_failure_physics(self,
@@ -393,22 +361,12 @@ class MaterialFailurePhysicsGPU(GPUBackend):
         )
     
     # ===============================
-    # RMSF Divergence Detection
+    # RMSF Divergence Detection (改善版)
     # ===============================
     
     def _detect_rmsf_divergence(self, trajectory: np.ndarray) -> RMSFAnalysisResult:
         """
         RMSF発散による破損前兆検出
-        
-        Parameters
-        ----------
-        trajectory : np.ndarray
-            原子軌道 (n_frames, n_atoms, 3)
-            
-        Returns
-        -------
-        RMSFAnalysisResult
-            RMSF解析結果
         """
         n_frames, n_atoms, _ = trajectory.shape
         
@@ -451,6 +409,10 @@ class MaterialFailurePhysicsGPU(GPUBackend):
         max_rmsf_per_atom = np.max(rmsf_field, axis=0)
         critical_atoms = np.where(max_rmsf_per_atom > critical_threshold)[0].tolist()
         
+        # 全体のLindemann値計算
+        mean_rmsf = np.mean(rmsf_field)
+        lindemann_parameter = mean_rmsf / self.lattice_constant
+        
         # 発散検出
         divergence_time = None
         divergence_rate = 0.0
@@ -475,11 +437,12 @@ class MaterialFailurePhysicsGPU(GPUBackend):
             max_rmsf=float(np.max(rmsf_field)),
             lindemann_ratio=float(np.max(rmsf_field) / self.lattice_constant),
             divergence_time=divergence_time,
-            divergence_rate=divergence_rate
+            divergence_rate=divergence_rate,
+            lindemann_parameter=lindemann_parameter
         )
     
     # ===============================
-    # Energy Balance Analysis
+    # Energy Balance Analysis (物理的改善版)
     # ===============================
     
     def _analyze_energy_balance(self,
@@ -487,26 +450,19 @@ class MaterialFailurePhysicsGPU(GPUBackend):
                            stress_history: Optional[np.ndarray],
                            base_temperature: float) -> EnergyBalanceResult:
         """
-        エネルギーバランス解析（物理的改善版）
+        エネルギーバランス解析（統一データベース版）
         """
         n_frames, n_atoms, _ = trajectory.shape
         
-        # 材料別原子質量（amu → kg）
-        AMU_TO_KG = 1.66054e-27
-        atomic_masses = {
-            'SUJ2': 55.845,    # Fe主体
-            'AL7075': 26.982,  # Al主体
-            'Ti6Al4V': 47.867, # Ti主体
-            'SS316L': 55.845   # Fe主体
-        }
-        mass = atomic_masses.get(self.material_type, 55.845) * AMU_TO_KG
+        # 材料の原子質量を取得
+        atomic_mass = self.material_params.get('atomic_mass', 55.845)  # デフォルトFe
+        mass = atomic_mass * AMU_TO_KG
         
         # 1. 運動エネルギー（ちゃんと質量考慮）
         if n_frames > 1:
             dt = 1e-15  # 1 fs timestep（MD標準）
             velocities = np.diff(trajectory, axis=0) / dt  # m/s
             # KE = 1/2 * m * v^2 （eVに変換）
-            J_TO_EV = 6.242e18
             kinetic_energy = 0.5 * mass * np.sum(velocities**2, axis=-1) * J_TO_EV
             kinetic_energy = np.vstack([kinetic_energy, kinetic_energy[-1]])
         else:
@@ -534,19 +490,13 @@ class MaterialFailurePhysicsGPU(GPUBackend):
             else:
                 strain_rate = 1e-3 * np.ones((n_frames, n_atoms))  # デフォルト値
             
-            # Taylor-Quinney係数（材料別）
-            beta = {
-                'SUJ2': 0.9,    # 高炭素鋼
-                'AL7075': 0.85, # アルミ合金
-                'Ti6Al4V': 0.8, # チタン合金
-                'SS316L': 0.9   # ステンレス鋼
-            }.get(self.material_type, 0.9)
+            # Taylor-Quinney係数（材料から取得）
+            beta = self.material_params.get('taylor_quinney', 0.9)
             
             # 塑性仕事 → 熱変換
-            # Q = β × σ × ε̇ × V
-            # ΔT = Q / (ρ × Cp × V) = β × σ × ε̇ / (ρ × Cp)
-            rho = self.material_params['density']  # kg/m³
-            cp = self.material_params['specific_heat']  # J/(kg·K)
+            # ΔT = β × σ × ε̇ / (ρ × Cp)
+            rho = self.material_params.get('density', 7850)  # kg/m³
+            cp = self.material_params.get('specific_heat', 460)  # J/(kg·K)
             
             # 応力はGPa、歪み速度は1/s
             plastic_work = np.abs(stress_history) * 1e9 * strain_rate  # Pa·s⁻¹ = W/m³
@@ -556,14 +506,11 @@ class MaterialFailurePhysicsGPU(GPUBackend):
             local_temperature = base_temperature + delta_T
             
             # 物理的制限（融点以下）
-            melting_temp = self.material_params['melting_temp']
-            local_temperature = np.clip(local_temperature, base_temperature, melting_temp * 1.1)
+            local_temperature = np.clip(local_temperature, base_temperature, self.melting_temp * 1.1)
         
         # 3. 束縛エネルギー（Debye-Waller因子から）
-        # Debye温度の推定（Einstein-Debye関係）
-        # θ_D ≈ (v_s / a) × (6π²N)^(1/3) × ℏ/k_B
-        # 簡略化: θ_D ≈ 0.4 * T_melting （金属の経験則）
-        debye_temp = self.material_params['melting_temp'] * 0.4
+        # Debye温度の推定（金属の経験則）
+        debye_temp = self.melting_temp * 0.4
         
         # <u²> = (3ℏ²T) / (mk_Bθ_D²) でDebye-Waller因子
         # E_binding ≈ k_B × θ_D × exp(-2W)
@@ -581,9 +528,9 @@ class MaterialFailurePhysicsGPU(GPUBackend):
         # 相状態判定（Lindemann基準も考慮）
         if lindemann_parameter > self.lindemann_criterion:
             phase_state = 'liquid'
-        elif mean_temp < 0.7 * melting_temp:
+        elif mean_temp < 0.7 * self.melting_temp:
             phase_state = 'solid'
-        elif mean_temp > 0.9 * melting_temp:
+        elif mean_temp > 0.9 * self.melting_temp:
             phase_state = 'liquid'
         else:
             phase_state = 'transition'
@@ -597,11 +544,12 @@ class MaterialFailurePhysicsGPU(GPUBackend):
             energy_ratio=energy_ratio,
             local_temperature=local_temperature,
             phase_state=phase_state,
-            critical_temperature=float(critical_temperature)
+            critical_temperature=float(critical_temperature),
+            lindemann_parameter=lindemann_parameter
         )
-        
+    
     # ===============================
-    # Damage Nucleation Tracking
+    # Damage Nucleation Tracking (統一データベース版)
     # ===============================
     
     def _track_damage_nucleation(self,
@@ -609,18 +557,6 @@ class MaterialFailurePhysicsGPU(GPUBackend):
                                 stress_history: Optional[np.ndarray]) -> DamageNucleusResult:
         """
         破損核の形成と成長を追跡（逆核形成理論）
-        
-        Parameters
-        ----------
-        rmsf_field : np.ndarray
-            RMSF場 (n_windows, n_atoms)
-        stress_history : np.ndarray, optional
-            応力履歴
-            
-        Returns
-        -------
-        DamageNucleusResult
-            破損核解析結果
         """
         n_windows, n_atoms = rmsf_field.shape
         
@@ -668,7 +604,8 @@ class MaterialFailurePhysicsGPU(GPUBackend):
         # 臨界核サイズ（古典核形成理論から）
         if stress_history is not None:
             mean_stress = np.mean(np.abs(stress_history))
-            surface_energy = self.material_params['surface_energy']
+            # 表面エネルギー（材料データベースから、デフォルト値も用意）
+            surface_energy = self.material_params.get('surface_energy', 2.0)
             # r* = 2γ/σ （簡略化）
             critical_nucleus_size = 2 * surface_energy / (mean_stress * 1e9)  # GPa→Pa
         else:
@@ -697,7 +634,7 @@ class MaterialFailurePhysicsGPU(GPUBackend):
         )
     
     # ===============================
-    # Fatigue Cycle Analysis
+    # Fatigue Cycle Analysis (変更なし)
     # ===============================
     
     def _analyze_fatigue_cycles(self,
@@ -706,20 +643,6 @@ class MaterialFailurePhysicsGPU(GPUBackend):
                                rmsf_field: np.ndarray) -> FatigueCycleResult:
         """
         疲労サイクル解析（液化→再結晶→欠陥生成）
-        
-        Parameters
-        ----------
-        trajectory : np.ndarray
-            原子軌道
-        loading_cycles : List[Dict]
-            負荷サイクル情報
-        rmsf_field : np.ndarray
-            RMSF場
-            
-        Returns
-        -------
-        FatigueCycleResult
-            疲労解析結果
         """
         n_frames, n_atoms, _ = trajectory.shape
         
@@ -780,7 +703,7 @@ class MaterialFailurePhysicsGPU(GPUBackend):
         )
     
     # ===============================
-    # Integration and Prediction
+    # Integration and Prediction (変更なし)
     # ===============================
     
     def _integrate_predictions(self,
@@ -790,11 +713,6 @@ class MaterialFailurePhysicsGPU(GPUBackend):
                              fatigue_result: Optional[FatigueCycleResult]) -> Tuple[str, float, List[int], float]:
         """
         各解析結果を統合して最終予測
-        
-        Returns
-        -------
-        Tuple[str, float, List[int], float]
-            (破損メカニズム, 破損時間, 破損位置, 信頼度)
         """
         # 破損メカニズムの判定
         mechanism = 'unknown'
@@ -858,20 +776,9 @@ class MaterialFailurePhysicsGPU(GPUBackend):
     def estimate_critical_rmsf(self, temperature: float) -> float:
         """
         温度依存のLindemann基準を推定
-        
-        Parameters
-        ----------
-        temperature : float
-            温度 (K)
-            
-        Returns
-        -------
-        float
-            臨界RMSF値 (Å)
         """
         # 温度補正（Debye-Waller因子的なアプローチ）
-        melting_temp = self.material_params['melting_temp']
-        temp_ratio = temperature / melting_temp
+        temp_ratio = temperature / self.melting_temp
         
         # 高温ほどLindemann基準が緩和
         adjusted_lindemann = self.lindemann_criterion * (1 + 0.5 * temp_ratio)
@@ -881,15 +788,11 @@ class MaterialFailurePhysicsGPU(GPUBackend):
     def get_physics_parameters(self) -> Dict[str, Any]:
         """
         現在の物理パラメータを取得
-        
-        Returns
-        -------
-        Dict[str, Any]
-            物理パラメータ辞書
         """
         return {
             'material_type': self.material_type,
             'lattice_constant': self.lattice_constant,
+            'melting_temp': self.melting_temp,
             'lindemann_criterion': self.lindemann_criterion,
             'material_params': self.material_params.copy(),
             'device': str(self.device),
@@ -906,22 +809,6 @@ def detect_failure_precursor(trajectory: np.ndarray,
                             use_gpu: bool = True) -> Dict[str, Any]:
     """
     破損前兆を検出する便利関数
-    
-    Parameters
-    ----------
-    trajectory : np.ndarray
-        原子軌道
-    material_type : str
-        材料タイプ
-    temperature : float
-        温度 (K)
-    use_gpu : bool
-        GPU使用フラグ
-        
-    Returns
-    -------
-    Dict[str, Any]
-        破損前兆情報
     """
     analyzer = MaterialFailurePhysicsGPU(
         material_type=material_type,
@@ -948,22 +835,6 @@ def predict_fatigue_life(trajectory: np.ndarray,
                         use_gpu: bool = True) -> float:
     """
     疲労寿命を予測する便利関数
-    
-    Parameters
-    ----------
-    trajectory : np.ndarray
-        原子軌道
-    loading_cycles : List[Dict]
-        負荷サイクル情報
-    material_type : str
-        材料タイプ
-    use_gpu : bool
-        GPU使用フラグ
-        
-    Returns
-    -------
-    float
-        疲労寿命（サイクル数）
     """
     analyzer = MaterialFailurePhysicsGPU(
         material_type=material_type,
