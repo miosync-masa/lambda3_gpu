@@ -379,10 +379,29 @@ def run_material_analysis_pipeline(
             if cluster_definition_path.endswith('.json'):
                 with open(cluster_definition_path, 'r') as f:
                     cluster_atoms_raw = json.load(f)
-                    cluster_atoms = {int(k): v for k, v in cluster_atoms_raw.items()}
+                    
+                    # ===== ここを修正！ =====
+                    cluster_atoms = {}
+                    for k, v in cluster_atoms_raw.items():
+                        cid = int(k)
+                        # vが辞書形式の場合、atom_idsだけ取り出す
+                        if isinstance(v, dict) and 'atom_ids' in v:
+                            # 各原子IDを整数に変換してリストとして保存
+                            cluster_atoms[cid] = [int(atom_id) for atom_id in v['atom_ids']]
+                        elif isinstance(v, list):
+                            # 既にリスト形式の場合も整数変換
+                            cluster_atoms[cid] = [int(atom_id) for atom_id in v]
+                        else:
+                            logger.warning(f"Unknown format for cluster {cid}: {type(v)}")
+                            cluster_atoms[cid] = []
+                            
             else:
                 cluster_atoms = np.load(cluster_definition_path, allow_pickle=True).item()
+            
             logger.info(f"   Clusters defined: {len(cluster_atoms)}")
+            # デバッグ出力追加
+            for cid in cluster_atoms:
+                logger.info(f"     Cluster {cid}: {len(cluster_atoms[cid])} atoms")
             
             # クラスター0が健全領域として定義されているか確認
             if 0 not in cluster_atoms:
