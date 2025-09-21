@@ -23,7 +23,7 @@ by 環ちゃん - Material Edition v1.1.0
 
 __version__ = '1.1.0'  # Updated for physics integration
 __author__ = '環ちゃん'
-__email__ = 'tamaki@lambda3.ai'
+__email__ = 'tamaki@miosync.email
 
 # ===============================
 # Cluster Structures
