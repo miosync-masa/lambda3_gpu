@@ -84,7 +84,7 @@ def generate_material_report_from_results(
     
     if verbose:
         print("\n" + "="*80)
-        print("💎 GENERATING MATERIAL ANALYSIS REPORT v1.0.3")
+        print("💎 GENERATING MATERIAL ANALYSIS REPORT v2.0.0")
         print("="*80)
     
     if debug:
@@ -118,7 +118,7 @@ def generate_material_report_from_results(
 - **Frames analyzed**: {n_frames}
 - **Atoms**: {n_atoms}
 - **Computation time**: {computation_time:.2f}s
-- **Analysis version**: Material Lambda³ v1.0.3
+- **Analysis version**: Material Lambda³ v2.0.0
 """
     
     # GPU情報
@@ -673,7 +673,7 @@ def generate_material_report_from_results(
     # 🆕 統合的リスク評価
     # ========================================
     report += "\n## 🎯 Integrated Risk Assessment\n"
-    
+    all_confidence_results = []
     risk_factors = []
     risk_score = 0.0
     
@@ -747,7 +747,7 @@ def generate_material_report_from_results(
 
 ---
 *Material Analysis Complete!*
-*Version: 1.0.3 - Material Lambda³ GPU Edition (Fixed)*
+*Version: 2.0.0 - Material Lambda³ GPU Edition (Fixed)*
 *Material: {material_type}*
 *Total report length: {len(report):,} characters*
 """
