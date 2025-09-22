@@ -726,9 +726,9 @@ class MaterialTwoStageAnalyzerGPU(GPUBackend):
         return list(set(critical))[:15]
         
     def _evaluate_material_state_physics(self,
-                                        cluster_analyses: Dict,
-                                        critical_clusters: List,
-                                        global_physics: Optional[FailurePhysicsResult]) -> Dict:
+                                    cluster_analyses: Dict,
+                                    critical_clusters: List,
+                                    global_physics: Optional[FailurePhysicsResult]) -> Dict:
         """材料状態評価（物理情報統合）"""
         # 従来の評価
         max_damage = 0.0
@@ -738,6 +738,10 @@ class MaterialTwoStageAnalyzerGPU(GPUBackend):
         
         for analysis in cluster_analyses.values():
             for event in analysis.cluster_events:
+                max_damage = max(max_damage, event.peak_damage)  # ← 追加！
+                mean_strain += event.peak_strain  # ← 追加！
+                n_events += 1  # ← 追加！
+                
                 if event.lindemann_ratio:
                     max_lindemann = max(max_lindemann, event.lindemann_ratio)
         
@@ -796,7 +800,7 @@ class MaterialTwoStageAnalyzerGPU(GPUBackend):
             'max_lindemann_ratio': float(max_lindemann),  # NEW!
             'n_critical_clusters': len(critical_clusters)
         }
-    
+     
     def _print_summary_physics(self,
                               importance_scores: Dict,
                               critical_clusters: List,
