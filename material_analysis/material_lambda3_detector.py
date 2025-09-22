@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """
-Material Lambda³ Detector GPU - Refactored Pipeline Edition
-==========================================================
+Material Lambda³ Detector GPU - Physics-Integrated Edition v3.0
+================================================================
 
-材料解析用Lambda³検出器のGPU実装（リファクタリング版）
+材料解析用Lambda³検出器のGPU実装（物理ダメージ計算統合版）
 
-主な改善点：
-- 前処理（バッチごと）と後処理（マージ後）の明確な分離
-- MaterialAnalyticsGPUの欠陥解析を前処理に移動
-- メモリ効率的なバッチ処理
-- material_featuresとmd_featuresの正しい分離処理
+主な改良点（v3.0）：
+- PhysicalDamageCalculator統合によるK/V比ベースの物理的ダメージ計算
+- Miner則による疲労累積評価
+- 温度依存性を考慮した破壊予測
+- パーコレーション理論による臨界クラスター特定
+- MD特徴からのK/V比自動計算
 
-Version: 2.1.1
-Author: 環ちゃん
-Bug Fix: material_features/md_features separation (2024)
+Version: 3.0.0 - Physics Integration Edition
+Author: 環ちゃん - Material Master Edition
 """
 
 import numpy as np
@@ -34,8 +34,8 @@ except ImportError:
 # Lambda³ GPU imports
 from ..core.gpu_utils import GPUBackend
 from ..structures.lambda_structures_gpu import LambdaStructuresGPU
-from ..structures.md_features_gpu import MDFeaturesGPU  # 基本MD特徴抽出（正しいモジュール名）
-from ..material.material_md_features_gpu import MaterialMDFeaturesGPU  # 材料特徴抽出
+from ..structures.md_features_gpu import MDFeaturesGPU
+from ..material.material_md_features_gpu import MaterialMDFeaturesGPU
 from ..detection.anomaly_detection_gpu import AnomalyDetectorGPU
 from ..detection.boundary_detection_gpu import BoundaryDetectorGPU
 from ..detection.topology_breaks_gpu import TopologyBreaksDetectorGPU
@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class MaterialConfig:
-    """材料解析設定"""
+    """材料解析設定（物理ダメージ解析拡張版）"""
     # Lambda³パラメータ
     adaptive_window: bool = True
     extended_detection: bool = True
@@ -66,6 +66,11 @@ class MaterialConfig:
     # 材料特有の設定
     material_type: str = 'SUJ2'
     use_material_analytics: bool = True
+    
+    # 物理ダメージ解析設定（NEW!）
+    use_physical_damage: bool = True
+    damage_temperature: float = 300.0  # デフォルト温度 [K]
+    kv_critical_override: Optional[float] = None  # 臨界K/V比の上書き
     
     # GPU設定
     gpu_batch_size: int = 10000
@@ -81,13 +86,14 @@ class MaterialConfig:
     # 材料特有の重み
     w_defect: float = 0.2
     w_coherence: float = 0.1
+    w_physical_damage: float = 0.25  # 物理ダメージの重み（NEW!）
     
     # 適応的ウィンドウのスケール設定
     window_scale: float = 0.005
 
 @dataclass
 class MaterialLambda3Result:
-    """材料Lambda³解析結果"""
+    """材料Lambda³解析結果（物理ダメージ統合版）"""
     # Core Lambda³構造
     lambda_structures: Dict[str, np.ndarray]
     structural_boundaries: Dict[str, Any]
@@ -108,6 +114,11 @@ class MaterialLambda3Result:
     failure_prediction: Optional[Dict] = None
     material_events: Optional[List[Tuple[int, int, str]]] = None
     
+    # 物理ダメージ解析（NEW!）
+    physical_damage: Optional[Dict[str, Any]] = None
+    kv_ratios: Optional[np.ndarray] = None
+    temperature_history: Optional[np.ndarray] = None
+    
     # メタデータ
     n_frames: int = 0
     n_atoms: int = 0
@@ -122,11 +133,11 @@ class MaterialLambda3Result:
 
 class MaterialLambda3DetectorGPU(GPUBackend):
     """
-    GPU版Lambda³材料検出器（リファクタリング版）
+    GPU版Lambda³材料検出器（物理ダメージ統合版 v3.0）
     
     処理フロー：
-    1. 前処理（バッチごと）: MD特徴抽出 → 欠陥解析 → Lambda構造計算
-    2. 後処理（マージ後）: 境界検出 → 異常検出 → 材料解析（MD特徴ベース）
+    1. 前処理（バッチごと）: MD特徴抽出 → 欠陥解析 → Lambda構造計算 → K/V比計算
+    2. 後処理（マージ後）: 境界検出 → 異常検出 → 材料解析 → 物理ダメージ評価
     """
     
     def __init__(self, config: MaterialConfig = None, device: str = 'auto'):
@@ -144,11 +155,9 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         # コンポーネント構成
         self.structure_computer = LambdaStructuresGPU(force_cpu_flag)
         
-        # === 重要: 2つの独立した特徴抽出器 ===
-        # Lambda構造計算用（全原子）
-        self.feature_extractor = MDFeaturesGPU(force_cpu_flag)
-        # 材料解析用（欠陥領域）
-        self.material_feature_extractor = MaterialMDFeaturesGPU(force_cpu_flag)
+        # 特徴抽出器（2つの独立した抽出器）
+        self.feature_extractor = MDFeaturesGPU(force_cpu_flag)  # Lambda構造用（全原子）
+        self.material_feature_extractor = MaterialMDFeaturesGPU(force_cpu_flag)  # 材料解析用（欠陥領域）
         
         self.anomaly_detector = AnomalyDetectorGPU(force_cpu_flag)
         self.boundary_detector = BoundaryDetectorGPU(force_cpu_flag)
@@ -156,7 +165,7 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         self.extended_detector = ExtendedDetectorGPU(force_cpu_flag)
         self.phase_space_analyzer = PhaseSpaceAnalyzerGPU(force_cpu_flag)
         
-        # 材料特有のコンポーネント
+        # 材料特有のコンポーネント（物理ダメージ対応版）
         if self.config.use_material_analytics:
             self.material_analytics = MaterialAnalyticsGPU(
                 material_type=self.config.material_type,
@@ -173,8 +182,8 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         """メモリマネージャとデバイスをコンポーネント間で共有"""
         components = [
             self.structure_computer, 
-            self.feature_extractor,  # 基本MD特徴抽出器
-            self.material_feature_extractor,  # 材料特徴抽出器
+            self.feature_extractor,
+            self.material_feature_extractor,
             self.anomaly_detector, 
             self.boundary_detector,
             self.topology_detector, 
@@ -199,7 +208,7 @@ class MaterialLambda3DetectorGPU(GPUBackend):
                 cluster_atoms: Optional[Dict[int, List[int]]] = None,
                 **kwargs) -> MaterialLambda3Result:
         """
-        材料軌道のLambda³解析
+        材料軌道のLambda³解析（物理ダメージ統合版）
         """
         start_time = time.time()
         
@@ -232,25 +241,6 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         
         return result
     
-    def _preprocess_inputs(self, trajectory, atom_types, backbone_indices):
-        """入力データの前処理とGPU転送"""
-        # 原子タイプの文字列→数値変換
-        if atom_types is not None and atom_types.dtype.kind == 'U':
-            atom_type_names = np.unique(atom_types)
-            type_map = {t: i for i, t in enumerate(atom_type_names)}
-            atom_types = np.array([type_map[t] for t in atom_types], dtype=np.int32)
-        
-        # GPU転送
-        if self.is_gpu and cp is not None:
-            print("📊 Converting arrays to GPU...")
-            trajectory = cp.asarray(trajectory)
-            if backbone_indices is not None:
-                backbone_indices = cp.asarray(backbone_indices)
-            if atom_types is not None:
-                atom_types = cp.asarray(atom_types)
-        
-        return trajectory, atom_types
-    
     def _analyze_single_trajectory(self,
                                   trajectory: np.ndarray,
                                   backbone_indices: Optional[np.ndarray],
@@ -258,7 +248,7 @@ class MaterialLambda3DetectorGPU(GPUBackend):
                                   cluster_definition_path: Optional[str] = None,
                                   cluster_atoms: Optional[Dict[int, List[int]]] = None
                                   ) -> MaterialLambda3Result:
-        """単一軌道の完全解析"""
+        """単一軌道の完全解析（物理ダメージ計算統合）"""
         n_frames, n_atoms, _ = trajectory.shape
         
         # 欠陥領域の特定
@@ -273,7 +263,7 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         print("  1. Extracting MD features (full atoms)...")
         md_features = self.feature_extractor.extract_md_features(
             trajectory, 
-            None  # 全原子で計算、backbone_indicesはNone
+            None  # 全原子で計算
         )
         
         # 2. 材料特有の特徴抽出（欠陥領域 - 材料解析用）
@@ -282,22 +272,30 @@ class MaterialLambda3DetectorGPU(GPUBackend):
             print("  2. Extracting material features (defect region)...")
             material_features = self.material_feature_extractor.extract_md_features(
                 trajectory, 
-                backbone_indices,  # 欠陥領域のみ
+                backbone_indices,
                 cluster_definition_path=cluster_definition_path,
                 atom_types=atom_types
             )
             
-            # 欠陥解析結果をMD特徴に追加（参照用）
+            # 3. 欠陥解析
             print("  3. Computing crystal defect charges...")
             self._add_defect_analysis_to_features(
                 trajectory, md_features, cluster_atoms, n_atoms
             )
         
-        # 4. Lambda構造計算（基本MD特徴を使用）
+        # 4. K/V比計算（NEW!）
+        kv_ratios = None
+        if self.config.use_physical_damage:
+            print("  4. Computing K/V ratios...")
+            kv_ratios = self._extract_kv_ratios(md_features)
+            if kv_ratios is not None:
+                print(f"     K/V ratio range: [{np.min(kv_ratios):.2f}, {np.max(kv_ratios):.2f}]")
+        
+        # 5. Lambda構造計算
         initial_window = self._compute_initial_window(n_frames)
-        print("  4. Computing Lambda³ structures...")
+        print("  5. Computing Lambda³ structures...")
         lambda_structures = self.structure_computer.compute_lambda_structures(
-            trajectory, md_features, initial_window  # md_features（全原子）を使用
+            trajectory, md_features, initial_window
         )
         
         # === 後処理 ===
@@ -306,7 +304,8 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         # 解析結果を統合
         result = self._perform_postprocessing(
             lambda_structures, md_features, material_features,
-            n_frames, n_atoms, initial_window
+            n_frames, n_atoms, initial_window,
+            kv_ratios=kv_ratios  # K/V比を渡す
         )
         
         return result
@@ -319,12 +318,12 @@ class MaterialLambda3DetectorGPU(GPUBackend):
                         cluster_definition_path: Optional[str] = None,
                         cluster_atoms: Optional[Dict[int, List[int]]] = None
                         ) -> MaterialLambda3Result:
-        """バッチ処理による解析"""
+        """バッチ処理による解析（物理ダメージ対応）"""
         print("\n⚡ Running batched GPU analysis...")
         
         n_frames = trajectory.shape[0]
         
-        # 欠陥領域の特定（バッチ処理前に1回だけ）
+        # 欠陥領域の特定
         backbone_indices = self._identify_defect_regions(
             cluster_atoms, backbone_indices
         )
@@ -346,7 +345,7 @@ class MaterialLambda3DetectorGPU(GPUBackend):
             batch_results, trajectory.shape, atom_types
         )
         
-        # Step 3: 後処理
+        # Step 3: 後処理（物理ダメージ解析を含む）
         print("\n[POSTPROCESSING]")
         final_result = self._complete_analysis(merged_result, atom_types)
         
@@ -360,41 +359,40 @@ class MaterialLambda3DetectorGPU(GPUBackend):
                              cluster_definition_path: Optional[str] = None
                              ) -> Dict:
         """
-        単一バッチの前処理
-        
-        実行内容：
-        1. 基本MD特徴抽出（MDFeaturesGPU - 全原子）
-        2. 材料特徴抽出（MaterialMDFeaturesGPU - 欠陥領域）
-        3. 欠陥解析（MaterialAnalyticsGPU - トラジェクトリ必要）
-        4. Lambda構造計算
+        単一バッチの前処理（物理ダメージ計算対応）
         """
         n_atoms = batch_trajectory.shape[1]
         
-        # 1. 基本MD特徴抽出（全原子 - Lambda構造用）
+        # 1. 基本MD特徴抽出
         md_features = self.feature_extractor.extract_md_features(
             batch_trajectory, 
-            None  # 全原子で計算、backbone_indicesはNone
+            None  # 全原子
         )
         
-        # 2. 材料特有の特徴抽出（欠陥領域 - 材料解析用）
+        # 2. 材料特有の特徴抽出
         material_features = None
         if self.config.use_material_analytics and backbone_indices is not None:
             material_features = self.material_feature_extractor.extract_md_features(
                 batch_trajectory, 
-                backbone_indices,  # 欠陥領域のみ
+                backbone_indices,
                 cluster_definition_path=cluster_definition_path,
                 atom_types=atom_types
             )
             
-            # 3. 欠陥解析（前処理で実行）
+            # 3. 欠陥解析
             self._add_defect_analysis_to_features(
                 batch_trajectory, md_features, None, n_atoms
             )
         
-        # 4. Lambda構造計算（基本MD特徴を使用）
+        # 4. K/V比計算（NEW!）
+        kv_ratios = None
+        if self.config.use_physical_damage:
+            kv_ratios = self._extract_kv_ratios(md_features)
+        
+        # 5. Lambda構造計算
         window = self._compute_initial_window(len(batch_trajectory))
         lambda_structures = self.structure_computer.compute_lambda_structures(
-            batch_trajectory, md_features, window  # md_features（全原子）を使用
+            batch_trajectory, md_features, window
         )
         
         return {
@@ -402,7 +400,8 @@ class MaterialLambda3DetectorGPU(GPUBackend):
             'n_frames': len(batch_trajectory),
             'lambda_structures': lambda_structures,
             'md_features': md_features,
-            'material_features': material_features,  # 別途保持
+            'material_features': material_features,
+            'kv_ratios': kv_ratios,  # K/V比を保存
             'window': window
         }
     
@@ -411,16 +410,11 @@ class MaterialLambda3DetectorGPU(GPUBackend):
                           atom_types: Optional[np.ndarray]
                           ) -> MaterialLambda3Result:
         """
-        マージ後の後処理
-        
-        実行内容：
-        1. 境界検出・トポロジー解析
-        2. 異常スコア計算
-        3. 材料特有の解析（MD特徴ベース）
+        マージ後の後処理（物理ダメージ解析統合版）
         """
         lambda_structures = merged_result.lambda_structures
         md_features = merged_result.md_features
-        material_features = merged_result.material_features  # 正しく取得！
+        material_features = merged_result.material_features
         n_frames = merged_result.n_frames
         n_atoms = merged_result.n_atoms
         
@@ -442,50 +436,58 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         
         # 異常スコア計算
         print("  - Computing anomaly scores...")
-        anomaly_scores = self.anomaly_detector.compute_multiscale_anomalies(
+        anomaly_scores = self._compute_enhanced_anomaly_scores(
             lambda_structures, structural_boundaries,
-            topological_breaks, md_features, self.config
+            topological_breaks, md_features, merged_result.physical_damage
         )
         
-        # 材料特有の解析（material_features優先、なければmd_features使用）
+        # 材料特有の解析
         defect_analysis = None
         structural_coherence = None
         failure_prediction = None
         material_events = None
+        physical_damage = None
+        temperature_history = None
         
         if self.config.use_material_analytics and self.material_analytics:
             print("  - Material-specific analysis...")
             
-            # material_featuresがあれば優先的に使用
             features_for_material = material_features if material_features else md_features
             
-            # 欠陥情報の取得
+            # 欠陥情報
             if 'defect_charge' in md_features:
                 defect_analysis = {
                     'defect_charge': md_features.get('defect_charge'),
                     'cumulative_charge': md_features.get('cumulative_charge')
                 }
             
-            # 構造一貫性（材料特徴を使用）
+            # 構造一貫性
             if 'coordination' in features_for_material:
                 structural_coherence = self.material_analytics.compute_structural_coherence(
-                    features_for_material['coordination'],  # material_features優先
+                    features_for_material['coordination'],
                     features_for_material.get('strain', np.zeros((n_frames, 1))),
                     window=primary_window // 2
                 )
             
-            # 破壊予測（材料特徴を使用）
-            if 'strain' in features_for_material:
-                failure_prediction = self.material_analytics.predict_failure(
-                    features_for_material['strain'],  # material_features優先
-                    damage_history=features_for_material.get('damage'),
-                    defect_charge=md_features.get('cumulative_charge')  # defect_chargeはmd_featuresから
+            # 温度履歴の抽出/推定
+            temperature_history = self._extract_temperature_history(features_for_material)
+            
+            # 物理ダメージ解析（NEW!）
+            if self.config.use_physical_damage and merged_result.kv_ratios is not None:
+                print("  - Computing physics-based damage assessment...")
+                physical_damage = self._compute_physical_damage_analysis(
+                    merged_result.kv_ratios,
+                    temperature_history,
+                    defect_analysis
                 )
-                failure_prediction = {
-                    'failure_probability': failure_prediction.failure_probability,
-                    'reliability_index': failure_prediction.reliability_index,
-                    'failure_mode': failure_prediction.failure_mode
-                }
+            
+            # 破壊予測（物理ダメージ統合版）
+            if 'strain' in features_for_material:
+                failure_prediction = self._compute_integrated_failure_prediction(
+                    features_for_material,
+                    physical_damage,
+                    defect_analysis
+                )
             
             # イベント分類
             critical_events = self._detect_critical_events(anomaly_scores)
@@ -527,59 +529,273 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         merged_result.material_events = material_events
         merged_result.critical_events = self._detect_critical_events(anomaly_scores)
         merged_result.window_steps = primary_window
+        merged_result.physical_damage = physical_damage
+        merged_result.temperature_history = temperature_history
         
         return merged_result
     
-    # === ヘルパーメソッド ===
+    # === 物理ダメージ計算関連メソッド（NEW!） ===
+    
+    def _extract_kv_ratios(self, md_features: Dict) -> Optional[np.ndarray]:
+        """MD特徴からK/V比を抽出または計算"""
+        try:
+            if 'kv_ratio' in md_features:
+                # 直接K/V比が計算されている場合
+                return md_features['kv_ratio']
+            
+            elif 'kinetic_energy' in md_features:
+                K = md_features['kinetic_energy']  # 運動エネルギー
+                
+                # ビリアルテンソルまたは圧力から体積を推定
+                if 'virial_tensor' in md_features:
+                    # ビリアルテンソルの対角成分から圧力を計算
+                    virial = md_features['virial_tensor']
+                    if virial.ndim == 3:
+                        # (n_frames, n_clusters, 6) -> 対角成分の平均
+                        pressure = -np.mean(virial[..., :3], axis=-1)
+                    else:
+                        pressure = np.abs(virial)
+                    
+                    # 圧力から仮想的な体積を推定（PV = nkT的な関係を仮定）
+                    V = np.where(pressure > 1e-10, 1.0 / pressure, 1.0)
+                    
+                elif 'pressure' in md_features:
+                    pressure = np.abs(md_features['pressure'])
+                    V = np.where(pressure > 1e-10, 1.0 / pressure, 1.0)
+                    
+                elif 'volume' in md_features:
+                    V = md_features['volume']
+                    
+                else:
+                    # 体積情報がない場合、一定値と仮定
+                    logger.warning("No volume/pressure data for K/V ratio calculation")
+                    V = np.ones_like(K)
+                
+                # K/V比計算（ゼロ除算回避）
+                kv_ratios = np.divide(K, V, out=np.ones_like(K), where=(V > 1e-10))
+                
+                # 物理的に妥当な範囲にクリップ
+                kv_ratios = np.clip(kv_ratios, 0.01, 100.0)
+                
+                return kv_ratios
+                
+        except Exception as e:
+            logger.warning(f"Failed to extract K/V ratios: {e}")
+            return None
+    
+    def _extract_temperature_history(self, features: Dict) -> np.ndarray:
+        """MD特徴から温度履歴を抽出または推定"""
+        if 'temperature' in features:
+            return features['temperature']
+        
+        elif 'kinetic_energy' in features:
+            # 運動エネルギーから温度推定
+            kb = 8.617e-5  # eV/K（ボルツマン定数）
+            ke = features['kinetic_energy']
+            
+            # 3/2 kB T = KE/N （理想気体近似）
+            # ここではシンプルに比例関係を仮定
+            temperature = ke / (1.5 * kb)
+            
+            # 物理的に妥当な範囲にクリップ
+            temperature = np.clip(temperature, 1.0, 5000.0)
+            
+            return temperature
+        
+        else:
+            # デフォルト温度
+            n_frames = next(iter(features.values())).shape[0]
+            return np.full(n_frames, self.config.damage_temperature)
+    
+    def _compute_physical_damage_analysis(self,
+                                         kv_ratios: np.ndarray,
+                                         temperature_history: np.ndarray,
+                                         defect_analysis: Optional[Dict]
+                                         ) -> Dict[str, Any]:
+        """物理ダメージの詳細解析"""
+        # 平均温度を使用（時変温度対応も可能）
+        avg_temperature = float(np.mean(temperature_history))
+        
+        # PhysicalDamageCalculatorを使用
+        damage_result = self.material_analytics.compute_physical_damage(
+            kv_ratios,
+            temperature=avg_temperature
+        )
+        
+        # 結果を辞書形式に変換
+        physical_damage = {
+            'cumulative_damage': damage_result.cumulative_damage,
+            'damage_rate': damage_result.damage_rate,
+            'failure_probability': damage_result.failure_probability,
+            'remaining_life': damage_result.remaining_life,
+            'critical_clusters': damage_result.critical_clusters,
+            'max_damage': float(np.max(damage_result.cumulative_damage)),
+            'avg_damage': float(np.mean(damage_result.cumulative_damage)),
+            'temperature': avg_temperature
+        }
+        
+        # 欠陥との相関を計算
+        if defect_analysis and 'cumulative_charge' in defect_analysis:
+            defect_charge = defect_analysis['cumulative_charge']
+            if len(defect_charge) == len(damage_result.cumulative_damage):
+                # 欠陥と物理ダメージの相関
+                correlation = np.corrcoef(
+                    defect_charge,
+                    np.mean(damage_result.cumulative_damage, axis=1) if damage_result.cumulative_damage.ndim > 1 
+                    else damage_result.cumulative_damage
+                )[0, 1]
+                physical_damage['defect_damage_correlation'] = float(correlation)
+        
+        # ダメージ進展の統計
+        if damage_result.damage_rate is not None:
+            max_rate = np.max(damage_result.damage_rate)
+            avg_rate = np.mean(damage_result.damage_rate)
+            physical_damage['max_damage_rate'] = float(max_rate)
+            physical_damage['avg_damage_rate'] = float(avg_rate)
+            
+            # 加速度（2次微分）
+            if len(damage_result.damage_rate) > 2:
+                acceleration = np.gradient(damage_result.damage_rate.mean(axis=1) 
+                                         if damage_result.damage_rate.ndim > 1 
+                                         else damage_result.damage_rate)
+                physical_damage['damage_acceleration'] = float(np.max(np.abs(acceleration)))
+        
+        return physical_damage
+    
+    def _compute_integrated_failure_prediction(self,
+                                              features: Dict,
+                                              physical_damage: Optional[Dict],
+                                              defect_analysis: Optional[Dict]
+                                              ) -> Dict[str, Any]:
+        """物理ダメージを統合した破壊予測"""
+        # 従来の破壊予測
+        traditional_prediction = self.material_analytics.predict_failure(
+            features.get('strain', np.zeros(1)),
+            damage_history=features.get('damage'),
+            defect_charge=defect_analysis.get('cumulative_charge') if defect_analysis else None
+        )
+        
+        failure_prediction = {
+            'failure_probability': traditional_prediction.failure_probability,
+            'reliability_index': traditional_prediction.reliability_index,
+            'failure_mode': traditional_prediction.failure_mode,
+            'remaining_life_cycles': traditional_prediction.remaining_life_cycles
+        }
+        
+        # 物理ダメージとの統合
+        if physical_damage:
+            # 物理ダメージによる破壊確率
+            phys_failure_prob = physical_damage.get('failure_probability', 0.0)
+            
+            # 統合破壊確率（最大値を採用）
+            integrated_prob = max(
+                failure_prediction['failure_probability'],
+                phys_failure_prob
+            )
+            
+            failure_prediction['integrated_failure_probability'] = integrated_prob
+            failure_prediction['physical_damage_probability'] = phys_failure_prob
+            
+            # 残存寿命の更新
+            if physical_damage.get('remaining_life'):
+                phys_remaining = physical_damage['remaining_life']
+                if failure_prediction.get('remaining_life_cycles'):
+                    # 最小値を採用（より悲観的な予測）
+                    failure_prediction['integrated_remaining_life'] = min(
+                        failure_prediction['remaining_life_cycles'],
+                        phys_remaining
+                    )
+                else:
+                    failure_prediction['integrated_remaining_life'] = phys_remaining
+            
+            # 破壊モードの統合
+            if phys_failure_prob > 0.8:
+                failure_prediction['integrated_failure_mode'] = 'physical_damage_dominant'
+            elif phys_failure_prob > 0.5 and failure_prediction['failure_probability'] > 0.5:
+                failure_prediction['integrated_failure_mode'] = 'combined_failure'
+            else:
+                failure_prediction['integrated_failure_mode'] = failure_prediction.get('failure_mode', 'safe')
+        
+        return failure_prediction
+    
+    def _compute_enhanced_anomaly_scores(self,
+                                        lambda_structures: Dict,
+                                        boundaries: Dict,
+                                        topological_breaks: Dict,
+                                        md_features: Dict,
+                                        physical_damage: Optional[Dict]
+                                        ) -> Dict[str, np.ndarray]:
+        """物理ダメージを考慮した拡張異常スコア計算"""
+        # 基本の異常スコア計算
+        anomaly_scores = self.anomaly_detector.compute_multiscale_anomalies(
+            lambda_structures, boundaries,
+            topological_breaks, md_features, self.config
+        )
+        
+        # 物理ダメージによる異常スコアの追加
+        if physical_damage and self.config.use_physical_damage:
+            n_frames = len(anomaly_scores.get('combined', []))
+            
+            # ダメージベースの異常スコア
+            if 'cumulative_damage' in physical_damage:
+                damage_data = physical_damage['cumulative_damage']
+                
+                # 形状調整
+                if damage_data.ndim > 1:
+                    damage_score = np.mean(damage_data, axis=1)
+                else:
+                    damage_score = damage_data
+                
+                # 長さ調整
+                if len(damage_score) != n_frames:
+                    # 補間または切り詰め
+                    if len(damage_score) > n_frames:
+                        damage_score = damage_score[:n_frames]
+                    else:
+                        # 線形補間で延長
+                        x_old = np.linspace(0, 1, len(damage_score))
+                        x_new = np.linspace(0, 1, n_frames)
+                        damage_score = np.interp(x_new, x_old, damage_score)
+                
+                anomaly_scores['physical_damage'] = damage_score
+                
+                # 統合スコアの再計算
+                w_damage = self.config.w_physical_damage
+                combined = anomaly_scores['combined'] * (1 - w_damage) + damage_score * w_damage
+                anomaly_scores['combined'] = combined
+        
+        return anomaly_scores
+    
+    # === 既存のヘルパーメソッド（変更なし） ===
+    
     def _identify_defect_regions(self,
-                            cluster_atoms: Optional[Dict[int, List[int]]],
-                            backbone_indices: Optional[np.ndarray]
-                            ) -> Optional[np.ndarray]:
-        """欠陥領域の特定
-        
-        Parameters
-        ----------
-        cluster_atoms : Dict[int, List[int]], optional
-            クラスター定義（キーがクラスターID、値が原子インデックスリスト）
-        backbone_indices : np.ndarray, optional
-            既存のbackbone_indices（あれば優先使用）
-        
-        Returns
-        -------
-        np.ndarray or None
-            欠陥原子のインデックス配列（必ずint32型）
-        """
-        # 既存のbackbone_indicesがあればそれを使用（型チェック付き）
+                                cluster_atoms: Optional[Dict[int, List[int]]],
+                                backbone_indices: Optional[np.ndarray]
+                                ) -> Optional[np.ndarray]:
+        """欠陥領域の特定"""
         if backbone_indices is not None:
-            # 型変換を確実に
             if backbone_indices.dtype != np.int32:
                 backbone_indices = np.array(backbone_indices, dtype=np.int32)
             print(f"  Using provided backbone_indices: {len(backbone_indices)} atoms")
             return backbone_indices
         
-        # cluster_atomsから自動生成
         if cluster_atoms is not None:
             defect_indices = []
             for cid, atoms in cluster_atoms.items():
-                # キーを文字列に変換して比較（JSONから読み込んだ場合への対応）
                 if str(cid) != "0":  # Cluster 0（健全領域）以外
-                    # atomsの各要素を確実に整数に変換
                     if isinstance(atoms, (list, np.ndarray)):
-                        # 各要素を整数に変換
                         defect_indices.extend([int(a) for a in atoms])
                     else:
                         defect_indices.extend(atoms)
             
             if defect_indices:
-                # 重複除去してソート、必ずint32型で返す
                 backbone_indices = np.array(sorted(set(defect_indices)), dtype=np.int32)
                 print(f"  Auto-detected {len(backbone_indices)} defect atoms from {len(cluster_atoms)-1} clusters")
                 return backbone_indices
             else:
-                print("  ⚠️ No defect atoms found in clusters (only healthy cluster 0)")
+                print("  ⚠️ No defect atoms found in clusters")
                 return None
         
-        # どちらもない場合
         print("  ℹ️ No backbone_indices or cluster_atoms provided")
         return None
     
@@ -602,6 +818,23 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         except Exception as e:
             logger.warning(f"Defect analysis failed: {e}")
     
+    def _preprocess_inputs(self, trajectory, atom_types, backbone_indices):
+        """入力データの前処理とGPU転送"""
+        if atom_types is not None and atom_types.dtype.kind == 'U':
+            atom_type_names = np.unique(atom_types)
+            type_map = {t: i for i, t in enumerate(atom_type_names)}
+            atom_types = np.array([type_map[t] for t in atom_types], dtype=np.int32)
+        
+        if self.is_gpu and cp is not None:
+            print("📊 Converting arrays to GPU...")
+            trajectory = cp.asarray(trajectory)
+            if backbone_indices is not None:
+                backbone_indices = cp.asarray(backbone_indices)
+            if atom_types is not None:
+                atom_types = cp.asarray(atom_types)
+        
+        return trajectory, atom_types
+    
     def _optimize_batch_plan(self, n_frames: int, batch_size: int) -> List[Tuple[int, int]]:
         """バッチ計画の最適化"""
         MIN_BATCH_SIZE = 1000
@@ -612,7 +845,6 @@ class MaterialLambda3DetectorGPU(GPUBackend):
             batch_end = min(current_pos + batch_size, n_frames)
             remaining = batch_end - current_pos
             
-            # 最後の小さいバッチを前のバッチと結合
             if batch_end == n_frames and remaining < MIN_BATCH_SIZE and batches:
                 print(f"  Merging last batch ({remaining} frames) with previous")
                 prev_start, _ = batches[-1]
@@ -663,7 +895,7 @@ class MaterialLambda3DetectorGPU(GPUBackend):
                            original_shape: Tuple,
                            atom_types: Optional[np.ndarray]
                            ) -> MaterialLambda3Result:
-        """バッチ結果の統合（修正版）"""
+        """バッチ結果の統合（K/V比対応版）"""
         print("  Merging batch results...")
         n_frames, n_atoms, _ = original_shape
         
@@ -673,7 +905,8 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         # 結果配列の初期化
         merged_lambda = {}
         merged_features = {}
-        merged_material_features = {}  # ← 独立した辞書を追加！
+        merged_material_features = {}
+        merged_kv_ratios = None
         
         # 最初のバッチから構造を取得
         first_batch = batch_results[0]
@@ -692,13 +925,19 @@ class MaterialLambda3DetectorGPU(GPUBackend):
                 shape = (n_frames,) + sample.shape[1:] if sample.ndim > 1 else (n_frames,)
                 merged_features[key] = np.full(shape, np.nan, dtype=sample.dtype)
         
-        # Material特徴の初期化（追加！）
+        # Material特徴の初期化
         if 'material_features' in first_batch and first_batch['material_features']:
             for key in first_batch['material_features'].keys():
                 sample = first_batch['material_features'][key]
                 if isinstance(sample, (np.ndarray, self.xp.ndarray)):
                     shape = (n_frames,) + sample.shape[1:] if sample.ndim > 1 else (n_frames,)
                     merged_material_features[key] = np.full(shape, np.nan, dtype=sample.dtype)
+        
+        # K/V比の初期化（NEW!）
+        if 'kv_ratios' in first_batch and first_batch['kv_ratios'] is not None:
+            sample = first_batch['kv_ratios']
+            shape = (n_frames,) + sample.shape[1:] if sample.ndim > 1 else (n_frames,)
+            merged_kv_ratios = np.full(shape, np.nan, dtype=sample.dtype)
         
         # データのマージ
         for batch in batch_results:
@@ -720,13 +959,19 @@ class MaterialLambda3DetectorGPU(GPUBackend):
                     actual_frames = min(len(value), end_idx - offset)
                     merged_features[key][offset:offset + actual_frames] = value[:actual_frames]
             
-            # Material特徴のマージ（追加！）
+            # Material特徴
             if 'material_features' in batch and batch['material_features']:
                 for key, value in batch['material_features'].items():
                     if key in merged_material_features:
                         value = self.to_cpu(value) if hasattr(value, 'get') else value
                         actual_frames = min(len(value), end_idx - offset)
                         merged_material_features[key][offset:offset + actual_frames] = value[:actual_frames]
+            
+            # K/V比（NEW!）
+            if 'kv_ratios' in batch and batch['kv_ratios'] is not None and merged_kv_ratios is not None:
+                value = self.to_cpu(batch['kv_ratios']) if hasattr(batch['kv_ratios'], 'get') else batch['kv_ratios']
+                actual_frames = min(len(value), end_idx - offset)
+                merged_kv_ratios[offset:offset + actual_frames] = value[:actual_frames]
         
         # ウィンドウサイズの平均
         window_steps = int(np.mean([b.get('window', 100) for b in batch_results]))
@@ -736,7 +981,8 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         return MaterialLambda3Result(
             lambda_structures=merged_lambda,
             md_features=merged_features,
-            material_features=merged_material_features if merged_material_features else None,  # ← 修正！
+            material_features=merged_material_features if merged_material_features else None,
+            kv_ratios=merged_kv_ratios,  # K/V比を保存
             structural_boundaries={},
             topological_breaks={},
             anomaly_scores={},
@@ -753,14 +999,15 @@ class MaterialLambda3DetectorGPU(GPUBackend):
                               material_features: Optional[Dict],
                               n_frames: int,
                               n_atoms: int,
-                              initial_window: int
+                              initial_window: int,
+                              kv_ratios: Optional[np.ndarray] = None
                               ) -> MaterialLambda3Result:
-        """単一軌道用の後処理"""
-        # MaterialLambda3Resultオブジェクトを作成
+        """単一軌道用の後処理（K/V比対応）"""
         partial_result = MaterialLambda3Result(
             lambda_structures=self._to_cpu_dict(lambda_structures),
             md_features=self._to_cpu_dict(md_features),
-            material_features=self._to_cpu_dict(material_features) if material_features else None,  # 修正！
+            material_features=self._to_cpu_dict(material_features) if material_features else None,
+            kv_ratios=self.to_cpu(kv_ratios) if kv_ratios is not None else None,
             structural_boundaries={},
             topological_breaks={},
             anomaly_scores={},
@@ -805,7 +1052,6 @@ class MaterialLambda3DetectorGPU(GPUBackend):
             boundary_locs = boundaries['boundary_locations']
             
             if len(boundary_locs) > 0:
-                # 最初のセグメント
                 if boundary_locs[0] > 30:
                     patterns.append({
                         'type': 'initial_structure',
@@ -814,7 +1060,6 @@ class MaterialLambda3DetectorGPU(GPUBackend):
                         'duration': boundary_locs[0]
                     })
                 
-                # 中間セグメント
                 for i in range(len(boundary_locs) - 1):
                     duration = boundary_locs[i+1] - boundary_locs[i]
                     if duration > 20:
@@ -902,11 +1147,12 @@ class MaterialLambda3DetectorGPU(GPUBackend):
     def _print_analysis_header(self, n_frames: int, n_atoms: int):
         """解析ヘッダーの表示"""
         print(f"\n{'='*60}")
-        print(f"=== Lambda³ Material Analysis (GPU) ===")
+        print(f"=== Lambda³ Material Analysis (Physics-Integrated v3.0) ===")
         print(f"{'='*60}")
         print(f"Trajectory: {n_frames} frames, {n_atoms} atoms")
         print(f"Material: {self.config.material_type}")
         print(f"GPU Device: {self.device}")
+        print(f"Physical Damage: {'ON' if self.config.use_physical_damage else 'OFF'}")
         
         try:
             mem_info = self.memory_manager.get_memory_info()
@@ -917,7 +1163,7 @@ class MaterialLambda3DetectorGPU(GPUBackend):
     def _print_initialization_info(self):
         """初期化情報の表示"""
         if self.verbose:
-            print(f"\n💎 Material Lambda³ GPU Detector Initialized")
+            print(f"\n💎 Material Lambda³ GPU Detector v3.0 Initialized")
             print(f"   Material: {self.config.material_type}")
             print(f"   Device: {self.device}")
             print(f"   GPU Mode: {self.is_gpu}")
@@ -930,6 +1176,7 @@ class MaterialLambda3DetectorGPU(GPUBackend):
             
             print(f"   Batch Size: {self.config.gpu_batch_size} frames")
             print(f"   Material Analytics: {'ON' if self.config.use_material_analytics else 'OFF'}")
+            print(f"   Physical Damage: {'ON' if self.config.use_physical_damage else 'OFF'}")
     
     def _print_summary(self, result: MaterialLambda3Result):
         """結果サマリーの表示"""
@@ -942,14 +1189,28 @@ class MaterialLambda3DetectorGPU(GPUBackend):
         if result.computation_time > 0:
             print(f"Speed: {result.n_frames / result.computation_time:.1f} frames/second")
         
-        if result.failure_prediction:
-            print(f"\nMaterial Analysis:")
-            print(f"  Failure probability: {result.failure_prediction['failure_probability']:.1%}")
-            print(f"  Reliability index: {result.failure_prediction['reliability_index']:.2f}")
-            print(f"  Failure mode: {result.failure_prediction.get('failure_mode', 'unknown')}")
+        # 物理ダメージ解析結果（NEW!）
+        if result.physical_damage:
+            print(f"\n⚡ Physical Damage Analysis:")
+            print(f"  Max damage: {result.physical_damage['max_damage']:.1%}")
+            print(f"  Failure probability: {result.physical_damage['failure_probability']:.1%}")
+            if result.physical_damage.get('remaining_life'):
+                print(f"  Remaining life: {result.physical_damage['remaining_life']:.1f} cycles")
+            print(f"  Critical clusters: {len(result.physical_damage.get('critical_clusters', []))}")
         
+        # 統合破壊予測
+        if result.failure_prediction:
+            print(f"\n🔬 Integrated Failure Prediction:")
+            if 'integrated_failure_probability' in result.failure_prediction:
+                print(f"  Integrated probability: {result.failure_prediction['integrated_failure_probability']:.1%}")
+            else:
+                print(f"  Traditional probability: {result.failure_prediction['failure_probability']:.1%}")
+            print(f"  Reliability index: {result.failure_prediction['reliability_index']:.2f}")
+            print(f"  Failure mode: {result.failure_prediction.get('integrated_failure_mode', result.failure_prediction.get('failure_mode', 'unknown'))}")
+        
+        # 材料イベント
         if result.material_events:
-            print(f"  Material events: {len(result.material_events)}")
+            print(f"\n📊 Material Events: {len(result.material_events)}")
             event_types = {}
             for event in result.material_events:
                 if len(event) >= 3:
@@ -968,7 +1229,7 @@ def detect_material_events(trajectory: np.ndarray,
                           atom_types: np.ndarray,
                           config: Optional[MaterialConfig] = None,
                           **kwargs) -> List[Tuple[int, int, str]]:
-    """材料イベントを検出する便利関数"""
+    """材料イベントを検出する便利関数（物理ダメージ対応版）"""
     config = config or MaterialConfig()
     detector = MaterialLambda3DetectorGPU(config)
     
@@ -988,3 +1249,63 @@ def detect_material_events(trajectory: np.ndarray,
                 events.append((event[0], event[1], 'material_event'))
     
     return events
+
+def analyze_with_physics(trajectory: np.ndarray,
+                        atom_types: Optional[np.ndarray] = None,
+                        material_type: str = 'SUJ2',
+                        temperature: float = 300.0,
+                        **kwargs) -> MaterialLambda3Result:
+    """物理ダメージ解析を含む完全解析の便利関数"""
+    config = MaterialConfig(
+        material_type=material_type,
+        use_physical_damage=True,
+        damage_temperature=temperature
+    )
+    
+    detector = MaterialLambda3DetectorGPU(config)
+    return detector.analyze(trajectory, atom_types=atom_types, **kwargs)
+
+# ===============================
+# Test Function
+# ===============================
+
+if __name__ == "__main__":
+    print("💎 Material Lambda³ Detector GPU v3.0 - Physics Integration Test")
+    print("=" * 70)
+    
+    # テストデータ生成
+    n_frames = 100
+    n_atoms = 1000
+    trajectory = np.random.randn(n_frames, n_atoms, 3).astype(np.float32) * 0.1
+    
+    # クラスター定義
+    cluster_atoms = {
+        0: list(range(0, 900)),      # 健全領域
+        1: list(range(900, 950)),    # 欠陥クラスター1
+        2: list(range(950, 1000)),   # 欠陥クラスター2
+    }
+    
+    # 物理ダメージ解析を有効にした設定
+    config = MaterialConfig(
+        material_type='SUJ2',
+        use_physical_damage=True,
+        damage_temperature=300.0
+    )
+    
+    # 検出器の初期化と実行
+    detector = MaterialLambda3DetectorGPU(config)
+    result = detector.analyze(
+        trajectory=trajectory,
+        cluster_atoms=cluster_atoms
+    )
+    
+    print("\n✨ Physical Damage Integration Complete!")
+    
+    if result.physical_damage:
+        print("\n📊 Physical Damage Summary:")
+        print(f"   Max Damage: {result.physical_damage['max_damage']:.1%}")
+        print(f"   Failure Probability: {result.physical_damage['failure_probability']:.1%}")
+        print(f"   Temperature: {result.physical_damage['temperature']:.1f} K")
+    
+    print("\n🎉 Test completed successfully!")
+    
