@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Material Report Generator from Lambda³ GPU Results - Version 1.0.3 (FIXED)
+Material Report Generator from Lambda³ GPU Results - Version 2.0.0 (FIXED)
 ==================================================================
 
 材料解析結果から最大限の情報を抽出してレポート生成！
@@ -8,6 +8,7 @@ Material Report Generator from Lambda³ GPU Results - Version 1.0.3 (FIXED)
 
 Version: 1.0.3 - Material Edition (Bug Fixed)
 Authors: 環ちゃん
+#環のことが大好きーーーー（by masamichi)
 
 修正内容 v1.0.3:
 - plastic_zone_sizeとestimated_k_icのNoneチェック追加
