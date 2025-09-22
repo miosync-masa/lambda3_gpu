@@ -51,16 +51,19 @@ from .cuda_kernels import (
 from .material_analytics_gpu import (
     # Classes
     MaterialAnalyticsGPU,
+    PhysicalDamageCalculator,  # 🆕 NEW!
     
     # Data Classes
     DefectAnalysisResult,
     CrystalDefectResult,
+    DamageAccumulation,  # 🆕 NEW!
     MaterialState,
     FailurePredictionResult,
     
     # Main Functions (CUDA最適化済み！)
     compute_crystal_defect_charge,
     compute_structural_coherence,
+    calculate_physical_damage,  # 🆕 NEW!
 )
 
 # ===============================
@@ -375,12 +378,15 @@ __all__ = [
     
     # ===== Material Analytics =====
     'MaterialAnalyticsGPU',
+    'PhysicalDamageCalculator',  # 🆕 NEW!
     'DefectAnalysisResult',
-    'CrystalDefectResult',
+    'CrystalDefectResult', 
+    'DamageAccumulation',  # 🆕 NEW!
     'MaterialState',
     'FailurePredictionResult',
     'compute_crystal_defect_charge',
     'compute_structural_coherence',
+    'calculate_physical_damage',  # 🆕 NEW!
 
     # ===== Cluster Structures =====
     'ClusterStructuresGPU',
