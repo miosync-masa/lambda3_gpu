@@ -615,8 +615,18 @@ class MaterialTwoStageAnalyzerGPU(GPUBackend):
             von_mises_strain = np.sqrt(np.sum(strain_values**2, axis=-1))
             peak_strain = float(np.max(von_mises_strain))
             
-            peak_damage = peak_strain * self.material_props['elastic_modulus'] / \
-                         self.material_props['ultimate_strength']
+            yield_strength = self.material_props.get('yield_strength', 1.5)
+            ultimate_strength = self.material_props.get('ultimate_strength', 2.0)
+            von_mises_stress = peak_strain * self.material_props['elastic_modulus']
+            
+            if von_mises_stress <= yield_strength:
+                peak_damage = 0.0
+            elif von_mises_stress >= ultimate_strength:
+                peak_damage = 1.0  # 100%で上限
+            else:
+                peak_damage = (von_mises_stress - yield_strength) / (ultimate_strength - yield_strength)
+            
+            peak_damage = float(np.clip(peak_damage, 0.0, 1.0))
             
             coord_defect = np.abs(structures.coordination_numbers[:, cluster_id] - 12.0)
             dislocation_density = 1e14 * np.mean(coord_defect)**2
@@ -728,13 +738,13 @@ class MaterialTwoStageAnalyzerGPU(GPUBackend):
         
         for analysis in cluster_analyses.values():
             for event in analysis.cluster_events:
-                max_damage = max(max_damage, event.peak_damage)
-                mean_strain += event.peak_strain
-                n_events += 1
-                
-                # Lindemann比の最大値（NEW!）
                 if event.lindemann_ratio:
                     max_lindemann = max(max_lindemann, event.lindemann_ratio)
+        
+        # グローバル物理予測も確認（追加！）
+        if global_physics and hasattr(global_physics.rmsf_analysis, 'lindemann_ratio'):
+            global_lindemann = global_physics.rmsf_analysis.lindemann_ratio
+            max_lindemann = max(max_lindemann, global_lindemann)
         
         if n_events > 0:
             mean_strain /= n_events
@@ -1040,14 +1050,18 @@ class MaterialTwoStageAnalyzerGPU(GPUBackend):
         if strain_tensor is None or strain_tensor.size == 0:
             return 0.0
         
-        # von Mises応力
-        von_mises_strain = np.mean(np.abs(strain_tensor))
-        von_mises_stress = von_mises_strain * self.material_props['elastic_modulus']
+        # von Mises応力（修正版）
+        if strain_tensor.ndim == 3:  # (n_frames, n_clusters, 3, 3)
+            von_mises_strain = np.sqrt(np.mean(strain_tensor**2, axis=(2,3)))
+        else:
+            von_mises_strain = np.abs(strain_tensor)
         
-        # 破壊確率（簡易版）
+        von_mises_stress = np.mean(von_mises_strain) * self.material_props['elastic_modulus']
+        
+        # 確率計算（0-1に制限）
         if von_mises_stress > self.material_props['yield_strength']:
             ratio = von_mises_stress / self.material_props['ultimate_strength']
-            return min(1.0, ratio)
+            return float(min(1.0, ratio))  # 100%で上限
         
         return 0.0
     
