@@ -561,7 +561,163 @@ def generate_material_report_from_results(
             report += f"\n{i}. {rec}"
     else:
         report += "\nNo specific recommendations at this time."
+
+
+     # ========================================
+    # 🆕 物理予測セクション（MaterialFailurePhysicsGPU）
+    # ========================================
+    if two_stage_result and hasattr(two_stage_result, 'global_physics_prediction'):
+        physics = two_stage_result.global_physics_prediction
+        if physics:
+            report += "\n## 🔬 Physics-Based Failure Prediction\n"
+            report += "\n### Failure Mechanism Analysis\n"
+            report += f"- **Predicted mechanism**: {physics.get('mechanism', 'Unknown')}\n"
+            report += f"- **Time to failure**: {physics.get('time_to_failure', 'N/A')} ps\n"
+            report += f"- **Confidence level**: {physics.get('confidence', 0):.1%}\n"
+            
+            # Lindemann基準
+            report += "\n### Thermal Stability\n"
+            report += f"- **Lindemann ratio**: {physics.get('lindemann_ratio', 0):.3f}\n"
+            report += f"- **Phase state**: {physics.get('phase_state', 'solid')}\n"
+            
+            # 臨界原子
+            critical_atoms = physics.get('critical_atoms', [])
+            if critical_atoms:
+                report += f"- **Critical atoms**: {critical_atoms[:10]}\n"
     
+    # ========================================
+    # 🆕 物理ダメージ解析（MaterialAnalyticsGPU統合版）
+    # ========================================
+    if macro_result and hasattr(macro_result, 'physical_damage'):
+        damage = macro_result.physical_damage
+        report += "\n## ⚡ Physical Damage Assessment (K/V-based)\n"
+        
+        report += "\n### Damage Accumulation\n"
+        report += f"- **Cumulative damage (D)**: {damage.get('cumulative_damage', 0):.1%}\n"
+        report += f"- **Failure probability**: {damage.get('failure_probability', 0):.1%}\n"
+        report += f"- **Remaining life**: {damage.get('remaining_life', 'N/A')}\n"
+        
+        # 臨界クラスター（K/V比ベース）
+        if 'critical_clusters' in damage:
+            report += f"\n### K/V-Critical Clusters\n"
+            for cid in damage['critical_clusters'][:5]:
+                report += f"- Cluster {cid}\n"
+    
+    # ========================================
+    # 🆕 信頼性解析（MaterialConfidenceAnalyzerGPU）
+    # ========================================
+    if two_stage_result and hasattr(two_stage_result, 'cluster_analyses'):
+        report += "\n## 📊 Statistical Confidence Analysis\n"
+        
+        all_confidence_results = []
+        for event_name, analysis in two_stage_result.cluster_analyses.items():
+            if hasattr(analysis, 'confidence_results') and analysis.confidence_results:
+                all_confidence_results.extend(analysis.confidence_results)
+        
+        if all_confidence_results:
+            report += f"\n### Reliability Assessment ({len(all_confidence_results)} pairs)\n"
+            
+            # 統計サマリー
+            critical_pairs = [r for r in all_confidence_results if r.get('is_critical', False)]
+            significant_pairs = [r for r in all_confidence_results if r.get('is_significant', False)]
+            
+            report += f"- **Significant correlations**: {len(significant_pairs)}\n"
+            report += f"- **Critical state pairs**: {len(critical_pairs)}\n"
+            
+            # 材料特性別
+            strain_pairs = [r for r in all_confidence_results if r.get('material_property') == 'strain']
+            coord_pairs = [r for r in all_confidence_results if r.get('material_property') == 'coordination']
+            damage_pairs = [r for r in all_confidence_results if r.get('material_property') == 'damage']
+            
+            if strain_pairs:
+                report += f"\n#### Strain Reliability ({len(strain_pairs)} pairs)\n"
+                for r in strain_pairs[:3]:
+                    report += f"- C{r['from_cluster']}→C{r['to_cluster']}: "
+                    report += f"ρ={r.get('strain_correlation', 0):.3f} "
+                    report += f"[{r.get('ci_lower', 0):.3f}, {r.get('ci_upper', 0):.3f}]"
+                    if r.get('is_critical'):
+                        report += " ⚠️ CRITICAL"
+                    report += "\n"
+            
+            if coord_pairs:
+                report += f"\n#### Coordination Defect Analysis ({len(coord_pairs)} pairs)\n"
+                max_disl = max((r.get('dislocation_density_i', 0) for r in coord_pairs), default=0)
+                report += f"- **Max dislocation density**: {max_disl:.2e} /cm²\n"
+            
+            if damage_pairs:
+                report += f"\n#### Damage Correlation ({len(damage_pairs)} pairs)\n"
+                weibull_moduli = [r.get('weibull_modulus_i', 0) for r in damage_pairs if 'weibull_modulus_i' in r]
+                if weibull_moduli:
+                    report += f"- **Mean Weibull modulus**: {np.mean(weibull_moduli):.2f}\n"
+    
+    # ========================================
+    # 🆕 クラスターイベントの物理情報
+    # ========================================
+    if two_stage_result and hasattr(two_stage_result, 'cluster_analyses'):
+        for event_name, analysis in two_stage_result.cluster_analyses.items():
+            if hasattr(analysis, 'cluster_events'):
+                # Lindemann比が高いイベントを特定
+                high_lindemann = [e for e in analysis.cluster_events 
+                                if hasattr(e, 'lindemann_ratio') and e.lindemann_ratio and e.lindemann_ratio > 0.1]
+                
+                if high_lindemann:
+                    report += f"\n### ⚠️ Local Melting Risk in {event_name}\n"
+                    for event in high_lindemann[:3]:
+                        report += f"- **{event.cluster_name}**: "
+                        report += f"Lindemann={event.lindemann_ratio:.3f}, "
+                        report += f"T={event.local_temperature:.0f}K, "
+                        report += f"Phase={event.phase_state}\n"
+    
+    # ========================================
+    # 🆕 統合的リスク評価
+    # ========================================
+    report += "\n## 🎯 Integrated Risk Assessment\n"
+    
+    risk_factors = []
+    risk_score = 0.0
+    
+    # 物理予測リスク
+    if two_stage_result and hasattr(two_stage_result, 'predicted_failure_time'):
+        ttf = two_stage_result.predicted_failure_time
+        if ttf < 100:
+            risk_factors.append(("Imminent failure", 1.0))
+            risk_score += 1.0
+        elif ttf < 1000:
+            risk_factors.append(("Near-term failure", 0.5))
+            risk_score += 0.5
+    
+    # K/V比ダメージリスク
+    if macro_result and hasattr(macro_result, 'physical_damage'):
+        damage_prob = macro_result.physical_damage.get('failure_probability', 0)
+        if damage_prob > 0.5:
+            risk_factors.append((f"High damage probability ({damage_prob:.1%})", 0.8))
+            risk_score += 0.8
+    
+    # 統計的信頼性リスク
+    if all_confidence_results:
+        n_critical = sum(1 for r in all_confidence_results if r.get('is_critical', False))
+        if n_critical > 5:
+            risk_factors.append((f"{n_critical} critical correlations", 0.6))
+            risk_score += 0.6
+    
+    # リスクレベル判定
+    if risk_score > 2.0:
+        risk_level = "🔴 CRITICAL"
+    elif risk_score > 1.0:
+        risk_level = "🟡 HIGH"
+    elif risk_score > 0.5:
+        risk_level = "🟠 MODERATE"
+    else:
+        risk_level = "🟢 LOW"
+    
+    report += f"\n### Overall Risk Level: {risk_level}\n"
+    report += f"**Risk Score**: {risk_score:.2f}\n\n"
+    
+    if risk_factors:
+        report += "**Risk Factors**:\n"
+        for factor, weight in risk_factors:
+            report += f"- {factor} (weight: {weight:.1f})\n"
+ 
     # ========================================
     # 7. 技術仕様
     # ========================================
