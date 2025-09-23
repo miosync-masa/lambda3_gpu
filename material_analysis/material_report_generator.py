@@ -745,7 +745,51 @@ def generate_material_report_from_results(
             report += f"\\n### Thermal Dynamics\\n"
             report += f"- **Max heating rate**: {max_heating_rate:.2f} K/frame\\n"
             report += f"- **Max cooling rate**: {abs(max_cooling_rate):.2f} K/frame\\n"
-
+    
+    # ========================================
+    # 🆕 Integrated Failure Prediction (新規追加!)
+    # ========================================
+    if macro_result and hasattr(macro_result, 'failure_prediction') and macro_result.failure_prediction is not None:
+        fp = macro_result.failure_prediction
+        report += "\n## 🎯 Integrated Failure Prediction\n"
+        
+        # 基本的な破壊予測
+        report += "\n### Basic Failure Assessment\n"
+        report += f"- **Failure probability**: {fp.get('failure_probability', 0):.1%}\n"
+        report += f"- **Reliability index**: {fp.get('reliability_index', 5.0):.2f}\n"
+        report += f"- **Failure mode**: {fp.get('failure_mode', 'Unknown')}\n"
+        
+        # 統合版の新フィールド対応（PATCH 4の内容）
+        if 'integrated_failure_probability' in fp:
+            report += "\n### 🔥 Physics-Integrated Assessment\n"
+            report += f"- **Integrated failure probability**: {fp['integrated_failure_probability']:.1%}\n"
+            
+            # 各寄与の内訳
+            if 'physical_damage_probability' in fp:
+                report += f"- **Physical damage contribution**: {fp['physical_damage_probability']:.1%}\n"
+            
+            traditional_prob = fp.get('failure_probability', 0)
+            report += f"- **Traditional mechanics contribution**: {traditional_prob:.1%}\n"
+            
+            # 統合破壊モード
+            if 'integrated_failure_mode' in fp:
+                mode = fp['integrated_failure_mode']
+                report += f"- **Predicted failure mode**: {mode}\n"
+                
+                # モード別の推奨事項
+                if mode == 'physical_damage_dominant':
+                    report += "  → Recommendation: Focus on reducing K/V ratio\n"
+                elif mode == 'combined_failure':
+                    report += "  → Recommendation: Multi-faceted reinforcement needed\n"
+            
+            # 統合残存寿命
+            if 'integrated_remaining_life' in fp:
+                report += f"- **Integrated remaining life**: {fp['integrated_remaining_life']:.1f} cycles\n"
+        
+        # 残存寿命（既存フィールド）
+        if 'remaining_life_cycles' in fp:
+            report += f"- **Remaining life cycles**: {fp['remaining_life_cycles']:.1f}\n"
+    
     # ========================================
     # 🆕 信頼性解析（MaterialConfidenceAnalyzerGPU）
     # ========================================
