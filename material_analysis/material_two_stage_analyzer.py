@@ -287,7 +287,7 @@ class MaterialTwoStageAnalyzerGPU(GPUBackend):
             raise ValueError(f"Expected 3D trajectory, got shape {trajectory.shape}")
         
         # クラスター名設定
-        cluster_names = {i: f"CLUSTER_{i}" for i in range(n_clusters)}
+        cluster_names = {cid: f"CLUSTER_{cid}" for cid in cluster_atoms.keys()}
         
         # グローバル物理予測（NEW!）
         global_physics = None
