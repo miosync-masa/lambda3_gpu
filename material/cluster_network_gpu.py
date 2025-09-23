@@ -28,6 +28,7 @@ except ImportError:
 # Local imports
 from ..types import ArrayType, NDArray
 from ..core import GPUBackend, GPUMemoryManager, handle_gpu_errors
+from .cluster_id_mapping import ClusterIDMapper
 
 logger = logging.getLogger('lambda3_gpu.material.network')
 
@@ -169,6 +170,9 @@ class ClusterNetworkGPU(GPUBackend):
         self.min_damage_strength = min_damage_strength
         self.max_damage_links = max_damage_links
         self.memory_manager = memory_manager or GPUMemoryManager()
+
+        # 🆕 追加
+        self.id_mapper = None
         
         # カーネルコンパイル
         if self.is_gpu and HAS_GPU:
@@ -227,6 +231,10 @@ class ClusterNetworkGPU(GPUBackend):
                 return self._create_empty_result()
             
             cluster_ids = sorted(cluster_anomaly_scores.keys())
+            
+            # 🆕 IDマッパー初期化
+            dummy_atoms = {cid: [] for cid in cluster_ids}
+            self.id_mapper = ClusterIDMapper(dummy_atoms)
             
             # ========================================
             # 材料特有のパターン判定
@@ -294,6 +302,7 @@ class ClusterNetworkGPU(GPUBackend):
         
         return 'general_deformation'
     
+    # _analyze_elastic_pattern メソッドの修正（重要！）
     def _analyze_elastic_pattern(self,
                                 anomaly_scores: Dict[int, np.ndarray],
                                 cluster_coupling: np.ndarray,
@@ -302,7 +311,6 @@ class ClusterNetworkGPU(GPUBackend):
         """弾性変形パターンの解析"""
         
         cluster_ids = sorted(anomaly_scores.keys())
-        n_clusters = len(cluster_ids)
         
         # 歪み相関ネットワーク
         strain_links = []
@@ -313,19 +321,23 @@ class ClusterNetworkGPU(GPUBackend):
             
             for i, cluster_i in enumerate(cluster_ids):
                 for j, cluster_j in enumerate(cluster_ids[i+1:], i+1):
-                    if cluster_i >= n_clusters or cluster_j >= n_clusters:
+                    # 🆕 IDをインデックスに変換
+                    idx_i = self.id_mapper.to_idx(cluster_i)
+                    idx_j = self.id_mapper.to_idx(cluster_j)
+                    
+                    if idx_i >= len(current_strain) or idx_j >= len(current_strain):
                         continue
                     
-                    # 歪み相関
-                    strain_i = current_strain[cluster_i]
-                    strain_j = current_strain[cluster_j]
+                    # 🆕 インデックスで配列アクセス
+                    strain_i = current_strain[idx_i]
+                    strain_j = current_strain[idx_j]
                     
                     correlation = np.sum(strain_i * strain_j) / 9.0
                     
                     if abs(correlation) > 0.1:
                         link = MaterialNetworkLink(
-                            from_cluster=cluster_i,
-                            to_cluster=cluster_j,
+                            from_cluster=cluster_i,  # 実際のIDを保存
+                            to_cluster=cluster_j,    # 実際のIDを保存
                             strength=abs(correlation),
                             strain_correlation=correlation,
                             link_type='elastic',
@@ -354,7 +366,8 @@ class ClusterNetworkGPU(GPUBackend):
             network_stats=network_stats,
             critical_clusters=[]
         )
-    
+
+    # _analyze_plastic_pattern メソッドの修正
     def _analyze_plastic_pattern(self,
                                 anomaly_scores: Dict[int, np.ndarray],
                                 cluster_coupling: np.ndarray,
@@ -376,15 +389,19 @@ class ClusterNetworkGPU(GPUBackend):
             
             # 転位判定
             for cluster_id in cluster_ids:
-                if cluster_id >= len(current_coord):
+                # 🆕 IDをインデックスに変換
+                idx = self.id_mapper.to_idx(cluster_id)
+                
+                if idx >= len(current_coord):
                     continue
-                    
-                coord_defect = abs(current_coord[cluster_id] - 12.0)
-                strain_trace = np.trace(current_strain[cluster_id])
+                
+                # 🆕 インデックスで配列アクセス
+                coord_defect = abs(current_coord[idx] - 12.0)
+                strain_trace = np.trace(current_strain[idx])
                 
                 if coord_defect > self.coord_defect_threshold and abs(strain_trace) > self.strain_threshold:
-                    dislocation_clusters.append(cluster_id)
-            
+                    dislocation_clusters.append(cluster_id) 
+                
             # 転位ネットワーク構築
             for i, cluster_i in enumerate(dislocation_clusters):
                 for j, cluster_j in enumerate(dislocation_clusters[i+1:], i+1):
@@ -512,7 +529,6 @@ class ClusterNetworkGPU(GPUBackend):
     # ========================================
     # ヘルパーメソッド
     # ========================================
-    
     def _compute_strain_network(self,
                                cluster_ids: List[int],
                                local_strain: np.ndarray) -> List[MaterialNetworkLink]:
@@ -527,20 +543,24 @@ class ClusterNetworkGPU(GPUBackend):
         
         for i, cluster_i in enumerate(cluster_ids):
             for j, cluster_j in enumerate(cluster_ids[i+1:], i+1):
-                if cluster_i >= len(current_strain) or cluster_j >= len(current_strain):
+                # 🆕 IDをインデックスに変換
+                idx_i = self.id_mapper.to_idx(cluster_i)
+                idx_j = self.id_mapper.to_idx(cluster_j)
+                
+                if idx_i >= len(current_strain) or idx_j >= len(current_strain):
                     continue
                 
-                # 歪み相関
-                strain_i = current_strain[cluster_i].flatten()
-                strain_j = current_strain[cluster_j].flatten()
+                # 🆕 インデックスで配列アクセス
+                strain_i = current_strain[idx_i].flatten()
+                strain_j = current_strain[idx_j].flatten()
                 
                 try:
                     correlation = np.corrcoef(strain_i, strain_j)[0, 1]
                     
                     if abs(correlation) > 0.3:
                         link = MaterialNetworkLink(
-                            from_cluster=cluster_i,
-                            to_cluster=cluster_j,
+                            from_cluster=cluster_i,  # 実際のIDを保存
+                            to_cluster=cluster_j,    # 実際のIDを保存
                             strength=abs(correlation),
                             strain_correlation=correlation,
                             link_type='elastic'
@@ -556,12 +576,16 @@ class ClusterNetworkGPU(GPUBackend):
                          cluster_i: int,
                          cluster_j: int) -> float:
         """クラスター間距離計算"""
+        # 🆕 IDをインデックスに変換
+        idx_i = self.id_mapper.to_idx(cluster_i)
+        idx_j = self.id_mapper.to_idx(cluster_j)
+        
         if centers.ndim == 3:  # (frames, clusters, 3)
-            center_i = centers[-1, cluster_i]
-            center_j = centers[-1, cluster_j]
+            center_i = centers[-1, idx_i]
+            center_j = centers[-1, idx_j]
         else:  # (clusters, 3)
-            center_i = centers[cluster_i]
-            center_j = centers[cluster_j]
+            center_i = centers[idx_i]
+            center_j = centers[idx_j]
         
         return float(np.linalg.norm(center_i - center_j))
     
