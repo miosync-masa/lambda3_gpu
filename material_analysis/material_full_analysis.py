@@ -396,6 +396,9 @@ def run_material_analysis_pipeline(
     temperature: float = 300.0,
     verbose: bool = False,
     save_intermediate: bool = True,  # 中間結果保存フラグ
+    subdivide_defects: bool = False,
+    subdivision_size: int = 100,
+    sort_by_position: bool = False,
     **kwargs
 ) -> Dict:
     """
@@ -1389,7 +1392,10 @@ def main():
             strain_rate=args.strain_rate,
             temperature=args.temperature,
             verbose=args.verbose,
-            save_intermediate=args.save_intermediate
+            save_intermediate=args.save_intermediate,
+            subdivide_defects=args.subdivide_defects,
+            subdivision_size=args.subdivision_size,
+            sort_by_position=args.sort_by_position
         )
         
         if results and results.get('success'):
