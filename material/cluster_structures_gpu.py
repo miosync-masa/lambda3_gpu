@@ -28,6 +28,7 @@ except ImportError:
 # Local imports
 from ..types import ArrayType, NDArray
 from ..core import GPUBackend, GPUMemoryManager, handle_gpu_errors
+from .cluster_id_mapping import ClusterIDMapper
 
 # cluster_com_kernelのインポート（エラー時はNone）
 try:
@@ -253,6 +254,9 @@ class ClusterStructuresGPU(GPUBackend):
                  **kwargs):
         super().__init__(**kwargs)
         self.memory_manager = memory_manager or GPUMemoryManager()
+
+        # 🆕 追加
+        self.id_mapper = None
         
         # カーネルコンパイル
         if self.is_gpu and HAS_GPU:
@@ -416,23 +420,32 @@ class ClusterStructuresGPU(GPUBackend):
             element_composition={}
         )
     
+    # _compute_cluster_centers メソッドの修正（重要！）
     def _compute_cluster_centers(self,
                                 trajectory: np.ndarray,
                                 cluster_atoms: Dict[int, List[int]]) -> cp.ndarray:
-        """クラスター重心計算（カスタムカーネル使用）"""
+        """クラスター重心計算（細分化ID対応版）"""
         n_frames, n_atoms, _ = trajectory.shape
         n_clusters = len(cluster_atoms)
+        
+        # 🆕 IDマッパー初期化
+        if self.id_mapper is None:
+            self.id_mapper = ClusterIDMapper(cluster_atoms)
         
         if self.is_gpu and HAS_GPU and cluster_com_kernel is not None:
             # GPU版：カスタムカーネル使用
             trajectory_gpu = self.to_gpu(trajectory, dtype=cp.float32)
             cluster_centers = cluster_com_kernel(trajectory_gpu, cluster_atoms)
         else:
-            # CPU版フォールバック
+            # CPU版フォールバック（修正版）
             cluster_centers = np.zeros((n_frames, n_clusters, 3), dtype=np.float32)
-            for cluster_id, atoms in cluster_atoms.items():
+            
+            # 🆕 クラスターIDとインデックスのマッピングを使用
+            for cluster_id, idx in self.id_mapper.iterate_with_idx():
+                atoms = cluster_atoms[cluster_id]
                 if len(atoms) > 0 and max(atoms) < n_atoms:
-                    cluster_centers[:, cluster_id] = np.mean(trajectory[:, atoms], axis=1)
+                    cluster_centers[:, idx] = np.mean(trajectory[:, atoms], axis=1)
+            
             cluster_centers = self.to_gpu(cluster_centers)
         
         return cluster_centers
@@ -526,25 +539,33 @@ class ClusterStructuresGPU(GPUBackend):
             self.xp.fill_diagonal(coupling[frame], 0)  # 自己結合を除外
         
         return coupling
-    
+
+    # _compute_coordination_numbers メソッドの修正
     def _compute_coordination_numbers(self,
                                      trajectory: np.ndarray,
                                      cluster_atoms: Dict[int, List[int]],
                                      cutoff: float) -> cp.ndarray:
-        """配位数計算（材料特有）"""
+        """配位数計算（細分化ID対応版）"""
         n_frames, n_atoms, _ = trajectory.shape
         n_clusters = len(cluster_atoms)
+        
+        # 🆕 IDマッパー確認
+        if self.id_mapper is None:
+            self.id_mapper = ClusterIDMapper(cluster_atoms)
         
         coordination = self.zeros((n_frames, n_clusters), dtype=self.xp.float32)
         cutoff_sq = cutoff * cutoff
         
         if self.is_gpu and self.coord_kernel is not None:
-            # カスタムカーネル使用
-            # クラスターマッピング作成
+            # カスタムカーネル使用（修正版）
+            # クラスターマッピング作成（IDではなくインデックスを使用）
             cluster_mapping = -self.xp.ones(n_atoms, dtype=cp.int32)
+            
+            # 🆕 実際のクラスターIDをインデックスにマップ
             for cluster_id, atoms in cluster_atoms.items():
+                idx = self.id_mapper.to_idx(cluster_id)
                 for atom_id in atoms:
-                    cluster_mapping[atom_id] = cluster_id
+                    cluster_mapping[atom_id] = idx  # インデックスを格納
             
             # 各フレームで配位数計算
             for frame in range(n_frames):
@@ -563,11 +584,13 @@ class ClusterStructuresGPU(GPUBackend):
                 
                 coordination[frame] = coord_frame
         else:
-            # CPU版フォールバック
+            # CPU版フォールバック（修正版）
             for frame in range(n_frames):
                 positions = self.to_gpu(trajectory[frame])
                 
-                for cluster_id, atoms in cluster_atoms.items():
+                # 🆕 IDとインデックスのマッピングを使用
+                for cluster_id, idx in self.id_mapper.iterate_with_idx():
+                    atoms = cluster_atoms[cluster_id]
                     total_coord = 0
                     for atom_i in atoms:
                         pos_i = positions[atom_i]
@@ -575,17 +598,22 @@ class ClusterStructuresGPU(GPUBackend):
                         neighbors = self.xp.sum((distances > 0) & (distances < cutoff))
                         total_coord += neighbors
                     
-                    # 平均配位数
-                    coordination[frame, cluster_id] = total_coord / len(atoms) if atoms else 0
+                    # インデックスで配列に格納
+                    coordination[frame, idx] = total_coord / len(atoms) if atoms else 0
         
         return coordination
     
+    # _compute_local_strain メソッドの修正
     def _compute_local_strain(self,
                              trajectory: np.ndarray,
                              cluster_atoms: Dict[int, List[int]]) -> cp.ndarray:
-        """局所歪みテンソル計算（材料特有）"""
+        """局所歪みテンソル計算（細分化ID対応版）"""
         n_frames = trajectory.shape[0]
         n_clusters = len(cluster_atoms)
+        
+        # 🆕 IDマッパー確認
+        if self.id_mapper is None:
+            self.id_mapper = ClusterIDMapper(cluster_atoms)
         
         strain = self.zeros((n_frames, n_clusters, 3, 3), dtype=self.xp.float32)
         
@@ -595,7 +623,9 @@ class ClusterStructuresGPU(GPUBackend):
         for frame in range(n_frames):
             current_positions = self.to_gpu(trajectory[frame])
             
-            for cluster_id, atoms in cluster_atoms.items():
+            # 🆕 IDとインデックスのマッピングを使用
+            for cluster_id, idx in self.id_mapper.iterate_with_idx():
+                atoms = cluster_atoms[cluster_id]
                 if len(atoms) < 4:  # 最低4原子必要
                     continue
                 
@@ -607,7 +637,7 @@ class ClusterStructuresGPU(GPUBackend):
                     )
                     
                     # Green-Lagrange歪みテンソル
-                    strain[frame, cluster_id] = 0.5 * (F.T @ F - self.xp.eye(3))
+                    strain[frame, idx] = 0.5 * (F.T @ F - self.xp.eye(3))  # idxで格納
                 except Exception as e:
                     logger.debug(f"Strain computation failed for cluster {cluster_id}: {e}")
                     # ゼロ歪みのまま
