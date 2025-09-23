@@ -27,6 +27,7 @@ except ImportError:
 # Local imports
 from ..types import ArrayType, NDArray
 from ..core import GPUBackend, GPUMemoryManager, handle_gpu_errors, profile_gpu
+from .cluster_id_mapping import ClusterIDMapper
 
 logger = logging.getLogger('lambda3_gpu.material.confidence')
 
@@ -274,6 +275,9 @@ class MaterialConfidenceAnalyzerGPU(GPUBackend):
         self.bulk_modulus = elastic_modulus / (3 * (1 - 2 * poisson_ratio))
         
         self.memory_manager = memory_manager or GPUMemoryManager()
+
+        # 🆕 追加
+        self.id_mapper = None
         
         # 乱数生成器
         if self.is_gpu:
@@ -334,6 +338,12 @@ class MaterialConfidenceAnalyzerGPU(GPUBackend):
             n_bootstrap = min(self.n_bootstrap, 100)  # 高速化
         
         results = []
+        # 🆕 IDマッパーを初期化（デバッグ用）
+        if self.id_mapper is None and cluster_data:
+            cluster_ids = list(cluster_data.keys())
+            dummy_cluster_atoms = {cid: [] for cid in cluster_ids}
+            self.id_mapper = ClusterIDMapper(dummy_cluster_atoms)
+            logger.debug(f"Initialized ClusterIDMapper with {len(cluster_ids)} clusters")
         
         logger.info(f"⚙️ Analyzing material reliability for {len(causality_chains)} pairs")
         
