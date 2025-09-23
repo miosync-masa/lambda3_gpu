@@ -156,6 +156,14 @@ from .material_md_features_gpu import (
 )
 
 # ===============================
+# Cluster ID Mapping (細分化クラスター対応)
+# ===============================
+from .cluster_id_mapping import (
+    ClusterIDMapper,
+    create_mapper_from_json
+)
+
+# ===============================
 # Material Failure Physics
 # ===============================
 
@@ -387,6 +395,10 @@ __all__ = [
     'compute_crystal_defect_charge',
     'compute_structural_coherence',
     'calculate_physical_damage',  # 🆕 NEW!
+
+    # ===== Cluster ID Mapping =====
+    'ClusterIDMapper',
+    'create_mapper_from_json',
 
     # ===== Cluster Structures =====
     'ClusterStructuresGPU',
