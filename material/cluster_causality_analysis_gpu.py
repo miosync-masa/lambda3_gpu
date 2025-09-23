@@ -28,6 +28,7 @@ except ImportError:
 # Local imports
 from ..types import ArrayType, NDArray
 from ..core import GPUBackend, GPUMemoryManager, handle_gpu_errors, profile_gpu
+from .cluster_id_mapping import ClusterIDMapper
 
 logger = logging.getLogger('lambda3_gpu.material.causality')
 
@@ -311,6 +312,9 @@ class MaterialCausalityAnalyzerGPU(GPUBackend):
         self.k_ic = k_ic
         
         self.memory_manager = memory_manager or GPUMemoryManager()
+
+         # 🆕 IDマッパー（オプショナル）
+        self.id_mapper = None
         
         # カーネルコンパイル
         if self.is_gpu and HAS_GPU:
@@ -703,18 +707,18 @@ class MaterialCausalityAnalyzerGPU(GPUBackend):
                           threshold: float = 0.2,
                           batch_size: int = 50) -> List[MaterialCausalityResult]:
         """
-        複数クラスターペアの因果関係を検出（材料版）
+        複数クラスターペアの因果関係を検出（細分化ID対応版）
         
         Parameters
         ----------
         anomaly_scores : dict
-            クラスターID -> 異常スコア
+            クラスターID → 異常スコア（細分化ID対応: 0, 1001, 1002...）
         coordination_numbers : dict, optional
-            クラスターID -> 配位数
+            クラスターID → 配位数
         local_strain : dict, optional
-            クラスターID -> 局所歪み
+            クラスターID → 局所歪み  
         damage_scores : dict, optional
-            クラスターID -> 損傷度
+            クラスターID → 損傷度
         threshold : float
             因果強度閾値
         batch_size : int
@@ -723,6 +727,13 @@ class MaterialCausalityAnalyzerGPU(GPUBackend):
         cluster_ids = sorted(anomaly_scores.keys())
         n_clusters = len(cluster_ids)
         causal_pairs = []
+        
+        # 🆕 IDマッパーを初期化（デバッグ用）
+        if self.id_mapper is None:
+            dummy_cluster_atoms = {cid: [] for cid in cluster_ids}
+            self.id_mapper = ClusterIDMapper(dummy_cluster_atoms)
+            logger.debug(f"Initialized ClusterIDMapper with {n_clusters} clusters")
+            logger.debug(f"Cluster ID range: {min(cluster_ids)} - {max(cluster_ids)}")
         
         logger.info(f"⚙️ Detecting causal pairs among {n_clusters} clusters")
         
@@ -738,49 +749,75 @@ class MaterialCausalityAnalyzerGPU(GPUBackend):
         
         logger.info(f"   Causality type: {causality_type}")
         
-        # ペア処理
+        # ペア処理（現在のコードは辞書ベースなので動作する！）
         for i in range(n_clusters):
             for j in range(i + 1, n_clusters):
-                cluster_i = cluster_ids[i]
-                cluster_j = cluster_ids[j]
+                cluster_i = cluster_ids[i]  # 実際のクラスターID (例: 1001)
+                cluster_j = cluster_ids[j]  # 実際のクラスターID (例: 2003)
                 
                 result = None
                 
+                # 🆕 デバッグ情報
+                if i == 0 and j == 1:
+                    logger.debug(f"Processing pair: {cluster_i} - {cluster_j}")
+                
+                # 既存の処理（辞書アクセスなので変更不要！）
                 if causality_type == 'dislocation':
-                    # 転位因果性
+                    # coordination_numbers[cluster_i]で正しくアクセスできる
                     result = self.calculate_dislocation_causality(
-                        coordination_numbers[cluster_i] - 12.0,  # 欠陥
+                        coordination_numbers[cluster_i] - 12.0,  
                         coordination_numbers[cluster_j] - 12.0,
                         local_strain[cluster_i].flatten(),
                         local_strain[cluster_j].flatten()
                     )
                 elif causality_type == 'strain':
-                    # 歪み因果性
                     result = self.calculate_strain_causality(
                         local_strain[cluster_i],
                         local_strain[cluster_j]
                     )
                 elif causality_type == 'crack':
-                    # 亀裂因果性
                     result = self.calculate_crack_causality(
                         damage_scores[cluster_i],
                         damage_scores[cluster_j]
                     )
                 else:
-                    # 一般的な因果性（anomaly_scoresベース）
                     result = self._calculate_general_causality(
                         anomaly_scores[cluster_i],
                         anomaly_scores[cluster_j]
                     )
                 
                 if result and result.causality_strength >= threshold:
+                    # 🆕 実際のクラスターIDをペアに設定
                     result.pair = (cluster_i, cluster_j)
                     causal_pairs.append(result)
+                    
+                    # 🆕 デバッグ：細分化クラスターの親を確認
+                    if self.id_mapper:
+                        parent_i = self.id_mapper.get_parent_cluster(cluster_i)
+                        parent_j = self.id_mapper.get_parent_cluster(cluster_j)
+                        if parent_i != parent_j:
+                            logger.debug(f"Cross-parent causality: {cluster_i}(P{parent_i}) → {cluster_j}(P{parent_j})")
         
         # 強度でソート
         causal_pairs.sort(key=lambda x: x.causality_strength, reverse=True)
         
         logger.info(f"   Found {len(causal_pairs)} causal relationships")
+        
+        # 🆕 統計情報（オプション）
+        if causal_pairs and self.id_mapper:
+            # 同一親クラスター内の因果関係をカウント
+            intra_parent_count = 0
+            inter_parent_count = 0
+            
+            for pair in causal_pairs:
+                c1, c2 = pair.pair
+                if self.id_mapper.get_parent_cluster(c1) == self.id_mapper.get_parent_cluster(c2):
+                    intra_parent_count += 1
+                else:
+                    inter_parent_count += 1
+            
+            logger.info(f"   Intra-parent causality: {intra_parent_count}")
+            logger.info(f"   Inter-parent causality: {inter_parent_count}")
         
         return causal_pairs
     
