@@ -1003,16 +1003,39 @@ class MaterialImpactAnalyzer:
         return set(two_stage_result.critical_clusters[:top_n])
     
     def _get_cluster_atoms(self, cluster_id: int, n_atoms: int) -> List[int]:
-        """クラスター原子取得"""
+        """クラスター原子取得（細分化ID対応版）"""
         if self.cluster_mapping and cluster_id in self.cluster_mapping:
-            return self.cluster_mapping[cluster_id]
+            atoms = self.cluster_mapping[cluster_id]
+            if not atoms:
+                logger.warning(f"Cluster {cluster_id} has empty atom list in mapping")
+            return atoms
         
-        # フォールバック
-        atoms_per_cluster = 50
-        start_atom = cluster_id * atoms_per_cluster
+        # 細分化クラスターの場合の処理
+        if cluster_id > 1000:  # 細分化クラスターID
+            parent_cluster = cluster_id // 1000  # 3017 → 3
+            subdivision = cluster_id % 1000      # 3017 → 17
+            
+            logger.warning(f"Cluster {cluster_id} not in mapping, using fallback (parent={parent_cluster}, sub={subdivision})")
+            
+            # 親クラスターの推定範囲を細分化
+            atoms_per_parent = 1000  # 親クラスターごと
+            atoms_per_sub = 50       # 細分化ごと
+            
+            start_atom = (parent_cluster - 1) * atoms_per_parent + subdivision * atoms_per_sub
+            end_atom = min(start_atom + atoms_per_sub, n_atoms)
+            
+            if start_atom < n_atoms:
+                return list(range(start_atom, end_atom))
+            else:
+                logger.warning(f"Cluster {cluster_id}: computed range {start_atom}-{end_atom} exceeds n_atoms={n_atoms}")
+                return []
+        
+        # 通常のフォールバック（健全領域など）
+        atoms_per_cluster = 500  # もっと大きく
+        start_atom = min(cluster_id * atoms_per_cluster, n_atoms - 100)
         end_atom = min(start_atom + atoms_per_cluster, n_atoms)
-        return list(range(start_atom, end_atom))
-    
+        return list(range(max(0, start_atom), end_atom))
+
     def _print_summary(self, results: Dict[str, MaterialImpactResult]):
         """解析サマリー"""
         print("\n" + "="*60)
