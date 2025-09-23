@@ -564,10 +564,10 @@ def generate_material_report_from_results(
         report += "\nNo specific recommendations at this time."
 
 
-     # ========================================
+    # ========================================
     # 🆕 物理予測セクション（MaterialFailurePhysicsGPU）
     # ========================================
-    if two_stage_result and hasattr(two_stage_result, 'global_physics_prediction'):
+    if two_stage_result and hasattr(two_stage_result, 'global_physics_prediction') and two_stage_result.global_physics_prediction is not None:
         physics = two_stage_result.global_physics_prediction
         if physics:
             report += "\n## 🔬 Physics-Based Failure Prediction\n"
@@ -589,20 +589,53 @@ def generate_material_report_from_results(
     # ========================================
     # 🆕 物理ダメージ解析（MaterialAnalyticsGPU統合版）
     # ========================================
-    if macro_result and hasattr(macro_result, 'physical_damage'):
+    if macro_result and hasattr(macro_result, 'physical_damage') and macro_result.physical_damage is not None:
         damage = macro_result.physical_damage
         report += "\n## ⚡ Physical Damage Assessment (K/V-based)\n"
         
         report += "\n### Damage Accumulation\n"
-        report += f"- **Cumulative damage (D)**: {damage.get('cumulative_damage', 0):.1%}\n"
-        report += f"- **Failure probability**: {damage.get('failure_probability', 0):.1%}\n"
-        report += f"- **Remaining life**: {damage.get('remaining_life', 'N/A')}\n"
         
-        # 臨界クラスター（K/V比ベース）
-        if 'critical_clusters' in damage:
+        # cumulative_damageの安全な取得
+        cumulative_damage_val = 0
+        if damage and 'cumulative_damage' in damage:
+            cumulative_damage_val = damage['cumulative_damage']
+            # 配列の場合は最大値を取る
+            if hasattr(cumulative_damage_val, '__len__') and not isinstance(cumulative_damage_val, str):
+                try:
+                    cumulative_damage_val = float(np.max(cumulative_damage_val))
+                except:
+                    cumulative_damage_val = 0
+            elif cumulative_damage_val is None:
+                cumulative_damage_val = 0
+        
+        # 値が0-1の範囲外の場合の処理
+        if cumulative_damage_val > 1:
+            cumulative_damage_val = cumulative_damage_val / 100  # パーセンテージの可能性
+        
+        report += f"- **Cumulative damage (D)**: {cumulative_damage_val:.1%}\n"
+        
+        # failure_probabilityの安全な取得
+        failure_prob = damage.get('failure_probability', 0) if damage else 0
+        report += f"- **Failure probability**: {failure_prob:.1%}\n"
+        
+        # remaining_lifeの安全な処理
+        remaining_life = damage.get('remaining_life', None) if damage else None
+        if remaining_life is not None and remaining_life != 'N/A':
+            try:
+                report += f"- **Remaining life**: {float(remaining_life):.1f} cycles\n"
+            except:
+                report += f"- **Remaining life**: {remaining_life}\n"
+        else:
+            report += f"- **Remaining life**: N/A\n"
+        
+        # 臨界クラスター
+        if damage and 'critical_clusters' in damage and damage['critical_clusters']:
             report += f"\n### K/V-Critical Clusters\n"
-            for cid in damage['critical_clusters'][:5]:
-                report += f"- Cluster {cid}\n"
+            try:
+                for cid in damage['critical_clusters'][:5]:
+                    report += f"- Cluster {cid}\n"
+            except:
+                pass
     
     # ========================================
     # 🆕 信頼性解析（MaterialConfidenceAnalyzerGPU）
@@ -688,7 +721,7 @@ def generate_material_report_from_results(
             risk_score += 0.5
     
     # K/V比ダメージリスク
-    if macro_result and hasattr(macro_result, 'physical_damage'):
+    if macro_result and hasattr(macro_result, 'physical_damage') and macro_result.physical_damage:
         damage_prob = macro_result.physical_damage.get('failure_probability', 0)
         if damage_prob > 0.5:
             risk_factors.append((f"High damage probability ({damage_prob:.1%})", 0.8))
