@@ -375,6 +375,120 @@ def classify_material_event(start: int, end: int,
     
     return event_type
 
+# ========================================
+# 🆕 欠損クラスターの自動細分化
+# ========================================
+def subdivide_defect_clusters(cluster_atoms: Dict[int, List[int]], 
+                             trajectory: np.ndarray,
+                             subdivision_size: int = 100,
+                             sort_by_position: bool = False,
+                             logger=None) -> Dict[int, List[int]]:
+    """
+    欠損クラスターを細分化してネットワーク解析用のサブクラスターを生成
+    
+    Parameters
+    ----------
+    cluster_atoms : Dict[int, List[int]]
+        クラスター定義（クラスターID -> 原子IDリスト）
+    trajectory : np.ndarray
+        原子座標トラジェクトリ（空間ソート用）
+    subdivision_size : int
+        サブクラスターあたりの原子数
+    sort_by_position : bool
+        空間座標でソートするか
+    
+    Returns
+    -------
+    Dict[int, List[int]]
+        細分化されたクラスター定義（整数IDのみ使用）
+    """
+    if logger:
+        logger.info("\n🔬 Subdividing defect clusters for network analysis...")
+    
+    original_cluster_count = len(cluster_atoms)
+    new_cluster_atoms = {}
+    
+    # クラスターIDのマッピング情報を保存（デバッグ用）
+    id_mapping = {}
+    
+    for cid, atoms in cluster_atoms.items():
+        n_atoms_in_cluster = len(atoms)
+        
+        # クラスター0（健全領域）はそのまま保持
+        if cid == 0:
+            new_cluster_atoms[0] = atoms
+            id_mapping[0] = "healthy_region"
+            if logger:
+                logger.info(f"   Cluster 0 (healthy): {n_atoms_in_cluster} atoms [kept as-is]")
+            continue
+        
+        # 小さいクラスターは分割しない
+        n_subdivisions = (n_atoms_in_cluster + subdivision_size - 1) // subdivision_size
+        
+        if n_subdivisions == 1:
+            new_cluster_atoms[cid] = atoms
+            id_mapping[cid] = f"defect_{cid}_whole"
+            if logger:
+                logger.info(f"   Cluster {cid}: {n_atoms_in_cluster} atoms [too small, kept as-is]")
+            continue
+        
+        # 細分化処理
+        atoms_array = np.array(atoms, dtype=np.int32)
+        
+        # 空間的ソート（オプション）
+        if sort_by_position and trajectory is not None:
+            try:
+                # 最初のフレームの座標を使用
+                first_frame_pos = trajectory[0, atoms_array]
+                
+                # 重心からの距離でソート（より安定）
+                centroid = np.mean(first_frame_pos, axis=0)
+                distances = np.linalg.norm(first_frame_pos - centroid, axis=1)
+                sort_indices = np.argsort(distances)
+                atoms_array = atoms_array[sort_indices]
+                
+                if logger:
+                    logger.debug(f"   Sorted cluster {cid} atoms by distance from centroid")
+            except Exception as e:
+                if logger:
+                    logger.warning(f"   Spatial sorting failed for cluster {cid}: {e}")
+        
+        # サブクラスター作成（整数IDを使用）
+        base_id = cid * 1000  # ベースID（1000, 2000, 3000...）
+        
+        for sub_id in range(n_subdivisions):
+            start_idx = sub_id * subdivision_size
+            end_idx = min(start_idx + subdivision_size, n_atoms_in_cluster)
+            
+            # 整数IDを生成（例: 1001, 1002, ..., 2001, 2002, ...）
+            new_cid = base_id + sub_id + 1
+            new_cluster_atoms[new_cid] = atoms_array[start_idx:end_idx].tolist()
+            
+            # マッピング情報保存
+            id_mapping[new_cid] = f"defect_{cid}_sub_{sub_id+1:03d}"
+        
+        if logger:
+            logger.info(f"   Cluster {cid}: {n_atoms_in_cluster} atoms → "
+                       f"{n_subdivisions} subclusters (IDs: {base_id+1}-{base_id+n_subdivisions})")
+    
+    # 統計情報
+    n_defect_clusters = len([k for k in new_cluster_atoms.keys() if k != 0])
+    
+    if logger:
+        logger.info(f"\n   📊 Cluster subdivision complete:")
+        logger.info(f"      Original clusters: {original_cluster_count}")
+        logger.info(f"      New clusters: {len(new_cluster_atoms)}")
+        logger.info(f"      Defect subclusters: {n_defect_clusters}")
+        logger.info(f"      Network nodes: {n_defect_clusters} (excluding healthy region)")
+    
+    # IDマッピング情報を保存（オプション）
+    if logger and logger.isEnabledFor(logging.DEBUG):
+        logger.debug("   ID Mapping:")
+        for new_id, description in sorted(id_mapping.items())[:10]:
+            logger.debug(f"      {new_id}: {description}")
+    
+    return new_cluster_atoms
+                                 
 # ============================================
 # メイン実行関数（リファクタリング版）
 # ============================================
@@ -518,57 +632,18 @@ def run_material_analysis_pipeline(
     except Exception as e:
         logger.error(f"Failed to load data: {e}")
         raise
-
+    
     # ========================================
-    # 🆕 欠損クラスターの自動細分化
+    # クラスター細分化
     # ========================================
-    if subdivide_defects:  # 新しいコマンドラインオプション
-        logger.info("\n🔬 Subdividing defect clusters for network analysis...")
-        
-        original_cluster_count = len(cluster_atoms)
-        new_cluster_atoms = {}
-        subdivision_size = 100  # パラメータ化も可能
-        
-        for cid, atoms in cluster_atoms.items():
-            if cid == 0:  # 健全領域はそのまま
-                new_cluster_atoms[0] = atoms
-                logger.info(f"   Cluster 0 (healthy): {len(atoms)} atoms [kept as-is]")
-                
-            else:  # 欠損領域を細分化
-                n_atoms = len(atoms)
-                n_subdivisions = (n_atoms + subdivision_size - 1) // subdivision_size
-                
-                if n_subdivisions == 1:
-                    # 100個以下なら分割しない
-                    new_cluster_atoms[cid] = atoms
-                    logger.info(f"   Cluster {cid}: {n_atoms} atoms [too small, kept as-is]")
-                else:
-                    # 細分化実行
-                    atoms_array = np.array(atoms)
-                    
-                    # 空間的に近い原子をグループ化するため、座標でソート（オプション）
-                    if sort_by_position:
-                        first_frame_pos = trajectory[0, atoms]  # 最初のフレームの座標
-                        # Z軸でソート（または距離ベース）
-                        sort_indices = np.argsort(first_frame_pos[:, 2])
-                        atoms_array = atoms_array[sort_indices]
-                    
-                    for sub_id in range(n_subdivisions):
-                        start_idx = sub_id * subdivision_size
-                        end_idx = min(start_idx + subdivision_size, n_atoms)
-                        
-                        # 階層的なクラスターID（例: "1-001", "1-002"）
-                        new_cid = f"{cid}-{sub_id+1:03d}"
-                        new_cluster_atoms[new_cid] = atoms_array[start_idx:end_idx].tolist()
-                    
-                    logger.info(f"   Cluster {cid}: {n_atoms} atoms → {n_subdivisions} subclusters")
-        
-        cluster_atoms = new_cluster_atoms
-        logger.info(f"\n   📊 Cluster subdivision complete:")
-        logger.info(f"      Original clusters: {original_cluster_count}")
-        logger.info(f"      New clusters: {len(cluster_atoms)}")
-        logger.info(f"      Network nodes: {len(cluster_atoms) - 1} (excluding healthy region)")
-        
+    if subdivide_defects:
+        cluster_atoms = subdivide_defect_clusters(
+            cluster_atoms=cluster_atoms,
+            trajectory=trajectory,
+            subdivision_size=subdivision_size,
+            sort_by_position=sort_by_position,
+            logger=logger
+        )        
     # ========================================
     # Step 2: マクロ材料解析（強化版）
     # ========================================
