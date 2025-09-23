@@ -37,6 +37,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 # Lambda³ GPU imports
 from lambda3_gpu.core.gpu_utils import GPUBackend
+from lambda3_gpu.material.cluster_id_mapping import ClusterIDMapper
 from lambda3_gpu.material.cluster_structures_gpu import ClusterStructuresGPU, ClusterStructureResult
 from lambda3_gpu.material.cluster_network_gpu import ClusterNetworkGPU
 from lambda3_gpu.material.cluster_causality_analysis_gpu import MaterialCausalityAnalyzerGPU
@@ -202,6 +203,9 @@ class MaterialTwoStageAnalyzerGPU(GPUBackend):
         
         # 材料プロパティ設定
         self._set_material_properties()
+
+        # 🆕 追加
+        self.id_mapper = None
         
         # GPU版コンポーネント初期化（材料プロパティは渡さない）
         self.cluster_structures = ClusterStructuresGPU()
@@ -424,6 +428,10 @@ class MaterialTwoStageAnalyzerGPU(GPUBackend):
                                  stress_history: Optional[np.ndarray] = None) -> ClusterLevelAnalysis:
         """単一イベントのGPU解析（物理予測追加）"""
         event_start_time = time.time()
+
+       # 🆕 IDマッパー初期化
+        if self.id_mapper is None:
+            self.id_mapper = ClusterIDMapper(cluster_atoms)
         
         # フレーム範囲検証
         if end_frame <= start_frame:
@@ -595,8 +603,8 @@ class MaterialTwoStageAnalyzerGPU(GPUBackend):
                                      start_frame: int,
                                      network_results,
                                      event_physics: Optional[FailurePhysicsResult],
-                                     cluster_atoms: Dict[int, List[int]] = None) -> List[ClusterEvent]:  # 追加！
-        """クラスターイベント構築（物理情報追加）"""
+                                     cluster_atoms: Dict[int, List[int]] = None) -> List[ClusterEvent]:
+        """クラスターイベント構築（細分化ID対応版）"""
         events = []
         
         # 物理情報の準備
@@ -606,12 +614,25 @@ class MaterialTwoStageAnalyzerGPU(GPUBackend):
             rmsf_field = event_physics.rmsf_analysis.rmsf_field
             local_temps = event_physics.energy_balance.local_temperature
         
+        # 🆕 IDマッパー確認
+        if self.id_mapper is None and cluster_atoms:
+            self.id_mapper = ClusterIDMapper(cluster_atoms)
+        
         for cluster_id, scores in anomaly_scores.items():
-            # 基本情報（従来通り）
+            # cluster_idは実際のID（0, 1001, 1002...）
+            
+            # 🆕 配列アクセス用のインデックスを取得
+            if self.id_mapper:
+                idx = self.id_mapper.to_idx(cluster_id)
+            else:
+                idx = cluster_id  # フォールバック（互換性のため）
+            
+            # 基本情報
             peak_idx = np.argmax(scores)
             peak_score = scores[peak_idx]
             
-            strain_values = structures.local_strain[:, cluster_id]
+            # 🆕 配列アクセスはインデックスで！
+            strain_values = structures.local_strain[:, idx]  # idx使用
             von_mises_strain = np.sqrt(np.sum(strain_values**2, axis=-1))
             peak_strain = float(np.max(von_mises_strain))
             
@@ -622,28 +643,29 @@ class MaterialTwoStageAnalyzerGPU(GPUBackend):
             if von_mises_stress <= yield_strength:
                 peak_damage = 0.0
             elif von_mises_stress >= ultimate_strength:
-                peak_damage = 1.0  # 100%で上限
+                peak_damage = 1.0
             else:
                 peak_damage = (von_mises_stress - yield_strength) / (ultimate_strength - yield_strength)
             
             peak_damage = float(np.clip(peak_damage, 0.0, 1.0))
             
-            coord_defect = np.abs(structures.coordination_numbers[:, cluster_id] - 12.0)
+            # 🆕 配列アクセスはインデックスで！
+            coord_defect = np.abs(structures.coordination_numbers[:, idx] - 12.0)  # idx使用
             dislocation_density = 1e14 * np.mean(coord_defect)**2
             
-            role = self._determine_cluster_role(cluster_id, network_results)
+            role = self._determine_cluster_role(cluster_id, network_results)  # IDのまま
             
-            # 物理情報の追加（NEW!）
+            # 物理情報の追加
             rmsf_value = None
             lindemann_ratio = None
             local_temperature = None
             phase_state = None
             
-            if event_physics and cluster_id < len(cluster_atoms):
+            # 🆕 cluster_atomsのアクセスは実際のIDで
+            if event_physics and cluster_atoms and cluster_id in cluster_atoms:
                 # クラスターの代表原子のRMSF
                 cluster_atom_indices = list(cluster_atoms[cluster_id])[:10]
                 if rmsf_field is not None and len(cluster_atom_indices) > 0:
-                    # 最新時間窓のRMSF
                     last_window_rmsf = rmsf_field[-1] if len(rmsf_field) > 0 else None
                     if last_window_rmsf is not None:
                         cluster_rmsf = np.mean([last_window_rmsf[i] for i in cluster_atom_indices 
@@ -651,9 +673,9 @@ class MaterialTwoStageAnalyzerGPU(GPUBackend):
                         rmsf_value = float(cluster_rmsf)
                         lindemann_ratio = rmsf_value / self.material_props['lattice_constant']
                 
-                # 局所温度
-                if local_temps is not None and cluster_id < local_temps.shape[1]:
-                    local_temperature = float(np.mean(local_temps[:, cluster_id]))
+                # 🆕 局所温度（インデックスで判定）
+                if local_temps is not None and idx < local_temps.shape[1]:
+                    local_temperature = float(np.mean(local_temps[:, idx]))  # idx使用
                     
                     # 相状態判定
                     melting_temp = self.material_props['melting_temp']
@@ -664,8 +686,9 @@ class MaterialTwoStageAnalyzerGPU(GPUBackend):
                     else:
                         phase_state = 'transition'
             
+            # イベント作成（cluster_idは実際のIDのまま保持）
             event = ClusterEvent(
-                cluster_id=cluster_id,
+                cluster_id=cluster_id,  # 実際のID（1001等）を保存
                 cluster_name=cluster_names.get(cluster_id, f"C{cluster_id}"),
                 start_frame=start_frame + peak_idx,
                 end_frame=start_frame + min(peak_idx + 10, len(scores) - 1),
@@ -687,7 +710,7 @@ class MaterialTwoStageAnalyzerGPU(GPUBackend):
             events.append(event)
         
         return events
-    
+        
     def _identify_critical_clusters_physics(self,
                                        importance_scores: Dict[int, float],
                                        cluster_analyses: Dict,
@@ -884,9 +907,9 @@ class MaterialTwoStageAnalyzerGPU(GPUBackend):
         return cluster_analyses
       
     def _detect_cluster_anomalies_gpu(self,
-                                 structures: ClusterStructureResult,
-                                 event_type: str) -> Dict[int, np.ndarray]:
-        """クラスター異常検出"""
+                             structures: ClusterStructureResult,
+                             event_type: str) -> Dict[int, np.ndarray]:
+        """クラスター異常検出（細分化ID対応版）"""
         n_frames, n_clusters = structures.cluster_rho_t.shape
         
         sensitivity = self.config.event_sensitivities.get(
@@ -895,28 +918,42 @@ class MaterialTwoStageAnalyzerGPU(GPUBackend):
         
         cluster_anomaly_scores = {}
         
-        # 各クラスターの異常スコア計算
-        for cluster_id in range(n_clusters):
-            # 歪み異常
-            strain_values = structures.local_strain[:, cluster_id]  # (n_frames, 3, 3)
-            # ↓ ここを修正！
-            von_mises = np.sqrt(np.sum(strain_values**2, axis=(1,2)))  # axis=(1,2)に変更
+        # 🆕 IDマッパー確認
+        if self.id_mapper is None:
+            # フォールバック：連番でマッピング
+            cluster_ids = list(range(n_clusters))
+        else:
+            cluster_ids = self.id_mapper.cluster_ids
+        
+        # 各クラスターの異常スコア計算（修正版）
+        for idx in range(n_clusters):
+            # 🆕 実際のクラスターIDを取得
+            if self.id_mapper:
+                cluster_id = self.id_mapper.to_id(idx)
+            else:
+                cluster_id = idx
+            
+            # 配列アクセスはインデックスで
+            strain_values = structures.local_strain[:, idx]  # idxを使用
+            von_mises = np.sqrt(np.sum(strain_values**2, axis=(1,2)))
             strain_anomaly = self._compute_anomaly_score(von_mises)
             
-            # 配位数異常（そのまま）
-            coord_values = structures.coordination_numbers[:, cluster_id]
+            coord_values = structures.coordination_numbers[:, idx]  # idxを使用
             ideal_coord = 12.0 if hasattr(structures, 'crystal_structure') else 8.0
             coord_anomaly = np.abs(coord_values - ideal_coord) / ideal_coord
             
-            # 統合スコア
             combined = (strain_anomaly + coord_anomaly) / 2
             
             if np.max(combined) > sensitivity:
-                cluster_anomaly_scores[cluster_id] = combined
+                cluster_anomaly_scores[cluster_id] = combined  # 実際のIDで保存
         
-        # 最低限のクラスターを確保
+        # 最低限のクラスターを確保（修正版）
         if len(cluster_anomaly_scores) < min(5, n_clusters):
-            for cluster_id in range(min(5, n_clusters)):
+            for idx in range(min(5, n_clusters)):
+                if self.id_mapper:
+                    cluster_id = self.id_mapper.to_id(idx)
+                else:
+                    cluster_id = idx
                 if cluster_id not in cluster_anomaly_scores:
                     cluster_anomaly_scores[cluster_id] = np.ones(n_frames) * 0.5
         
