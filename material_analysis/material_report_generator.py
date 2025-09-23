@@ -591,9 +591,9 @@ def generate_material_report_from_results(
     # ========================================
     if macro_result and hasattr(macro_result, 'physical_damage') and macro_result.physical_damage is not None:
         damage = macro_result.physical_damage
-        report += "\n## ⚡ Physical Damage Assessment (K/V-based)\n"
+        report += "\\n## ⚡ Physical Damage Assessment (K/V-based)\\n"
         
-        report += "\n### Damage Accumulation\n"
+        report += "\\n### Damage Accumulation\\n"
         
         # cumulative_damageの安全な取得
         cumulative_damage_val = 0
@@ -610,33 +610,142 @@ def generate_material_report_from_results(
         
         # 値が0-1の範囲外の場合の処理
         if cumulative_damage_val > 1:
-            cumulative_damage_val = cumulative_damage_val / 100  # パーセンテージの可能性
+            cumulative_damage_val = cumulative_damage_val / 100
         
-        report += f"- **Cumulative damage (D)**: {cumulative_damage_val:.1%}\n"
+        report += f"- **Cumulative damage (D)**: {cumulative_damage_val:.1%}\\n"
+        
+        # 追加: 平均ダメージと最大ダメージ
+        if damage.get('avg_damage') is not None:
+            report += f"- **Average damage**: {damage['avg_damage']:.1%}\\n"
+        if damage.get('max_damage') is not None:
+            report += f"- **Maximum damage**: {damage['max_damage']:.1%}\\n"
         
         # failure_probabilityの安全な取得
         failure_prob = damage.get('failure_probability', 0) if damage else 0
-        report += f"- **Failure probability**: {failure_prob:.1%}\n"
+        report += f"- **Failure probability**: {failure_prob:.1%}\\n"
         
         # remaining_lifeの安全な処理
         remaining_life = damage.get('remaining_life', None) if damage else None
         if remaining_life is not None and remaining_life != 'N/A':
             try:
-                report += f"- **Remaining life**: {float(remaining_life):.1f} cycles\n"
+                report += f"- **Remaining life**: {float(remaining_life):.1f} cycles\\n"
             except:
-                report += f"- **Remaining life**: {remaining_life}\n"
+                report += f"- **Remaining life**: {remaining_life}\\n"
         else:
-            report += f"- **Remaining life**: N/A\n"
+            report += f"- **Remaining life**: N/A\\n"
         
-        # 臨界クラスター
+        # 追加: ダメージ速度解析
+        if damage.get('damage_rate') is not None or damage.get('max_damage_rate') is not None:
+            report += f"\\n### Damage Kinetics\\n"
+            if damage.get('max_damage_rate') is not None:
+                report += f"- **Max damage rate**: {damage['max_damage_rate']:.3e}/frame\\n"
+            if damage.get('avg_damage_rate') is not None:
+                report += f"- **Average damage rate**: {damage['avg_damage_rate']:.3e}/frame\\n"
+            if damage.get('damage_acceleration') is not None:
+                report += f"- **Damage acceleration**: {damage['damage_acceleration']:.3e}/frame²\\n"
+                
+                # 加速度に基づく警告
+                if damage['damage_acceleration'] > 0.001:
+                    report += "\\n⚠️ **Warning**: Damage is accelerating rapidly\\n"
+        
+        # 追加: 温度情報
+        if damage.get('temperature') is not None:
+            report += f"\\n### Thermal Conditions\\n"
+            report += f"- **Analysis temperature**: {damage['temperature']:.1f} K\\n"
+        
+        # 追加: 欠陥との相関
+        if damage.get('defect_damage_correlation') is not None:
+            report += f"\\n### Defect Correlation\\n"
+            report += f"- **Defect-damage correlation**: {damage['defect_damage_correlation']:.3f}\\n"
+            
+            # 相関の解釈
+            corr = damage['defect_damage_correlation']
+            if abs(corr) > 0.7:
+                report += "  → Strong correlation: Defects driving damage\\n"
+            elif abs(corr) > 0.4:
+                report += "  → Moderate correlation: Defects contributing to damage\\n"
+            else:
+                report += "  → Weak correlation: Independent mechanisms\\n"
+        
+        # 臨界クラスター（既存部分を改良）
         if damage and 'critical_clusters' in damage and damage['critical_clusters']:
-            report += f"\n### K/V-Critical Clusters\n"
-            try:
-                for cid in damage['critical_clusters'][:5]:
-                    report += f"- Cluster {cid}\n"
-            except:
-                pass
-    
+            report += f"\\n### K/V-Critical Clusters\\n"
+            critical_list = damage['critical_clusters']
+            report += f"- **Number of critical clusters**: {len(critical_list)}\\n"
+            report += f"- **Critical cluster IDs**: {critical_list[:10]}\\n"
+            
+            # パーコレーション判定
+            if hasattr(macro_result, 'n_atoms') and macro_result.n_atoms > 0:
+                critical_fraction = len(critical_list) * 100 / macro_result.n_atoms  # 概算
+                if critical_fraction > 30:
+                    report += "\\n🔴 **CRITICAL**: Possible percolation threshold reached\\n"
+
+    # ========================================
+    # 🆕 K/V Ratio Analysis
+    # ========================================
+    if macro_result and hasattr(macro_result, 'kv_ratios') and macro_result.kv_ratios is not None:
+        kv = macro_result.kv_ratios
+        report += "\\n## 📈 K/V Ratio Analysis\\n"
+        report += "\\n### Statistical Summary\\n"
+        
+        # 基本統計
+        kv_flat = kv.flatten() if kv.ndim > 1 else kv
+        report += f"- **Mean K/V ratio**: {np.mean(kv_flat):.3f}\\n"
+        report += f"- **Max K/V ratio**: {np.max(kv_flat):.3f}\\n"
+        report += f"- **Min K/V ratio**: {np.min(kv_flat):.3f}\\n"
+        report += f"- **Std deviation**: {np.std(kv_flat):.3f}\\n"
+        
+        # 臨界値超過
+        critical_kv = 1.5  # デフォルト臨界値
+        exceedance_frames = np.sum(kv_flat > critical_kv)
+        exceedance_ratio = exceedance_frames / len(kv_flat)
+        report += f"\\n### Critical Analysis\\n"
+        report += f"- **Critical K/V threshold**: {critical_kv:.2f}\\n"
+        report += f"- **Exceedance frames**: {exceedance_frames} ({exceedance_ratio:.1%})\\n"
+        
+        # 時系列トレンド（最初と最後の比較）
+        if len(kv_flat) > 10:
+            early_mean = np.mean(kv_flat[:len(kv_flat)//5])
+            late_mean = np.mean(kv_flat[-len(kv_flat)//5:])
+            trend = (late_mean - early_mean) / early_mean * 100
+            report += f"\\n### Temporal Evolution\\n"
+            report += f"- **Early phase mean**: {early_mean:.3f}\\n"
+            report += f"- **Late phase mean**: {late_mean:.3f}\\n"
+            report += f"- **Trend**: {trend:+.1f}%\\n"
+
+
+    # ========================================
+    # 🌡️ Temperature History Analysis
+    # ========================================
+    if macro_result and hasattr(macro_result, 'temperature_history') and macro_result.temperature_history is not None:
+        temps = macro_result.temperature_history
+        report += "\\n## 🌡️ Temperature Evolution\\n"
+        
+        # 基本統計
+        report += "\\n### Temperature Statistics\\n"
+        report += f"- **Average temperature**: {np.mean(temps):.1f} K\\n"
+        report += f"- **Peak temperature**: {np.max(temps):.1f} K\\n"
+        report += f"- **Minimum temperature**: {np.min(temps):.1f} K\\n"
+        report += f"- **Temperature range**: {np.max(temps) - np.min(temps):.1f} K\\n"
+        
+        # 熱的安定性評価
+        room_temp = 300.0
+        melting_point = 1800.0  # SUJ2の融点（概算）
+        
+        if np.max(temps) > melting_point * 0.5:
+            report += "\\n⚠️ **Warning**: Peak temperature exceeds 50% of melting point\\n"
+        elif np.max(temps) > melting_point * 0.3:
+            report += "\\n⚡ **Note**: Elevated temperature may affect material properties\\n"
+        
+        # 温度変動
+        if len(temps) > 1:
+            temp_gradient = np.gradient(temps)
+            max_heating_rate = np.max(temp_gradient)
+            max_cooling_rate = np.min(temp_gradient)
+            report += f"\\n### Thermal Dynamics\\n"
+            report += f"- **Max heating rate**: {max_heating_rate:.2f} K/frame\\n"
+            report += f"- **Max cooling rate**: {abs(max_cooling_rate):.2f} K/frame\\n"
+
     # ========================================
     # 🆕 信頼性解析（MaterialConfidenceAnalyzerGPU）
     # ========================================
@@ -795,9 +904,9 @@ def generate_material_report_from_results(
         with open(report_path, 'w') as f:
             f.write(report)
         
-        # JSON形式でも保存
+        # JSON形式でも保存（拡張版）
         json_data = {
-            'version': '1.0.3',
+            'version': '3.0.0',  # バージョンアップ
             'material_type': material_type,
             'summary': {
                 'n_frames': n_frames,
@@ -809,30 +918,116 @@ def generate_material_report_from_results(
             'metadata': metadata if metadata else {}
         }
         
-        # 材料状態
-        if two_stage_result and hasattr(two_stage_result, 'material_state'):
-            json_data['material_state'] = two_stage_result.material_state
+        # 物理ダメージデータ（拡張版）
+        if macro_result and hasattr(macro_result, 'physical_damage') and macro_result.physical_damage:
+            damage = macro_result.physical_damage
+            if damage and isinstance(damage, dict):
+                # cumulative_damageが配列の場合の処理
+                cumulative_damage_val = damage.get('cumulative_damage', 0)
+                if hasattr(cumulative_damage_val, '__len__') and not isinstance(cumulative_damage_val, str):
+                    try:
+                        cumulative_damage_val = float(np.max(cumulative_damage_val))
+                    except:
+                        cumulative_damage_val = 0
+                
+                json_data['physical_damage'] = {
+                    'max_damage': damage.get('max_damage', 0),
+                    'avg_damage': damage.get('avg_damage', 0),
+                    'failure_probability': damage.get('failure_probability', 0),
+                    'cumulative_damage': cumulative_damage_val,
+                    'remaining_life': damage.get('remaining_life', None),
+                    'damage_rate': damage.get('max_damage_rate', 0),
+                    'damage_acceleration': damage.get('damage_acceleration', 0),
+                    'temperature': damage.get('temperature', 300),
+                    'defect_correlation': damage.get('defect_damage_correlation', None),
+                    'critical_clusters': damage.get('critical_clusters', [])
+                }
         
-        # ネットワーク統計
-        if two_stage_result and hasattr(two_stage_result, 'global_network_stats'):
-            json_data['network_stats'] = two_stage_result.global_network_stats
+        # K/V比データ（要約版）
+        if macro_result and hasattr(macro_result, 'kv_ratios') and macro_result.kv_ratios is not None:
+            kv = macro_result.kv_ratios
+            kv_flat = kv.flatten() if kv.ndim > 1 else kv
+            json_data['kv_analysis'] = {
+                'mean': float(np.mean(kv_flat)),
+                'max': float(np.max(kv_flat)),
+                'min': float(np.min(kv_flat)),
+                'std': float(np.std(kv_flat)),
+                'exceedance_ratio': float(np.sum(kv_flat > 1.5) / len(kv_flat))
+            }
         
-        # 欠陥統計
-        if impact_results and defect_types:
-            json_data['defect_statistics'] = {
-                'total_defect_atoms': total_defects,
-                'defect_types': dict(defect_types),
-                'max_stress_concentration': max(
-                    (getattr(r, 'max_stress_concentration', 0) 
-                     for r in impact_results.values()), 
-                    default=0
-                )
+        # 温度履歴（要約版）
+        if macro_result and hasattr(macro_result, 'temperature_history') and macro_result.temperature_history is not None:
+            temps = macro_result.temperature_history
+            json_data['temperature_analysis'] = {
+                'mean': float(np.mean(temps)),
+                'max': float(np.max(temps)),
+                'min': float(np.min(temps)),
+                'range': float(np.max(temps) - np.min(temps))
             }
         
         json_path = output_path / 'material_analysis_data.json'
         with open(json_path, 'w') as f:
             json.dump(json_data, f, indent=2, default=float)
+
+        # CSV形式で時系列データもエクスポート
+        try:
+            import pandas as pd
+            
+            # 時系列データの準備
+            timeseries_data = {}
+            
+            # フレーム番号
+            if hasattr(macro_result, 'n_frames'):
+                timeseries_data['frame'] = list(range(macro_result.n_frames))
+            
+            # K/V比
+            if hasattr(macro_result, 'kv_ratios') and macro_result.kv_ratios is not None:
+                kv = macro_result.kv_ratios
+                if kv.ndim == 1:
+                    timeseries_data['kv_ratio'] = kv.tolist()
+                else:
+                    # 複数クラスターの場合は平均
+                    timeseries_data['kv_ratio_mean'] = np.mean(kv, axis=1).tolist()
+            
+            # 温度
+            if hasattr(macro_result, 'temperature_history') and macro_result.temperature_history is not None:
+                timeseries_data['temperature'] = macro_result.temperature_history.tolist()
+            
+            # 物理ダメージ（累積）
+            if hasattr(macro_result, 'physical_damage') and macro_result.physical_damage:
+                damage = macro_result.physical_damage
+                if 'cumulative_damage' in damage:
+                    cum_damage = damage['cumulative_damage']
+                    if hasattr(cum_damage, '__len__'):
+                        if cum_damage.ndim == 1:
+                            timeseries_data['cumulative_damage'] = cum_damage.tolist()
+                        else:
+                            timeseries_data['cumulative_damage'] = np.mean(cum_damage, axis=1).tolist()
+            
+            # 異常スコア
+            if hasattr(macro_result, 'anomaly_scores') and macro_result.anomaly_scores:
+                for score_type in ['strain', 'coordination', 'damage', 'combined']:
+                    if score_type in macro_result.anomaly_scores:
+                        scores = macro_result.anomaly_scores[score_type]
+                        timeseries_data[f'anomaly_{score_type}'] = scores.tolist()
+            
+            # DataFrameに変換して保存
+            if timeseries_data and 'frame' in timeseries_data:
+                df = pd.DataFrame(timeseries_data)
+                csv_path = output_path / 'material_timeseries.csv'
+                df.to_csv(csv_path, index=False)
+                
+                if verbose:
+                    print(f"   📊 Timeseries data saved to: {csv_path}")
+                    print(f"      Columns: {', '.join(df.columns)}")
+                    print(f"      Rows: {len(df)}")
         
+        except ImportError:
+            if verbose:
+                print("   ⚠️ pandas not available, skipping CSV export")
+        except Exception as e:
+            logger.warning(f"CSV export failed: {e}")
+
         # VTKファイル生成用データ
         vtk_data = prepare_vtk_export_data(
             macro_result, two_stage_result, impact_results
