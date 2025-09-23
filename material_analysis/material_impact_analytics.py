@@ -818,26 +818,87 @@ class MaterialImpactAnalyzer:
         return results
     
     def _analyze_defect_event(self,
-                            cluster_id: int,
-                            event_name: str,
-                            event_type: str,
-                            trajectory: np.ndarray,
-                            atom_types: np.ndarray,
-                            start_frame: int,
-                            end_frame: int,
-                            cluster_atoms: List[int],
-                            strain_field: Optional[np.ndarray]) -> MaterialImpactResult:
-        """欠陥イベント解析"""
+                        cluster_id: int,
+                        event_name: str,
+                        event_type: str,
+                        trajectory: np.ndarray,
+                        atom_types: np.ndarray,
+                        start_frame: int,
+                        end_frame: int,
+                        cluster_atoms: List[int],
+                        strain_field: Optional[np.ndarray]) -> MaterialImpactResult:
+        """欠陥イベント解析（start_frame=0対応版）"""
         result = MaterialImpactResult(
             event_name=event_name,
             cluster_id=cluster_id,
             event_type=event_type
         )
         
-        if start_frame == 0:
+        # クラスター原子が空の場合
+        if not cluster_atoms:
+            logger.warning(f"Cluster {cluster_id}: No atoms to analyze")
             return result
         
-        # 変位解析
+        # start_frame=0の場合の特別処理
+        if start_frame == 0:
+            logger.debug(f"Cluster {cluster_id}: start_frame=0, using position-based analysis")
+            
+            # 初期位置での異常検出
+            positions = trajectory[0, cluster_atoms]
+            center = np.mean(positions, axis=0)
+            distances_from_center = np.linalg.norm(positions - center, axis=1)
+            
+            mean_d = np.mean(distances_from_center)
+            std_d = np.std(distances_from_center)
+            threshold = mean_d + self.sigma_threshold * std_d
+            
+            result.origin.mean_displacement = mean_d
+            result.origin.std_displacement = std_d
+            
+            # 中心から離れた原子を異常とする
+            for i, atom_id in enumerate(cluster_atoms):
+                if i >= len(distances_from_center):
+                    continue
+                
+                z_score = (distances_from_center[i] - mean_d) / (std_d + 1e-10)
+                
+                if z_score > self.sigma_threshold:
+                    trace = AtomicDefectTrace(
+                        atom_id=atom_id,
+                        cluster_id=cluster_id,
+                        atom_type=str(atom_types[atom_id]) if atom_id < len(atom_types) else 'Unknown',
+                        displacement_zscore=z_score
+                    )
+                    
+                    # 歪み
+                    if strain_field is not None and atom_id < len(strain_field):
+                        trace.strain_magnitude = float(strain_field[atom_id])
+                    
+                    # 欠陥シグネチャー
+                    trace.defect_signature = self._classify_defect(
+                        z_score, event_type, trace.strain_magnitude
+                    )
+                    trace.confidence = min(z_score / 4.0, 1.0)
+                    
+                    # 応力集中
+                    trace.stress_concentration = trace.strain_magnitude * self.elastic_modulus
+                    
+                    result.defect_atoms[atom_id] = trace
+                    result.origin.nucleation_atoms.append(atom_id)
+            
+            # 統計更新
+            result.n_defect_atoms = len(result.defect_atoms)
+            if result.defect_atoms:
+                stress_concs = [t.stress_concentration for t in result.defect_atoms.values()]
+                result.max_stress_concentration = max(stress_concs)
+                
+                signatures = [t.defect_signature for t in result.defect_atoms.values()]
+                if signatures:
+                    result.dominant_defect = Counter(signatures).most_common(1)[0][0]
+            
+            return result
+        
+        # 通常の変位解析（start_frame > 0）
         displacements = trajectory[start_frame] - trajectory[start_frame-1]
         distances = np.linalg.norm(displacements, axis=1)
         
