@@ -515,7 +515,57 @@ def run_material_analysis_pipeline(
     except Exception as e:
         logger.error(f"Failed to load data: {e}")
         raise
-    
+
+    # ========================================
+    # 🆕 欠損クラスターの自動細分化
+    # ========================================
+    if subdivide_defects:  # 新しいコマンドラインオプション
+        logger.info("\n🔬 Subdividing defect clusters for network analysis...")
+        
+        original_cluster_count = len(cluster_atoms)
+        new_cluster_atoms = {}
+        subdivision_size = 100  # パラメータ化も可能
+        
+        for cid, atoms in cluster_atoms.items():
+            if cid == 0:  # 健全領域はそのまま
+                new_cluster_atoms[0] = atoms
+                logger.info(f"   Cluster 0 (healthy): {len(atoms)} atoms [kept as-is]")
+                
+            else:  # 欠損領域を細分化
+                n_atoms = len(atoms)
+                n_subdivisions = (n_atoms + subdivision_size - 1) // subdivision_size
+                
+                if n_subdivisions == 1:
+                    # 100個以下なら分割しない
+                    new_cluster_atoms[cid] = atoms
+                    logger.info(f"   Cluster {cid}: {n_atoms} atoms [too small, kept as-is]")
+                else:
+                    # 細分化実行
+                    atoms_array = np.array(atoms)
+                    
+                    # 空間的に近い原子をグループ化するため、座標でソート（オプション）
+                    if sort_by_position:
+                        first_frame_pos = trajectory[0, atoms]  # 最初のフレームの座標
+                        # Z軸でソート（または距離ベース）
+                        sort_indices = np.argsort(first_frame_pos[:, 2])
+                        atoms_array = atoms_array[sort_indices]
+                    
+                    for sub_id in range(n_subdivisions):
+                        start_idx = sub_id * subdivision_size
+                        end_idx = min(start_idx + subdivision_size, n_atoms)
+                        
+                        # 階層的なクラスターID（例: "1-001", "1-002"）
+                        new_cid = f"{cid}-{sub_id+1:03d}"
+                        new_cluster_atoms[new_cid] = atoms_array[start_idx:end_idx].tolist()
+                    
+                    logger.info(f"   Cluster {cid}: {n_atoms} atoms → {n_subdivisions} subclusters")
+        
+        cluster_atoms = new_cluster_atoms
+        logger.info(f"\n   📊 Cluster subdivision complete:")
+        logger.info(f"      Original clusters: {original_cluster_count}")
+        logger.info(f"      New clusters: {len(cluster_atoms)}")
+        logger.info(f"      Network nodes: {len(cluster_atoms) - 1} (excluding healthy region)")
+        
     # ========================================
     # Step 2: マクロ材料解析（強化版）
     # ========================================
@@ -1289,6 +1339,22 @@ def main():
     parser.add_argument('--strain', help='Path to strain field data (.npy)')
     parser.add_argument('--loading', '-l', default='tensile',
                        choices=['tensile', 'compression', 'shear', 'fatigue'])
+    parser.add_argument(
+        '--subdivide-defects',
+        action='store_true',
+        help='Subdivide defect clusters for detailed network analysis'
+    )
+    parser.add_argument(
+        '--subdivision-size',
+        type=int,
+        default=100,
+        help='Number of atoms per subdivision (default: 100)'
+    )
+    parser.add_argument(
+        '--sort-by-position',
+        action='store_true',
+        help='Sort atoms by spatial position before subdivision'
+    )
     parser.add_argument('--strain-rate', type=float, default=1e-3)
     parser.add_argument('--temperature', '-T', type=float, default=300.0)
     parser.add_argument('--output', '-o', default='./material_results')
