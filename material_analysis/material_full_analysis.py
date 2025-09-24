@@ -191,8 +191,41 @@ def enhance_macro_result(
             'time_to_failure': estimate_time_to_failure(material_events, n_frames)
         }
         logger.info("   Enhanced: Generated failure prediction")
+
+    # 7. physical_damageの補完（追加！）
+    if not hasattr(macro_result, 'physical_damage') or macro_result.physical_damage is None:
+        # 破壊確率を流用
+        failure_prob = macro_result.failure_prediction.get('failure_probability', 0) if macro_result.failure_prediction else 0.5
+        
+        macro_result.physical_damage = {
+            'cumulative_damage': failure_prob,  # 暫定値
+            'max_damage': failure_prob,
+            'avg_damage': failure_prob * 0.8,
+            'failure_probability': failure_prob,
+            'remaining_life': 1000.0 * (1 - failure_prob),
+            'temperature': metadata.get('temperature', 300.0),
+            'critical_clusters': []
+        }
+        logger.info("   Enhanced: Generated physical damage data")
     
-    # 7. メタデータの確認
+    # 8. kv_ratiosの補完（追加！）
+    if not hasattr(macro_result, 'kv_ratios') or macro_result.kv_ratios is None:
+        # イベントベースでK/V比を推定
+        kv_ratios = np.ones(n_frames) * 1.0
+        for start, end, event_type in material_events:
+            if 'crack' in event_type:
+                kv_ratios[start:end] *= 2.0  # 亀裂で上昇
+            elif 'plastic' in event_type:
+                kv_ratios[start:end] *= 1.5
+        macro_result.kv_ratios = kv_ratios
+        logger.info("   Enhanced: Generated K/V ratios")
+    
+    # 9. temperature_historyの補完（追加！）
+    if not hasattr(macro_result, 'temperature_history') or macro_result.temperature_history is None:
+        macro_result.temperature_history = np.full(n_frames, metadata.get('temperature', 300.0))
+        logger.info("   Enhanced: Generated temperature history")
+        
+    # 10. メタデータの確認
     if not hasattr(macro_result, 'n_frames'):
         macro_result.n_frames = n_frames
     if not hasattr(macro_result, 'n_atoms'):
@@ -654,6 +687,8 @@ def run_material_analysis_pipeline(
         config = MaterialConfig()
         config.material_type = material_type
         config.use_material_analytics = True
+        config.use_physical_damage = True  # ← これを追加！
+        config.damage_temperature = temperature  # ← これも！
         config.adaptive_window = True
         config.use_phase_space = True
         config.sensitivity = 1.5
